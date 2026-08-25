@@ -1,0 +1,641 @@
+@import "tailwindcss";
+
+
+:root {
+  --background: #ffffff;
+  --foreground: #0d0d0d;
+
+  --sidebar: #ffffff;
+
+  --surface: #ffffff;
+  --surface-secondary: #f7f7f8;
+  --surface-hover: #f2f2f2;
+  --surface-active: #e9e9e9;
+
+  --border: #e5e5e5;
+  --border-soft: #eeeeee;
+
+  --text-primary: #0d0d0d;
+  --text-secondary: #5d5d5d;
+  --text-muted: #8f8f8f;
+
+  --primary: #4169e1;
+  --primary-hover: #3558c8;
+  --primary-soft: #e8edff;
+
+  --composer: #ffffff;
+  --composer-border: #dedede;
+
+  --menu: #ffffff;
+  --menu-hover: #f2f2f2;
+
+  --chat-user: #f4f4f4;
+  --chat-assistant: transparent;
+
+  --scrollbar: #b5b5b5;
+  --scrollbar-hover: #8f8f8f;
+
+  --danger: #ef4444;
+
+  --ambient-blue: rgba(65, 105, 225, 0.07);
+  --ambient-blue-soft: rgba(83, 121, 235, 0.05);
+  --ambient-blue-deep: rgba(48, 78, 190, 0.06);
+
+  --hero-accent: #8f7ee7;
+}
+
+
+html.dark {
+  --background: #000000;
+  --foreground: #ececec;
+
+  --sidebar: #000000;
+
+  --surface: #171717;
+  --surface-secondary: #111111;
+  --surface-hover: #1f1f1f;
+  --surface-active: #292929;
+
+  --border: #2b2b2b;
+  --border-soft: #1f1f1f;
+
+  --text-primary: #f2f2f2;
+  --text-secondary: #d0d0d0;
+  --text-muted: #8e8e8e;
+
+  --primary: #6675e8;
+  --primary-hover: #7481ed;
+  --primary-soft: #1b203d;
+
+  --composer: #171717;
+  --composer-border: #303030;
+
+  --menu: #171717;
+  --menu-hover: #242424;
+
+  --chat-user: #292929;
+  --chat-assistant: transparent;
+
+  --scrollbar: #4d4d4d;
+  --scrollbar-hover: #666666;
+
+  --danger: #ff5d5d;
+
+  --ambient-blue: rgba(62, 92, 255, 0.11);
+  --ambient-blue-soft: rgba(73, 120, 255, 0.09);
+  --ambient-blue-deep: rgba(39, 65, 190, 0.10);
+
+  --hero-accent: #a897f2;
+}
+
+
+* {
+  box-sizing: border-box;
+}
+
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+
+html {
+  scroll-behavior: smooth;
+  background: var(--background);
+}
+
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+
+  transition:
+    background-color 180ms ease,
+    color 180ms ease;
+}
+
+
+button,
+a,
+input,
+textarea {
+  font: inherit;
+}
+
+
+button {
+  color: inherit;
+}
+
+
+input,
+textarea {
+  color: var(--text-primary);
+}
+
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-muted);
+}
+
+
+::selection {
+  background: var(--primary-soft);
+  color: var(--text-primary);
+}
+
+
+* {
+  scrollbar-width: thin;
+
+  scrollbar-color:
+    var(--scrollbar)
+    transparent;
+}
+
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 999px;
+}
+
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
+}
+
+
+/* =========================
+   LANDING AMBIENT
+========================= */
+
+.landing-ambient {
+  position: absolute;
+  inset: 0;
+
+  min-height: 100%;
+
+  overflow: hidden;
+
+  pointer-events: none;
+
+  z-index: 0;
+}
+
+
+.ambient-orb {
+  position: absolute;
+
+  border-radius: 9999px;
+
+  filter: blur(125px);
+
+  mix-blend-mode: screen;
+
+  will-change:
+    transform,
+    opacity;
+}
+
+
+html:not(.dark) .ambient-orb {
+  mix-blend-mode: multiply;
+}
+
+
+/* =========================
+   FULL-PAGE BLUE COVERAGE
+========================= */
+
+.ambient-orb-one {
+  width: 1100px;
+  height: 1100px;
+
+  top: -420px;
+  left: -280px;
+
+  background: var(--ambient-blue);
+
+  animation:
+    ambient-left
+    24s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+.ambient-orb-two {
+  width: 1000px;
+  height: 1000px;
+
+  top: -220px;
+  right: -300px;
+
+  background: var(--ambient-blue-soft);
+
+  animation:
+    ambient-right
+    27s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+.ambient-orb-three {
+  width: 1100px;
+  height: 1100px;
+
+  top: 520px;
+  left: 20%;
+
+  background: var(--ambient-blue-deep);
+
+  opacity: 0.41;
+
+  animation:
+    ambient-center
+    28s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+.ambient-orb-four {
+  width: 1050px;
+  height: 1050px;
+
+  top: 1180px;
+  right: -260px;
+
+  background: var(--ambient-blue);
+
+  opacity: 0.40;
+
+  animation:
+    ambient-right
+    30s
+    ease-in-out
+    infinite
+    alternate-reverse;
+}
+
+
+.ambient-orb-five {
+  width: 1000px;
+  height: 1000px;
+
+  top: 1700px;
+  left: -250px;
+
+  background: var(--ambient-blue-soft);
+
+  opacity: 0.39;
+
+  animation:
+    ambient-left
+    31s
+    ease-in-out
+    infinite
+    alternate-reverse;
+}
+
+
+.ambient-orb-six {
+  width: 1100px;
+  height: 1100px;
+
+  top: 2250px;
+  right: -300px;
+
+  background: var(--ambient-blue-deep);
+
+  opacity: 0.37;
+
+  animation:
+    ambient-center
+    32s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+.ambient-orb-seven {
+  width: 1050px;
+  height: 1050px;
+
+  top: 2850px;
+  left: -280px;
+
+  background: var(--ambient-blue);
+
+  opacity: 0.36;
+
+  animation:
+    ambient-left
+    33s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+.ambient-orb-eight {
+  width: 1150px;
+  height: 1150px;
+
+  top: 3450px;
+  right: -320px;
+
+  background: var(--ambient-blue-soft);
+
+  opacity: 0.36;
+
+  animation:
+    ambient-right
+    34s
+    ease-in-out
+    infinite
+    alternate-reverse;
+}
+
+
+/* =========================
+   GRID
+========================= */
+
+.ambient-grid {
+  position: absolute;
+  inset: 0;
+
+  opacity: 0.045;
+
+  background-image:
+    linear-gradient(
+      to right,
+      var(--border-soft) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      var(--border-soft) 1px,
+      transparent 1px
+    );
+
+  background-size:
+    72px 72px;
+}
+
+
+/* =========================
+   NOISE
+========================= */
+
+.ambient-noise {
+  position: absolute;
+  inset: 0;
+
+  opacity: 0.02;
+
+  background-image:
+    radial-gradient(
+      rgba(255, 255, 255, 0.7) 0.45px,
+      transparent 0.45px
+    );
+
+  background-size:
+    5px 5px;
+}
+
+
+html:not(.dark) .ambient-noise {
+  opacity: 0.012;
+
+  background-image:
+    radial-gradient(
+      rgba(0, 0, 0, 0.7) 0.4px,
+      transparent 0.4px
+    );
+}
+
+
+/* =========================
+   HERO TEXT
+========================= */
+
+.hero-title-main {
+  color: var(--text-primary);
+}
+
+
+.hero-title-accent {
+  color: var(--hero-accent);
+
+  text-shadow:
+    0 0 24px
+    rgba(143, 126, 231, 0.13);
+
+  animation:
+    hero-accent-pulse
+    6s
+    ease-in-out
+    infinite
+    alternate;
+}
+
+
+/* =========================
+   ANIMATIONS
+========================= */
+
+@keyframes ambient-left {
+  0% {
+    transform:
+      translate3d(
+        -120px,
+        -20px,
+        0
+      )
+      scale(0.95);
+
+    opacity: 0.62;
+  }
+
+  40% {
+    transform:
+      translate3d(
+        180px,
+        100px,
+        0
+      )
+      scale(1.12);
+
+    opacity: 0.9;
+  }
+
+  75% {
+    transform:
+      translate3d(
+        70px,
+        220px,
+        0
+      )
+      scale(1.03);
+
+    opacity: 0.76;
+  }
+
+  100% {
+    transform:
+      translate3d(
+        250px,
+        80px,
+        0
+      )
+      scale(1.15);
+
+    opacity: 0.84;
+  }
+}
+
+
+@keyframes ambient-right {
+  0% {
+    transform:
+      translate3d(
+        100px,
+        -20px,
+        0
+      )
+      scale(1);
+
+    opacity: 0.64;
+  }
+
+  40% {
+    transform:
+      translate3d(
+        -190px,
+        100px,
+        0
+      )
+      scale(1.12);
+
+    opacity: 0.9;
+  }
+
+  75% {
+    transform:
+      translate3d(
+        -80px,
+        220px,
+        0
+      )
+      scale(0.98);
+
+    opacity: 0.76;
+  }
+
+  100% {
+    transform:
+      translate3d(
+        -250px,
+        80px,
+        0
+      )
+      scale(1.14);
+
+    opacity: 0.84;
+  }
+}
+
+
+@keyframes ambient-center {
+  0% {
+    transform:
+      translate3d(
+        -80px,
+        0,
+        0
+      )
+      scale(0.94);
+
+    opacity: 0.6;
+  }
+
+  50% {
+    transform:
+      translate3d(
+        130px,
+        140px,
+        0
+      )
+      scale(1.13);
+
+    opacity: 0.86;
+  }
+
+  100% {
+    transform:
+      translate3d(
+        -100px,
+        240px,
+        0
+      )
+      scale(1.02);
+
+    opacity: 0.7;
+  }
+}
+
+
+@keyframes hero-accent-pulse {
+  0% {
+    opacity: 0.86;
+
+    text-shadow:
+      0 0 18px
+      rgba(143, 126, 231, 0.08);
+  }
+
+  100% {
+    opacity: 1;
+
+    text-shadow:
+      0 0 28px
+      rgba(143, 126, 231, 0.17);
+  }
+}
+
+
+@media (
+  prefers-reduced-motion:
+  reduce
+) {
+  .ambient-orb,
+  .hero-title-accent {
+    animation: none;
+  }
+}
