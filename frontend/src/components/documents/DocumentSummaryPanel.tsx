@@ -1371,9 +1371,10 @@ export default function DocumentSummaryPanel({
           onSummaryGenerated={(
             summary
           ) => {
-            addGeneratedSummary(
-              summary
-            );
+            addGeneratedSummary({
+              ...summary,
+              mode,
+            });
           }}
         />
       )}
