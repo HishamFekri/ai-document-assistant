@@ -28,6 +28,10 @@ type Props = {
 
   creatingChat: boolean;
 
+  mobile?: boolean;
+
+  onMobileClose?: () => void;
+
   onCreateChat: () => void;
 
   onOpenChat: (
@@ -60,6 +64,8 @@ export default function ChatSidebar({
   chats,
   activeChatId,
   creatingChat,
+  mobile = false,
+  onMobileClose,
   onCreateChat,
   onOpenChat,
   onRenameChat,
@@ -382,7 +388,10 @@ export default function ChatSidebar({
   }
 
 
-  if (collapsed) {
+  if (
+    collapsed
+    && !mobile
+  ) {
     return (
       <CollapsedSidebar
         user={
@@ -399,9 +408,13 @@ export default function ChatSidebar({
           )
         }
 
-        onCreateChat={
-          onCreateChat
-        }
+        onCreateChat={() => {
+          onCreateChat();
+
+          if (mobile) {
+            onMobileClose?.();
+          }
+        }}
 
         onLogout={
           onLogout
@@ -413,16 +426,20 @@ export default function ChatSidebar({
 
   return (
     <aside
-      className="
+      className={`
         flex
-        h-screen
-        w-[250px]
         shrink-0
         flex-col
         border-r
         border-[var(--border)]
         bg-[var(--sidebar)]
-      "
+
+        ${
+          mobile
+            ? "h-full w-[min(86vw,320px)] max-w-[320px]"
+            : "h-screen w-[250px]"
+        }
+      `}
     >
       <SidebarHeader
         searchOpen={
@@ -497,9 +514,13 @@ export default function ChatSidebar({
           )
         }
 
-        onOpenChat={
-          onOpenChat
-        }
+        onOpenChat={(chatId) => {
+          onOpenChat(chatId);
+
+          if (mobile) {
+            onMobileClose?.();
+          }
+        }}
 
         archivedContent={
           <SidebarSection
@@ -517,7 +538,13 @@ export default function ChatSidebar({
             deletingChatId={deletingChatId}
             workingChatId={workingChatId}
             emptyText="No archived chats"
-            onOpenChat={onOpenChat}
+            onOpenChat={(chatId) => {
+              onOpenChat(chatId);
+
+              if (mobile) {
+                onMobileClose?.();
+              }
+            }}
             onStartRename={startRename}
             onSaveRename={saveRename}
             onCancelRename={cancelRename}
@@ -593,9 +620,13 @@ export default function ChatSidebar({
 
           emptyText="No pinned chats"
 
-          onOpenChat={
-            onOpenChat
-          }
+          onOpenChat={(chatId) => {
+            onOpenChat(chatId);
+
+            if (mobile) {
+              onMobileClose?.();
+            }
+          }}
 
           onStartRename={
             startRename
@@ -676,9 +707,13 @@ export default function ChatSidebar({
 
           emptyText="No recent chats"
 
-          onOpenChat={
-            onOpenChat
-          }
+          onOpenChat={(chatId) => {
+            onOpenChat(chatId);
+
+            if (mobile) {
+              onMobileClose?.();
+            }
+          }}
 
           onStartRename={
             startRename

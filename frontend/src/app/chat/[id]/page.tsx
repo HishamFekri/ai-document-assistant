@@ -2,1647 +2,757 @@
 
 import {
   useEffect,
-  useRef,
+  useMemo,
   useState,
 } from "react";
 
 import {
-  useParams,
-  useRouter,
-} from "next/navigation";
-
-import {
-  ArrowDown,
-  Loader2,
-  Sparkles,
-} from "lucide-react";
-
-import ChatSidebar from "@/components/chat/ChatSidebar";
-import ChatMessage from "@/components/chat/ChatMessage";
-import ChatComposer from "@/components/chat/ChatComposer";
-import UploadedDocsPanel from "@/components/chat/UploadedDocsPanel";
-import ChatHeaderActions from "@/components/chat/ChatHeaderActions";
-
-import DocumentSummaryPanel from "@/components/documents/DocumentSummaryPanel";
-
-import {
-  Document,
-  Chat,
+  ChatListItem,
+  User,
 } from "@/types/chat";
 
-import {
-  useChat,
-} from "@/hooks/useChat";
-
-import {
-  useChatStream,
-} from "@/hooks/useChatStream";
-
-type ActiveView =
-  | "chat"
-  | "summary"
-  | "transcription";
-
-type DocumentView =
-  | "summary"
-  | "transcription";
+import SidebarHeader from "@/components/chat/sidebar/SidebarHeader";
+import SidebarSearch from "@/components/chat/sidebar/SidebarSearch";
+import SidebarNavigation from "@/components/chat/sidebar/SidebarNavigation";
+import SidebarSection from "@/components/chat/sidebar/SidebarSection";
+import SidebarUser from "@/components/chat/sidebar/SidebarUser";
+import CollapsedSidebar from "@/components/chat/sidebar/CollapsedSidebar";
 
 
-export default function ChatPage({
-  draft = false,
-}: {
-  draft?: boolean;
-}) {
-  const params =
-    useParams();
+type Props = {
+  user: User | null;
 
-  const router =
-    useRouter();
+  chats: ChatListItem[];
 
+  activeChatId: number;
 
-  const rawChatId =
-    draft ? undefined : params?.id;
+  creatingChat: boolean;
 
+  mobile?: boolean;
 
-  let chatId:
-    number | null = null;
+  onMobileClose?: () => void;
 
+  onCreateChat: () => void;
 
-  if (
-    typeof rawChatId ===
-    "string"
-  ) {
-    const parsed =
-      Number(
-        rawChatId
-      );
+  onOpenChat: (
+    chatId: number
+  ) => void;
 
-    if (
-      Number.isInteger(
-        parsed
-      )
-      && parsed > 0
-    ) {
-      chatId = parsed;
-    }
-  }
+  onRenameChat: (
+    chatId: number,
+    title: string
+  ) => Promise<void>;
 
+  onPinChat: (
+    chatId: number
+  ) => Promise<void>;
 
-  if (
-    Array.isArray(
-      rawChatId
-    )
-    && rawChatId.length > 0
-  ) {
-    const parsed =
-      Number(
-        rawChatId[0]
-      );
+  onArchiveChat: (
+    chatId: number
+  ) => Promise<void>;
 
-    if (
-      Number.isInteger(
-        parsed
-      )
-      && parsed > 0
-    ) {
-      chatId = parsed;
-    }
-  }
+  onDeleteChat: (
+    chatId: number
+  ) => Promise<void>;
+
+  onLogout: () => void;
+};
 
 
-  const fileInputRef =
-    useRef<HTMLInputElement | null>(
-      null
-    );
-
-  const messagesEndRef =
-    useRef<HTMLDivElement | null>(
-      null
-    );
-
-  const messagesContainerRef =
-    useRef<HTMLElement | null>(
-      null
-    );
-
+export default function ChatSidebar({
+  user,
+  chats,
+  activeChatId,
+  creatingChat,
+  mobile = false,
+  onMobileClose,
+  onCreateChat,
+  onOpenChat,
+  onRenameChat,
+  onPinChat,
+  onArchiveChat,
+  onDeleteChat,
+  onLogout,
+}: Props) {
   const [
-    showScrollToBottom,
-    setShowScrollToBottom,
-  ] = useState(false);
-
-  const [
-    chatDeleteError,
-    setChatDeleteError,
-  ] = useState<string | null>(null);
-
-
-  const [
-    activeView,
-    setActiveView,
-  ] = useState<ActiveView>(
-    "chat"
-  );
-
-
-  const [
-    filesOpen,
-    setFilesOpen,
+    collapsed,
+    setCollapsed,
   ] = useState(false);
 
 
   const [
-    selectedDocument,
-    setSelectedDocument,
+    searchOpen,
+    setSearchOpen,
+  ] = useState(false);
+
+
+  const [
+    searchQuery,
+    setSearchQuery,
+  ] = useState("");
+
+
+  const [
+    archiveOpen,
+    setArchiveOpen,
+  ] = useState(false);
+
+
+  const [
+    pinnedOpen,
+    setPinnedOpen,
+  ] = useState(true);
+
+
+  const [
+    recentOpen,
+    setRecentOpen,
+  ] = useState(true);
+
+
+  const [
+    openMenuId,
+    setOpenMenuId,
   ] = useState<
-    Document | null
+    number | null
   >(null);
 
 
   const [
-    summaryToken,
-    setSummaryToken,
+    editingChatId,
+    setEditingChatId,
   ] = useState<
-    string | null
+    number | null
   >(null);
 
 
-  const {
-    user,
-    chat,
-    chats,
-    messages,
-
-    setChat,
-    setChats,
-    setMessages,
-
-    loading,
-    chatLoading,
-
-    uploading,
-    attachment,
-    creatingChat,
-
-    getToken,
-    refreshMessages,
-
-    createPersistedChat,
-    attachDocumentToChat,
-
-    handleCreateChat,
-    handleUpload,
-    handleRemoveAttachment,
-    clearComposerAttachment,
-    handleRemoveDocument,
-
-    handleRenameChat,
-    handlePinChat,
-    handleArchiveChat,
-    handleDeleteChat,
-
-    logout,
-  } = useChat(
-    chatId
-  );
-
-  const workspaceChat: Chat | null =
-    chat
-    ?? (draft
-      ? {
-          id: 0,
-          title: "New chat",
-          is_pinned: false,
-          is_archived: false,
-          created_at: new Date().toISOString(),
-          documents: [],
-        }
-      : null);
+  const [
+    editingTitle,
+    setEditingTitle,
+  ] = useState("");
 
 
-  async function openDocumentView(
-    document: Document,
-    view: DocumentView
-  ) {
-    const token =
-      getToken();
-
-    if (!token) {
-      console.error(
-        "[DOCUMENT VIEW] No auth token"
-      );
-
-      return;
-    }
+  const [
+    deletingChatId,
+    setDeletingChatId,
+  ] = useState<
+    number | null
+  >(null);
 
 
-    setSelectedDocument(document);
-    setSummaryToken(token);
-    setFilesOpen(false);
-    setActiveView(view);
-  }
+  const [
+    workingChatId,
+    setWorkingChatId,
+  ] = useState<
+    number | null
+  >(null);
 
 
-  async function openDocumentSummary(
-    document: Document
-  ) {
-    await openDocumentView(
-      document,
-      "summary"
+  const activeChat =
+    useMemo(
+      () =>
+        chats.find(
+          (chat) =>
+            chat.id ===
+            activeChatId
+        ) ?? null,
+      [
+        chats,
+        activeChatId,
+      ]
     );
-  }
 
 
-  async function openDocumentTranscription(
-    document: Document
-  ) {
-    await openDocumentView(
-      document,
-      "transcription"
-    );
-  }
+  const filteredChats =
+    useMemo(() => {
+      const query =
+        searchQuery
+          .trim()
+          .toLowerCase();
 
+      if (!query) {
+        return chats;
+      }
 
-  async function openDocumentModeView(
-    view: DocumentView
-  ) {
-    const currentSelectedDocument =
-      selectedDocument
-        ? chat?.documents.find(
-            (document) =>
-              document.id
-              === selectedDocument.id
+      return chats.filter(
+        (chat) =>
+          (
+            chat.title
+            || "New chat"
           )
-        : null;
-
-
-    if (
-      currentSelectedDocument
-      && summaryToken
-    ) {
-      setSelectedDocument(
-        currentSelectedDocument
-      );
-
-      setFilesOpen(
-        false
-      );
-
-      setActiveView(
-        view
-      );
-
-      return;
-    }
-
-
-    const firstDocument =
-      chat?.documents.find(
-        (document) =>
-          document.processing_status
-          === "ready"
-      )
-      ?? chat?.documents[0];
-
-
-    if (!firstDocument) {
-      setActiveView(
-        view
-      );
-
-      setFilesOpen(
-        false
-      );
-
-      return;
-    }
-
-
-    await openDocumentView(
-      firstDocument,
-      view
-    );
-  }
-
-
-  async function openSummaryView() {
-    await openDocumentModeView(
-      "summary"
-    );
-  }
-
-
-  async function openTranscriptionView() {
-    await openDocumentModeView(
-      "transcription"
-    );
-  }
-
-
-  function openChatView() {
-    setActiveView(
-      "chat"
-    );
-  }
-
-
-  useEffect(() => {
-    if (
-      activeView === "chat"
-      || selectedDocument
-      || !chat
-      || chat.documents.length === 0
-    ) {
-      return;
-    }
-
-    const document =
-      chat.documents.find(
-        (item) =>
-          item.processing_status
-          === "ready"
-      )
-      ?? chat.documents[0];
-
-    const token =
-      getToken();
-
-    if (!token) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setSelectedDocument(document);
-      setSummaryToken(token);
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    activeView,
-    selectedDocument,
-    chat,
-    getToken,
-  ]);
-
-
-  const {
-    question,
-    setQuestion,
-
-    sending,
-
-    composerError,
-    setComposerError,
-
-    allowGeneralKnowledge,
-    setAllowGeneralKnowledge,
-
-    sendQuestion,
-    sendQuestionText,
-  } = useChatStream({
-    chatId:
-      chatId ?? 0,
-
-    chat,
-
-    messages,
-
-    setMessages,
-
-    refreshMessages,
-
-    getToken,
-
-    createPersistedChat,
-
-    attachDocumentToChat,
-
-    attachment,
-
-    clearComposerAttachment,
-
-    onSummaryGenerated:
-      async ({
-        documentId,
-      }) => {
-        const document =
-          chat?.documents.find(
-            (
-              item
-            ) =>
-              item.id
-              === documentId
-          );
-
-        if (!document) {
-          return;
-        }
-
-        await openDocumentSummary(
-          document
-        );
-      },
-
-    onChatTitleGenerated:
-      ({
-        title,
-      }) => {
-        const nextTitle =
-          title.trim();
-
-        if (!nextTitle) {
-          return;
-        }
-
-        setChat(
-          (current) =>
-            current
-            && current.id === chatId
-              ? {
-                  ...current,
-                  title: nextTitle,
-                }
-              : current
-        );
-
-        setChats(
-          (current) =>
-            current.map(
-              (item) =>
-                item.id === chatId
-                  ? {
-                      ...item,
-                      title: nextTitle,
-                    }
-                  : item
+            .toLowerCase()
+            .includes(
+              query
             )
-        );
-      },
-  });
-
-
-  useEffect(() => {
-    if (
-      chatLoading
-      || activeView
-      !== "chat"
-    ) {
-      return;
-    }
-
-    messagesEndRef
-      .current
-      ?.scrollIntoView({
-        behavior:
-          "smooth",
-      });
-
-  }, [
-    messages,
-    chatLoading,
-    activeView,
-  ]);
-
-
-  useEffect(() => {
-    if (
-      activeView !== "chat"
-    ) {
-      setShowScrollToBottom(
-        false
       );
+    }, [
+      chats,
+      searchQuery,
+    ]);
 
-      return;
-    }
 
-    const container =
-      messagesContainerRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    const updateScrollButton = () => {
-      const hasScrollableContent =
-        container.scrollHeight
-        > container.clientHeight + 8;
-
-      const distanceFromBottom =
-        container.scrollHeight
-        - container.scrollTop
-        - container.clientHeight;
-
-      const nearBottom =
-        distanceFromBottom <= 24;
-
-      setShowScrollToBottom(
-        hasScrollableContent
-        && !nearBottom
-      );
-    };
-
-    updateScrollButton();
-
-    container.addEventListener(
-      "scroll",
-      updateScrollButton,
-      { passive: true }
+  const pinnedChats =
+    useMemo(
+      () =>
+        filteredChats.filter(
+          (chat) =>
+            chat.is_pinned
+            && !chat.is_archived
+        ),
+      [
+        filteredChats,
+      ]
     );
 
-    return () => {
-      container.removeEventListener(
-        "scroll",
-        updateScrollButton
-      );
-    };
-  }, [
-    chatLoading,
-    activeView,
-    chatId,
-  ]);
 
-
-  useEffect(() => {
-    if (
-      activeView !== "chat"
-    ) {
-      return;
-    }
-
-    const frameId =
-      window.requestAnimationFrame(
-        () => {
-          const container =
-            messagesContainerRef.current;
-
-          if (!container) {
-            return;
-          }
-
-          const hasScrollableContent =
-            container.scrollHeight
-            > container.clientHeight + 8;
-
-          const distanceFromBottom =
-            container.scrollHeight
-            - container.scrollTop
-            - container.clientHeight;
-
-          const nearBottom =
-            distanceFromBottom <= 24;
-
-          setShowScrollToBottom(
-            hasScrollableContent
-            && !nearBottom
-          );
-        }
-      );
-
-    return () => {
-      window.cancelAnimationFrame(
-        frameId
-      );
-    };
-  }, [
-    messages,
-    chatLoading,
-    activeView,
-    chatId,
-  ]);
-
-
-  function scrollToBottom() {
-    const container =
-      messagesContainerRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    setShowScrollToBottom(
-      false
+  const recentChats =
+    useMemo(
+      () =>
+        filteredChats.filter(
+          (chat) =>
+            !chat.is_pinned
+            && !chat.is_archived
+        ),
+      [
+        filteredChats,
+      ]
     );
 
-    container.scrollTo({
-      top:
-        container.scrollHeight,
-      behavior:
-        "smooth",
-    });
-  }
+
+  const archivedChats =
+    filteredChats.filter(
+      (chat) =>
+        chat.is_archived
+    );
 
 
   useEffect(() => {
-    if (
-      rawChatId !== undefined
-      && chatId === null
-    ) {
-      router.replace(
-        "/chat"
-      );
+    if (activeChat?.is_archived || archivedChats.length > 0) {
+      const timeoutId = window.setTimeout(() => {
+        setArchiveOpen(true);
+      }, 0);
+
+      return () => window.clearTimeout(timeoutId);
     }
-
   }, [
-    rawChatId,
-    chatId,
-    router,
+    activeChat,
+    archivedChats.length,
   ]);
 
 
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setActiveView("chat");
-      setSelectedDocument(null);
-      setSummaryToken(null);
-      setFilesOpen(false);
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-
-  }, [
-    chatId,
-  ]);
-
-
-  if (
-    chatId === null
-    && !draft
+  function startRename(
+    chat: ChatListItem
   ) {
-    return (
-      <main
-        className="
-          flex
-          min-h-screen
-          items-center
-          justify-center
-          bg-[var(--background)]
-          text-[var(--foreground)]
-          transition-colors
-          duration-200
-        "
-      >
-        <div
-          className="
-            flex
-            items-center
-            gap-2
-            text-sm
-            text-[var(--text-secondary)]
-          "
-        >
-          <Loader2
-            size={17}
-            className="
-              animate-spin
-            "
-          />
-
-          Opening chat...
-        </div>
-      </main>
+    setEditingChatId(
+      chat.id
     );
-  }
 
-
-  if (
-    loading
-    && !user
-  ) {
-    return (
-      <main
-        className="
-          flex
-          min-h-screen
-          items-center
-          justify-center
-          bg-[var(--background)]
-          text-[var(--foreground)]
-          transition-colors
-          duration-200
-        "
-      >
-        <div
-          className="
-            flex
-            items-center
-            gap-2
-            text-sm
-            text-[var(--text-secondary)]
-          "
-        >
-          <Loader2
-            size={17}
-            className="
-              animate-spin
-              text-[var(--primary)]
-            "
-          />
-
-          Loading...
-        </div>
-      </main>
-    );
-  }
-
-
-  const documentsProcessing =
-    chat?.documents.some(
-      (
-        document
-      ) =>
-        document.processing_status
-        === "processing"
-    ) ?? false;
-
-
-  function renameCurrentChat() {
-    if (
-      !chat
-      || chatId === null
-    ) {
-      return;
-    }
-
-
-    const currentTitle =
+    setEditingTitle(
       chat.title
-      || "New chat";
+      || "New chat"
+    );
 
-
-    const nextTitle =
-      window.prompt(
-        "Rename chat",
-        currentTitle
-      );
-
-
-    if (!nextTitle) {
-      return;
-    }
-
-
-    handleRenameChat(
-      chatId,
-      nextTitle
+    setOpenMenuId(
+      null
     );
   }
 
 
-  async function deleteCurrentChat() {
-    if (
-      chatId === null
-    ) {
+  async function saveRename(
+    chatId: number
+  ) {
+    const title =
+      editingTitle.trim();
+
+    if (!title) {
       return;
     }
-
-
-    const confirmed =
-      window.confirm(
-        "Delete this chat?"
-      );
-
-
-    if (!confirmed) {
-      return;
-    }
-
-    setChatDeleteError(null);
 
     try {
-      await handleDeleteChat(chatId);
-    } catch (error) {
-      setChatDeleteError(
-        error instanceof Error
-          ? error.message
-          : "Could not delete chat. Please try again."
+      setWorkingChatId(
+        chatId
+      );
+
+      await onRenameChat(
+        chatId,
+        title
+      );
+
+      setEditingChatId(
+        null
+      );
+
+      setEditingTitle("");
+
+    } finally {
+      setWorkingChatId(
+        null
       );
     }
   }
 
 
-  return (
-    <main
-      className="
-        flex
-        h-screen
-        overflow-hidden
-        bg-[var(--background)]
-        text-[var(--foreground)]
-        transition-colors
-        duration-200
-      "
-    >
-      <ChatSidebar
+  function cancelRename() {
+    setEditingChatId(
+      null
+    );
+
+    setEditingTitle("");
+  }
+
+
+  async function handlePin(
+    chatId: number
+  ) {
+    try {
+      setWorkingChatId(
+        chatId
+      );
+
+      setOpenMenuId(
+        null
+      );
+
+      await onPinChat(
+        chatId
+      );
+
+    } finally {
+      setWorkingChatId(
+        null
+      );
+    }
+  }
+
+
+  async function handleArchive(
+    chatId: number
+  ) {
+    try {
+      setWorkingChatId(
+        chatId
+      );
+
+      setOpenMenuId(
+        null
+      );
+
+      await onArchiveChat(
+        chatId
+      );
+
+    } finally {
+      setWorkingChatId(
+        null
+      );
+    }
+  }
+
+
+  async function handleDelete(
+    chatId: number
+  ) {
+    if (
+      deletingChatId !==
+      chatId
+    ) {
+      setDeletingChatId(
+        chatId
+      );
+
+      setOpenMenuId(
+        null
+      );
+
+      return;
+    }
+
+    try {
+      setWorkingChatId(
+        chatId
+      );
+
+      await onDeleteChat(
+        chatId
+      );
+
+      setDeletingChatId(
+        null
+      );
+
+    } finally {
+      setWorkingChatId(
+        null
+      );
+    }
+  }
+
+
+  if (
+    collapsed
+    && !mobile
+  ) {
+    return (
+      <CollapsedSidebar
         user={
           user
-        }
-
-        chats={
-          chats
-        }
-
-        activeChatId={
-          chatId ?? 0
         }
 
         creatingChat={
           creatingChat
         }
 
-        onCreateChat={
-          handleCreateChat
+        onOpenSidebar={() =>
+          setCollapsed(
+            false
+          )
         }
 
-        onOpenChat={(
-          id
-        ) => {
-          if (
-            id === chatId
-          ) {
-            return;
-          }
+        onCreateChat={() => {
+          onCreateChat();
 
-          router.push(
-            `/chat/${id}`
-          );
+          if (mobile) {
+            onMobileClose?.();
+          }
         }}
 
-        onRenameChat={
-          handleRenameChat
-        }
-
-        onPinChat={
-          handlePinChat
-        }
-
-        onArchiveChat={
-          handleArchiveChat
-        }
-
-        onDeleteChat={
-          handleDeleteChat
-        }
-
         onLogout={
-          logout
+          onLogout
+        }
+      />
+    );
+  }
+
+
+  return (
+    <aside
+      className={`
+        flex
+        shrink-0
+        flex-col
+        border-r
+        border-[var(--border)]
+        bg-[var(--sidebar)]
+
+        ${
+          mobile
+            ? "h-full w-[min(86vw,320px)] max-w-[320px]"
+            : "h-screen w-[250px]"
+        }
+      `}
+    >
+      <SidebarHeader
+        searchOpen={
+          searchOpen
+        }
+
+        onToggleSearch={() =>
+          setSearchOpen(
+            (
+              current
+            ) => !current
+          )
+        }
+
+        onCollapse={() =>
+          setCollapsed(
+            true
+          )
         }
       />
 
-      {chatDeleteError && (
-        <div
-          role="alert"
-          className="absolute left-1/2 top-4 z-50 -translate-x-1/2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-600 shadow-lg"
-        >
-          {chatDeleteError}
-        </div>
-      )}
+
+      <SidebarSearch
+        open={
+          searchOpen
+        }
+
+        value={
+          searchQuery
+        }
+
+        onChange={
+          setSearchQuery
+        }
+
+        onClose={() => {
+          setSearchOpen(
+            false
+          );
+
+          setSearchQuery("");
+        }}
+      />
 
 
-      <section
+      <SidebarNavigation
+        creatingChat={
+          creatingChat
+        }
+
+        archivedChats={
+          archivedChats
+        }
+
+        activeChatId={
+          activeChatId
+        }
+
+        archiveOpen={
+          archiveOpen
+        }
+
+        onCreateChat={
+          onCreateChat
+        }
+
+        onToggleArchive={() =>
+          setArchiveOpen(
+            (
+              current
+            ) => !current
+          )
+        }
+
+        onOpenChat={(chatId) => {
+          onOpenChat(chatId);
+
+          if (mobile) {
+            onMobileClose?.();
+          }
+        }}
+
+        archivedContent={
+          <SidebarSection
+            title="Archived"
+            hideHeader
+            chats={archivedChats}
+            activeChatId={activeChatId}
+            open={true}
+            onToggle={() => setArchiveOpen(false)}
+            openMenuId={openMenuId}
+            setOpenMenuId={setOpenMenuId}
+            editingChatId={editingChatId}
+            editingTitle={editingTitle}
+            setEditingTitle={setEditingTitle}
+            deletingChatId={deletingChatId}
+            workingChatId={workingChatId}
+            emptyText="No archived chats"
+            onOpenChat={(chatId) => {
+              onOpenChat(chatId);
+
+              if (mobile) {
+                onMobileClose?.();
+              }
+            }}
+            onStartRename={startRename}
+            onSaveRename={saveRename}
+            onCancelRename={cancelRename}
+            onPin={handlePin}
+            onArchive={handleArchive}
+            onDelete={handleDelete}
+          />
+        }
+      />
+
+
+      <div
         className="
-          relative
-          flex
-          min-w-0
+          min-h-0
           flex-1
-          bg-[var(--background)]
-          transition-colors
-          duration-200
+          flex
+          flex-col
+          overflow-y-auto
+          px-2
+          pb-3
         "
       >
-        <div
-          className="
-            flex
-            min-w-0
-            flex-1
-            flex-col
-          "
-        >
-          <header
-            className="
-              relative
-              flex
-              min-h-14
-              shrink-0
-              items-center
-              px-4
-              sm:px-6
-            "
-          >
-            <nav
-              aria-label="Chat workspace views"
-              className="
-                absolute
-                left-1/2
-                top-0
-                flex
-                h-full
-                -translate-x-1/2
-                items-stretch
-                gap-7
-              "
-            >
-              <button
-                type="button"
-                onClick={
-                  openChatView
-                }
-                className={`
-                  relative
-                  flex
-                  h-full
-                  items-center
-                  px-0.5
-                  text-sm
-                  transition-colors
-                  duration-150
-
-                  ${
-                    activeView === "chat"
-                      ? "font-semibold text-[var(--text-primary)]"
-                      : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                  }
-                `}
-              >
-                Chat
-
-                {activeView === "chat" && (
-                  <span
-                    className="
-                      absolute
-                      bottom-0
-                      left-0
-                      right-0
-                      h-0.5
-                      rounded-full
-                      bg-[var(--text-primary)]
-                    "
-                  />
-                )}
-              </button>
-
-
-              <button
-                type="button"
-                onClick={() => {
-                  void openSummaryView();
-                }}
-                className={`
-                  relative
-                  flex
-                  h-full
-                  items-center
-                  px-0.5
-                  text-sm
-                  transition-colors
-                  duration-150
-
-                  ${
-                    activeView === "summary"
-                      ? "font-semibold text-[var(--text-primary)]"
-                      : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                  }
-                `}
-              >
-                Summary
-
-                {activeView === "summary" && (
-                  <span
-                    className="
-                      absolute
-                      bottom-0
-                      left-0
-                      right-0
-                      h-0.5
-                      rounded-full
-                      bg-[var(--text-primary)]
-                    "
-                  />
-                )}
-              </button>
-
-
-              <button
-                type="button"
-                onClick={() => {
-                  void openTranscriptionView();
-                }}
-                className={`
-                  relative
-                  flex
-                  h-full
-                  items-center
-                  px-0.5
-                  text-sm
-                  transition-colors
-                  duration-150
-
-                  ${
-                    activeView === "transcription"
-                      ? "font-semibold text-[var(--text-primary)]"
-                      : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                  }
-                `}
-              >
-                Transcription
-
-                {activeView === "transcription" && (
-                  <span
-                    className="
-                      absolute
-                      bottom-0
-                      left-0
-                      right-0
-                      h-0.5
-                      rounded-full
-                      bg-[var(--text-primary)]
-                    "
-                  />
-                )}
-              </button>
-            </nav>
-
-
-            <div
-              className="
-                ml-auto
-              "
-            >
-              {workspaceChat && (
-                <ChatHeaderActions
-                  filesOpen={
-                    filesOpen
-                  }
-
-                  onToggleFiles={() => {
-                    setFilesOpen(
-                      (
-                        current
-                      ) => !current
-                    );
-                  }}
-
-                  onRename={
-                    renameCurrentChat
-                  }
-
-                  onDelete={
-                    deleteCurrentChat
-                  }
-                />
-              )}
-            </div>
-          </header>
-
-
-          {activeView === "chat" ? (
-            <>
-              <section
-                ref={messagesContainerRef}
-                className="
-                  relative
-                  min-h-0
-                  flex-1
-                  overflow-y-auto
-                "
-              >
-                {chatLoading ? (
-                  <div
-                    className="
-                      flex
-                      h-full
-                      items-center
-                      justify-center
-                    "
-                  >
-                    <div
-                      className="
-                        flex
-                        items-center
-                        gap-2
-                        rounded-full
-                        bg-[var(--surface)]
-                        px-4
-                        py-2
-                        text-xs
-                        text-[var(--text-muted)]
-                        transition-colors
-                        duration-200
-                      "
-                    >
-                      <Loader2
-                        size={14}
-                        className="
-                          animate-spin
-                          text-[var(--primary)]
-                        "
-                      />
-
-                      Loading messages...
-                    </div>
-                  </div>
-
-                ) : !workspaceChat ? (
-                  <div
-                    className="
-                      flex
-                      h-full
-                      items-center
-                      justify-center
-                      px-6
-                      text-center
-                    "
-                  >
-                    <div>
-                      <div
-                        className="
-                          mx-auto
-                          mb-3
-                          flex
-                          h-10
-                          w-10
-                          items-center
-                          justify-center
-                          rounded-xl
-                          bg-red-500/10
-                          text-red-500
-                        "
-                      >
-                        <Sparkles
-                          size={17}
-                        />
-                      </div>
-
-
-                      <p
-                        className="
-                          text-sm
-                          font-medium
-                          text-[var(--text-primary)]
-                        "
-                      >
-                        Could not load this chat
-                      </p>
-
-
-                      <p
-                        className="
-                          mt-1
-                          text-xs
-                          text-[var(--text-muted)]
-                        "
-                      >
-                        Try opening another chat.
-                      </p>
-                    </div>
-                  </div>
-
-                ) : (
-                  <div
-                    className="
-                      mx-auto
-                      flex
-                      min-h-full
-                      w-full
-                      max-w-3xl
-                      flex-col
-                      px-5
-                      py-6
-                      sm:px-6
-                    "
-                  >
-                    {messages.length ===
-                    0 ? (
-                      <div
-                        className="
-                          flex
-                          flex-1
-                          flex-col
-                          items-center
-                          justify-center
-                          pb-6
-                          text-center
-                        "
-                      >
-                        <h2
-                          className="
-                            text-2xl
-                            font-semibold
-                            tracking-tight
-                            text-[var(--text-primary)]
-                          "
-                        >
-                          What&apos;s on your mind today?
-                        </h2>
-
-
-                        <p
-                          className="
-                            mt-2
-                            max-w-sm
-                            text-sm
-                            leading-6
-                            text-[var(--text-secondary)]
-                          "
-                        >
-                          Ask anything or attach files
-                          to work with your documents.
-                        </p>
-                      </div>
-
-                    ) : (
-                      <div
-                        className="
-                          space-y-8
-                          pb-8
-                        "
-                      >
-                        {messages.map(
-                          (
-                            message
-                          ) => (
-                            <ChatMessage
-                              key={
-                                message.id
-                              }
-
-                              message={
-                                message
-                              }
-                            />
-                          )
-                        )}
-
-
-                        <div
-                          ref={
-                            messagesEndRef
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-              </section>
-
-
-              {showScrollToBottom && (
-                <button
-                  type="button"
-                  onClick={scrollToBottom}
-                  title="Scroll to latest message"
-                  aria-label="Scroll to latest message"
-                  className="absolute bottom-24 left-1/2 z-20 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-lg transition hover:bg-[var(--surface-hover)]"
-                >
-                  <ArrowDown size={18} />
-                </button>
-              )}
-
-
-              {workspaceChat && (
-                <ChatComposer
-                  question={
-                    question
-                  }
-
-                  sending={
-                    sending
-                  }
-
-                  uploading={
-                    uploading
-                  }
-
-                  attachment={
-                    attachment
-                  }
-
-                  documentsProcessing={
-                    documentsProcessing
-                  }
-
-                  allowGeneralKnowledge={
-                    allowGeneralKnowledge
-                  }
-
-                  composerError={
-                    composerError
-                  }
-
-                  fileInputRef={
-                    fileInputRef
-                  }
-
-                  onQuestionChange={
-                    setQuestion
-                  }
-
-                  onSetGeneralKnowledge={
-                    setAllowGeneralKnowledge
-                  }
-
-                  onUpload={
-                    handleUpload
-                  }
-
-                  onRemoveAttachment={
-                    handleRemoveAttachment
-                  }
-
-                  onSubmit={
-                    sendQuestion
-                  }
-                />
-              )}
-            </>
-
-          ) : (
-            <>
-              {selectedDocument
-              && summaryToken
-              && chat ? (
-                <DocumentSummaryPanel
-                  key={
-                    `${selectedDocument.id}-${activeView}`
-                  }
-
-                  open={
-                    true
-                  }
-
-                  chatId={
-                    chatId
-                  }
-
-                  documentId={
-                    selectedDocument.id
-                  }
-
-                  filename={
-                    selectedDocument.filename
-                  }
-
-                  pagesCount={
-                    selectedDocument.pages_count
-                  }
-
-                  token={
-                    summaryToken
-                  }
-
-                  mode={
-                    activeView
-                    === "transcription"
-                      ? "transcription"
-                      : "summary"
-                  }
-
-                  uploading={
-                    uploading
-                  }
-
-                  fileInputRef={
-                    fileInputRef
-                  }
-
-                  onUpload={
-                    handleUpload
-                  }
-
-                  documents={
-                    chat.documents
-                  }
-
-                  onSelectDocument={(
-                    document
-                  ) => {
-                    const nextDocument =
-                      chat.documents.find(
-                        (item) =>
-                          item.id
-                          === document.id
-                      );
-
-                    if (!nextDocument) {
-                      return;
-                    }
-
-                    void openDocumentView(
-                      nextDocument,
-                      activeView
-                      === "transcription"
-                        ? "transcription"
-                        : "summary"
-                    );
-                  }}
-                />
-
-              ) : (
-                <section
-                  className="
-                    flex
-                    min-h-0
-                    flex-1
-                    items-center
-                    justify-center
-                    px-6
-                  "
-                >
-                  <div
-                    className="
-                      w-full
-                      max-w-2xl
-                    "
-                  >
-                    <p
-                      className="
-                        text-xs
-                        font-medium
-                        uppercase
-                        tracking-[0.18em]
-                        text-[var(--text-muted)]
-                      "
-                    >
-                      {
-                        activeView
-                        === "transcription"
-                          ? "Transcription"
-                          : "Summary"
-                      }
-                    </p>
-
-
-                    <h2
-                      className="
-                        mt-3
-                        text-2xl
-                        font-semibold
-                        leading-tight
-                        text-[var(--text-primary)]
-                        sm:text-3xl
-                      "
-                    >
-                      {
-                        activeView
-                        === "transcription"
-                          ? "Read your document in detail"
-                          : "Understand your document faster"
-                      }
-                    </h2>
-
-
-                    <p
-                      className="
-                        mt-4
-                        max-w-xl
-                        text-[15px]
-                        leading-7
-                        text-[var(--text-secondary)]
-                      "
-                    >
-                      {
-                        activeView
-                        === "transcription"
-                          ? (
-                            "Transcription works through the document page by page and keeps the important detail, including tables, charts, images, equations, and technical content."
-                          )
-                          : (
-                            "Summary condenses the document into its main ideas, key points, conclusions, and the most important takeaway from each section."
-                          )
-                      }
-                    </p>
-
-
-                    {workspaceChat
-                    && workspaceChat.documents.length === 0 ? (
-                      <div
-                        className="
-                          mt-7
-                        "
-                      >
-                        <input
-                          ref={
-                            fileInputRef
-                          }
-                          type="file"
-                          accept=".pdf,.docx,.xlsx,.txt"
-                          onChange={
-                            handleUpload
-                          }
-                          className="hidden"
-                        />
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            fileInputRef
-                              .current
-                              ?.click()
-                          }
-                          disabled={
-                            uploading
-                            || Boolean(
-                              attachment
-                            )
-                          }
-                          className="
-                            inline-flex
-                            min-h-10
-                            items-center
-                            justify-center
-                            rounded-xl
-                            bg-[var(--primary)]
-                            px-5
-                            py-2.5
-                            text-sm
-                            font-medium
-                            text-white
-                            transition
-                            hover:opacity-90
-                            disabled:cursor-not-allowed
-                            disabled:opacity-50
-                          "
-                        >
-                          {
-                            uploading
-                              ? "Uploading..."
-                              : attachment
-                                ? "Processing file..."
-                                : "Upload a file"
-                          }
-                        </button>
-
-                        <p
-                          className="
-                            mt-3
-                            text-xs
-                            leading-5
-                            text-[var(--text-muted)]
-                          "
-                        >
-                          PDF, DOCX, XLSX, or TXT
-                        </p>
-                      </div>
-
-                    ) : workspaceChat
-                    && workspaceChat.documents.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilesOpen(
-                            true
-                          );
-                        }}
-                        className="
-                          mt-7
-                          rounded-xl
-                          bg-[var(--primary)]
-                          px-5
-                          py-2.5
-                          text-sm
-                          font-medium
-                          text-white
-                          transition
-                          hover:opacity-90
-                        "
-                      >
-                        Choose document
-                      </button>
-
-                    ) : null}
-                  </div>
-                </section>
-              )}
-            </>
-          )}
-        </div>
-
-
-        {chat && (
-          <UploadedDocsPanel
-            open={
-              filesOpen
+        <SidebarSection
+          title="Pinned"
+
+          chats={
+            pinnedChats
+          }
+
+          activeChatId={
+            activeChatId
+          }
+
+          open={
+            pinnedOpen
+          }
+
+          onToggle={() =>
+            setPinnedOpen(
+              (
+                current
+              ) => !current
+            )
+          }
+
+          openMenuId={
+            openMenuId
+          }
+
+          setOpenMenuId={
+            setOpenMenuId
+          }
+
+          editingChatId={
+            editingChatId
+          }
+
+          editingTitle={
+            editingTitle
+          }
+
+          setEditingTitle={
+            setEditingTitle
+          }
+
+          deletingChatId={
+            deletingChatId
+          }
+
+          workingChatId={
+            workingChatId
+          }
+
+          emptyText="No pinned chats"
+
+          onOpenChat={(chatId) => {
+            onOpenChat(chatId);
+
+            if (mobile) {
+              onMobileClose?.();
             }
+          }}
 
-            documents={
-              chat.documents
-            }
+          onStartRename={
+            startRename
+          }
 
-            onClose={() =>
-              setFilesOpen(
-                false
-              )
-            }
+          onSaveRename={
+            saveRename
+          }
 
-            onRemove={
-              handleRemoveDocument
-            }
+          onCancelRename={
+            cancelRename
+          }
 
-            onOpenSummary={
-              openDocumentSummary
+          onPin={
+            handlePin
+          }
+
+          onArchive={
+            handleArchive
+          }
+
+          onDelete={
+            handleDelete
+          }
+        />
+
+
+        <SidebarSection
+          title="Recent"
+
+          chats={
+            recentChats
+          }
+
+          activeChatId={
+            activeChatId
+          }
+
+          open={
+            recentOpen
+          }
+
+          onToggle={() =>
+            setRecentOpen(
+              (
+                current
+              ) => !current
+            )
+          }
+
+          openMenuId={
+            openMenuId
+          }
+
+          setOpenMenuId={
+            setOpenMenuId
+          }
+
+          editingChatId={
+            editingChatId
+          }
+
+          editingTitle={
+            editingTitle
+          }
+
+          setEditingTitle={
+            setEditingTitle
+          }
+
+          deletingChatId={
+            deletingChatId
+          }
+
+          workingChatId={
+            workingChatId
+          }
+
+          emptyText="No recent chats"
+
+          onOpenChat={(chatId) => {
+            onOpenChat(chatId);
+
+            if (mobile) {
+              onMobileClose?.();
             }
-          />
-        )}
-      </section>
-    </main>
+          }}
+
+          onStartRename={
+            startRename
+          }
+
+          onSaveRename={
+            saveRename
+          }
+
+          onCancelRename={
+            cancelRename
+          }
+
+          onPin={
+            handlePin
+          }
+
+          onArchive={
+            handleArchive
+          }
+
+          onDelete={
+            handleDelete
+          }
+        />
+
+
+      </div>
+
+
+      <SidebarUser
+        user={
+          user
+        }
+
+        onLogout={
+          onLogout
+        }
+      />
+    </aside>
   );
 }
