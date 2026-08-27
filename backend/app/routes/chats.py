@@ -14,6 +14,7 @@ from fastapi import (
 
 from fastapi.responses import (
     FileResponse,
+    RedirectResponse,
     StreamingResponse,
 )
 
@@ -32,6 +33,11 @@ from app.database.models import (
     Message,
     User,
 )
+
+from app.database.document_asset_models import (
+    DocumentAsset,
+)
+
 
 from app.schemas.schemas import (
     ChatCreate,
@@ -2036,51 +2042,186 @@ def get_document_asset(
             ),
         )
 
-    image_chunks = (
+    assets = (
         db.query(
-            DocumentChunk
+            DocumentAsset
         )
         .filter(
-            DocumentChunk.document_id
+            DocumentAsset.document_id
             == document.id,
-            DocumentChunk.content_type
+            DocumentAsset.asset_type
             == "image",
+        )
+        .order_by(
+            DocumentAsset.id.asc()
         )
         .all()
     )
 
-    asset_path = None
+    matched_asset = None
 
-    for chunk in image_chunks:
+    for asset in assets:
         metadata = (
-            chunk.chunk_metadata
+            asset.asset_metadata
             or {}
         )
 
-        chunk_asset_filename = (
+        stored_filename = (
             metadata.get(
                 "asset_filename"
             )
         )
 
         if (
-            chunk_asset_filename
+            stored_filename
             == safe_filename
         ):
+            matched_asset = asset
+            break
+
+        if asset.file_path:
+            file_path_text = str(
+                asset.file_path
+            ).strip()
+
+            if file_path_text:
+                path_filename = (
+                    file_path_text
+                    .replace("\\", "/")
+                    .rstrip("/")
+                    .split("/")[-1]
+                )
+
+                # Cloudinary URLs may contain a versioned/public-id
+                # filename that differs from the original extracted name,
+                # so filename matching here is only a backwards-compatible
+                # fallback.
+                if (
+                    path_filename
+                    == safe_filename
+                ):
+                    matched_asset = asset
+                    break
+
+    # Backwards-compatible fallback:
+    # older processed documents may only have the image path
+    # stored on their image chunk metadata.
+    if matched_asset is None:
+        image_chunks = (
+            db.query(
+                DocumentChunk
+            )
+            .filter(
+                DocumentChunk.document_id
+                == document.id,
+                DocumentChunk.content_type
+                == "image",
+            )
+            .order_by(
+                DocumentChunk.id.asc()
+            )
+            .all()
+        )
+
+        for chunk in image_chunks:
+            metadata = (
+                chunk.chunk_metadata
+                or {}
+            )
+
+            chunk_asset_filename = (
+                metadata.get(
+                    "asset_filename"
+                )
+            )
+
+            if (
+                chunk_asset_filename
+                != safe_filename
+            ):
+                continue
+
             asset_path = (
                 metadata.get(
                     "asset_path"
                 )
             )
 
-            break
+            if not asset_path:
+                continue
 
-    if not asset_path:
+            asset_path = str(
+                asset_path
+            ).strip()
+
+            if asset_path.startswith(
+                (
+                    "https://",
+                    "http://",
+                )
+            ):
+                return RedirectResponse(
+                    url=asset_path,
+                    status_code=307,
+                )
+
+            path = Path(
+                asset_path
+            ).resolve()
+
+            if (
+                path.exists()
+                and path.is_file()
+            ):
+                return FileResponse(
+                    path=path
+                )
+
+    if matched_asset is None:
         raise HTTPException(
             status_code=404,
             detail=(
                 "Image asset not found"
             ),
+        )
+
+    asset_path = (
+        matched_asset.file_path
+    )
+
+    if not asset_path:
+        metadata = (
+            matched_asset.asset_metadata
+            or {}
+        )
+
+        asset_path = (
+            metadata.get(
+                "asset_path"
+            )
+        )
+
+    if not asset_path:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Image path not found"
+            ),
+        )
+
+    asset_path = str(
+        asset_path
+    ).strip()
+
+    if asset_path.startswith(
+        (
+            "https://",
+            "http://",
+        )
+    ):
+        return RedirectResponse(
+            url=asset_path,
+            status_code=307,
         )
 
     path = Path(
@@ -2099,5 +2240,5 @@ def get_document_asset(
         )
 
     return FileResponse(
-        path=path,
+        path=path
     )
