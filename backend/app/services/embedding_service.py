@@ -1,32 +1,62 @@
 import os
 
+import requests
 
-MODEL_NAME = "intfloat/multilingual-e5-small"
 
-EMBEDDING_BATCH_SIZE = int(
-    os.getenv(
-        "EMBEDDING_BATCH_SIZE",
-        "32",
-    )
+VOYAGE_API_KEY = os.getenv(
+    "VOYAGE_API_KEY"
 )
 
+VOYAGE_MODEL = os.getenv(
+    "VOYAGE_MODEL",
+    "voyage-4-lite",
+)
 
-_model = None
+VOYAGE_API_URL = (
+    "https://api.voyageai.com/v1/embeddings"
+)
+
+EMBEDDING_DIMENSION = 512
 
 
-def get_model():
-    global _model
+if not VOYAGE_API_KEY:
+    raise RuntimeError(
+        "VOYAGE_API_KEY is not set"
+    )
 
-    if _model is None:
-        from sentence_transformers import (
-            SentenceTransformer,
-        )
 
-        _model = SentenceTransformer(
-            MODEL_NAME
-        )
+def _create_embeddings(
+    texts: list[str],
+    input_type: str,
+) -> list[list[float]]:
+    response = requests.post(
+        VOYAGE_API_URL,
+        headers={
+            "Authorization": (
+                f"Bearer {VOYAGE_API_KEY}"
+            ),
+            "Content-Type": "application/json",
+        },
+        json={
+            "input": texts,
+            "model": VOYAGE_MODEL,
+            "input_type": input_type,
+            "output_dimension": (
+                EMBEDDING_DIMENSION
+            ),
+            "output_dtype": "float",
+        },
+        timeout=60,
+    )
 
-    return _model
+    response.raise_for_status()
+
+    data = response.json()
+
+    return [
+        item["embedding"]
+        for item in data["data"]
+    ]
 
 
 def create_passage_embedding(
@@ -37,18 +67,12 @@ def create_passage_embedding(
             "Text cannot be empty"
         )
 
-    prepared_text = (
-        f"passage: {text.strip()}"
+    embeddings = _create_embeddings(
+        [text.strip()],
+        input_type="document",
     )
 
-    model = get_model()
-
-    embedding = model.encode(
-        prepared_text,
-        normalize_embeddings=True,
-    )
-
-    return embedding.tolist()
+    return embeddings[0]
 
 
 def create_query_embedding(
@@ -59,18 +83,12 @@ def create_query_embedding(
             "Query cannot be empty"
         )
 
-    prepared_text = (
-        f"query: {text.strip()}"
+    embeddings = _create_embeddings(
+        [text.strip()],
+        input_type="query",
     )
 
-    model = get_model()
-
-    embedding = model.encode(
-        prepared_text,
-        normalize_embeddings=True,
-    )
-
-    return embedding.tolist()
+    return embeddings[0]
 
 
 def create_passage_embeddings(
@@ -79,7 +97,7 @@ def create_passage_embeddings(
     if not texts:
         return []
 
-    prepared_texts = []
+    cleaned_texts = []
 
     for text in texts:
         if not text or not text.strip():
@@ -87,17 +105,11 @@ def create_passage_embeddings(
                 "Passage text cannot be empty"
             )
 
-        prepared_texts.append(
-            f"passage: {text.strip()}"
+        cleaned_texts.append(
+            text.strip()
         )
 
-    model = get_model()
-
-    embeddings = model.encode(
-        prepared_texts,
-        normalize_embeddings=True,
-        batch_size=EMBEDDING_BATCH_SIZE,
-        show_progress_bar=False,
+    return _create_embeddings(
+        cleaned_texts,
+        input_type="document",
     )
-
-    return embeddings.tolist()
