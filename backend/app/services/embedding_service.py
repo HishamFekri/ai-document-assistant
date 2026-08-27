@@ -4,18 +4,36 @@ import os
 
 MODEL_NAME = "intfloat/multilingual-e5-small"
 
-model = SentenceTransformer(MODEL_NAME)
-
 EMBEDDING_BATCH_SIZE = int(
     os.getenv("EMBEDDING_BATCH_SIZE", "32")
 )
 
 
-def create_passage_embedding(text: str) -> list[float]:
-    if not text or not text.strip():
-        raise ValueError("Text cannot be empty")
+_model: SentenceTransformer | None = None
 
-    prepared_text = f"passage: {text.strip()}"
+
+def get_model() -> SentenceTransformer:
+    global _model
+
+    if _model is None:
+        _model = SentenceTransformer(MODEL_NAME)
+
+    return _model
+
+
+def create_passage_embedding(
+    text: str,
+) -> list[float]:
+    if not text or not text.strip():
+        raise ValueError(
+            "Text cannot be empty"
+        )
+
+    prepared_text = (
+        f"passage: {text.strip()}"
+    )
+
+    model = get_model()
 
     embedding = model.encode(
         prepared_text,
@@ -25,11 +43,19 @@ def create_passage_embedding(text: str) -> list[float]:
     return embedding.tolist()
 
 
-def create_query_embedding(text: str) -> list[float]:
+def create_query_embedding(
+    text: str,
+) -> list[float]:
     if not text or not text.strip():
-        raise ValueError("Query cannot be empty")
+        raise ValueError(
+            "Query cannot be empty"
+        )
 
-    prepared_text = f"query: {text.strip()}"
+    prepared_text = (
+        f"query: {text.strip()}"
+    )
+
+    model = get_model()
 
     embedding = model.encode(
         prepared_text,
@@ -56,6 +82,8 @@ def create_passage_embeddings(
         prepared_texts.append(
             f"passage: {text.strip()}"
         )
+
+    model = get_model()
 
     embeddings = model.encode(
         prepared_texts,
