@@ -37,30 +37,49 @@ router = APIRouter(
 )
 
 
-security = HTTPBearer(auto_error=False)
+security = HTTPBearer(
+    auto_error=False
+)
 
-AUTH_COOKIE_NAME = "access_token"
 
-COOKIE_SECURE = os.getenv(
-    "ENVIRONMENT",
-    "development",
-).lower() == "production"
+AUTH_COOKIE_NAME = (
+    "access_token"
+)
 
-COOKIE_SAMESITE = os.getenv(
-    "COOKIE_SAMESITE",
-    "lax",
-).lower()
+
+IS_PRODUCTION = (
+    os.getenv(
+        "ENVIRONMENT",
+        "development",
+    ).lower()
+    == "production"
+)
+
+
+COOKIE_SECURE = (
+    IS_PRODUCTION
+)
+
+
+COOKIE_SAMESITE = (
+    "lax"
+)
 
 
 def get_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(
-        security
+    credentials:
+        HTTPAuthorizationCredentials
+        | None = Depends(
+            security
+        ),
+    access_token_cookie:
+        str | None = Cookie(
+            default=None,
+            alias=AUTH_COOKIE_NAME,
+        ),
+    db: Session = Depends(
+        get_db
     ),
-    access_token_cookie: str | None = Cookie(
-        default=None,
-        alias=AUTH_COOKIE_NAME,
-    ),
-    db: Session = Depends(get_db),
 ) -> User:
     token = (
         credentials.credentials
@@ -71,37 +90,59 @@ def get_current_user(
     if not token:
         raise HTTPException(
             status_code=401,
-            detail="Authentication required",
+            detail=(
+                "Authentication required"
+            ),
         )
 
     try:
-        payload = decode_access_token(
-            token
+        payload = (
+            decode_access_token(
+                token
+            )
         )
 
     except ValueError as error:
         raise HTTPException(
             status_code=401,
-            detail=str(error),
+            detail=str(
+                error
+            ),
         )
 
-    user_id = payload.get("sub")
+    user_id = (
+        payload.get(
+            "sub"
+        )
+    )
 
-    if not isinstance(user_id, str) or not user_id.isdigit():
+    if (
+        not isinstance(
+            user_id,
+            str,
+        )
+        or not user_id.isdigit()
+    ):
         raise HTTPException(
             status_code=401,
-            detail="Invalid access token",
+            detail=(
+                "Invalid access token"
+            ),
         )
 
     user = db.get(
         User,
-        int(user_id),
+        int(
+            user_id
+        ),
     )
 
     if not user:
         raise HTTPException(
             status_code=401,
-            detail="User not found",
+            detail=(
+                "User not found"
+            ),
         )
 
     return user
@@ -113,47 +154,73 @@ def get_current_user(
 def login_with_google(
     data: GoogleAuthRequest,
     response: Response,
-    db: Session = Depends(get_db),
+    db: Session = Depends(
+        get_db
+    ),
 ):
     try:
-        google_user = verify_google_token(
-            data.credential
+        google_user = (
+            verify_google_token(
+                data.credential
+            )
         )
 
-        user = get_or_create_user(
-            db=db,
-            google_user=google_user,
+        user = (
+            get_or_create_user(
+                db=db,
+                google_user=(
+                    google_user
+                ),
+            )
         )
 
-        access_token = create_access_token(
-            user
+        access_token = (
+            create_access_token(
+                user
+            )
         )
 
         response.set_cookie(
             key=AUTH_COOKIE_NAME,
             value=access_token,
             httponly=True,
-            secure=COOKIE_SECURE,
-            samesite=COOKIE_SAMESITE,
-            max_age=60 * 60 * 24 * 7,
+            secure=(
+                COOKIE_SECURE
+            ),
+            samesite=(
+                COOKIE_SAMESITE
+            ),
+            max_age=(
+                60
+                * 60
+                * 24
+                * 7
+            ),
+            path="/",
         )
 
         return {
-            "user": UserResponse.model_validate(
-                user
-            ),
+            "user":
+                UserResponse
+                .model_validate(
+                    user
+                ),
         }
 
     except ValueError as error:
         raise HTTPException(
             status_code=401,
-            detail=str(error),
+            detail=str(
+                error
+            ),
         )
 
 
 @router.get(
     "/me",
-    response_model=UserResponse,
+    response_model=(
+        UserResponse
+    ),
 )
 def get_me(
     current_user: User = Depends(
@@ -163,12 +230,25 @@ def get_me(
     return current_user
 
 
-@router.post("/logout")
-def logout(response: Response):
+@router.post(
+    "/logout"
+)
+def logout(
+    response: Response
+):
     response.delete_cookie(
         key=AUTH_COOKIE_NAME,
         httponly=True,
-        samesite=COOKIE_SAMESITE,
+        secure=(
+            COOKIE_SECURE
+        ),
+        samesite=(
+            COOKIE_SAMESITE
+        ),
+        path="/",
     )
 
-    return {"message": "Logged out successfully"}
+    return {
+        "message":
+            "Logged out successfully"
+    }
