@@ -38,6 +38,18 @@ allowed_origins = [
 ]
 
 
+# TEMPORARY DEBUG
+print(
+    "FRONTEND_URLS RAW:",
+    repr(configured_origins),
+)
+
+print(
+    "ALLOWED ORIGINS:",
+    allowed_origins,
+)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
