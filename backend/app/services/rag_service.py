@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database.models import (
     Chat,
+    DocumentChunk,
     Message,
 )
 
@@ -33,6 +34,13 @@ RAG_MIN_CONFIDENCE_SCORE = float(
     )
 )
 
+RAG_OVERVIEW_MAX_CHUNKS = int(
+    os.getenv(
+        "RAG_OVERVIEW_MAX_CHUNKS",
+        "18",
+    )
+)
+
 
 ARABIC_DIGIT_TRANSLATION = str.maketrans(
     "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
@@ -54,6 +62,21 @@ PAGE_COUNT_PATTERNS = [
     r"\bnumber\s+of\s+pages\b",
     r"\btotal\s+pages\b",
 ]
+
+OVERVIEW_PATTERNS = [
+    r"\bwhat\s+is\s+(?:this|the)\s+(?:file|document)\s+about\b",
+    r"\bwhat\s+does\s+(?:this|the)\s+(?:file|document)\s+(?:discuss|cover)\b",
+    r"\bgive\s+me\s+(?:an?\s+)?overview\b",
+    r"\boverview\s+(?:of|for)\s+(?:this|the)\s+(?:file|document)\b",
+    r"\bwhat\s+are\s+the\s+main\s+(?:topics|ideas|points)\b",
+    r"\bmain\s+(?:topic|idea|theme)\s+(?:of|in)\s+(?:this|the)\s+(?:file|document)\b",
+    r"\bdescribe\s+(?:this|the)\s+(?:file|document)\b",
+    r"(?:عن|شو|ما)\s+(?:شو|ماذا|ايش|إيش)?\s*(?:هذا|هاد|هال)?\s*(?:الملف|المستند|الوثيقة|الوثيقه)",
+    r"(?:الملف|المستند|الوثيقة|الوثيقه)\s+(?:عن|يتحدث|يحكي|يناقش)\s*(?:ماذا|شو|ايش|إيش)?",
+    r"(?:اعطيني|أعطيني|اعطني|أعطني)\s+(?:نظرة|نبذة|فكرة)\s+(?:عامة|عامه)?\s*(?:عن)?\s*(?:الملف|المستند|الوثيقة|الوثيقه)",
+    r"(?:ما|شو|ايش|إيش)\s+(?:هي|هو)?\s*(?:الفكرة|الفكره|الموضوع)\s+(?:الرئيسية|الرئيسيه)?\s*(?:للملف|للمستند|للوثيقة|للوثيقه)",
+]
+
 
 VISUAL_KEYWORDS = {
     "image",
@@ -196,6 +219,205 @@ def is_visual_question(
     return any(
         keyword in lowered
         for keyword in VISUAL_KEYWORDS
+    )
+
+
+def is_document_overview_question(
+    question: str,
+) -> bool:
+    normalized = (
+        normalize_digits(
+            question
+        )
+        .strip()
+        .lower()
+    )
+
+    return any(
+        re.search(
+            pattern,
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        is not None
+        for pattern in OVERVIEW_PATTERNS
+    )
+
+
+def _evenly_sample_chunks(
+    chunks: list[DocumentChunk],
+    limit: int,
+) -> list[DocumentChunk]:
+    if not chunks or limit <= 0:
+        return []
+
+    if len(chunks) <= limit:
+        return chunks
+
+    if limit == 1:
+        return [chunks[0]]
+
+    positions = [
+        round(
+            index
+            * (len(chunks) - 1)
+            / (limit - 1)
+        )
+        for index in range(limit)
+    ]
+
+    selected = []
+    seen_ids = set()
+
+    for position in positions:
+        chunk = chunks[position]
+
+        if chunk.id in seen_ids:
+            continue
+
+        seen_ids.add(chunk.id)
+        selected.append(chunk)
+
+    return selected
+
+
+def get_document_overview_chunks(
+    db: Session,
+    document_ids: list[int],
+    limit: int | None = None,
+):
+    if not document_ids:
+        return []
+
+    if limit is None:
+        limit = RAG_OVERVIEW_MAX_CHUNKS
+
+    limit = max(1, limit)
+
+    chunks = (
+        db.query(DocumentChunk)
+        .filter(
+            DocumentChunk.document_id.in_(
+                document_ids
+            ),
+            DocumentChunk.content.isnot(None),
+            DocumentChunk.content_type.in_(
+                [
+                    "text",
+                    "table",
+                    "equation",
+                ]
+            ),
+        )
+        .order_by(
+            DocumentChunk.document_id,
+            DocumentChunk.id,
+        )
+        .all()
+    )
+
+    if not chunks:
+        return []
+
+    chunks_by_document = {}
+
+    for chunk in chunks:
+        chunks_by_document.setdefault(
+            chunk.document_id,
+            [],
+        ).append(chunk)
+
+    active_document_ids = [
+        document_id
+        for document_id in document_ids
+        if chunks_by_document.get(
+            document_id
+        )
+    ]
+
+    if not active_document_ids:
+        return []
+
+    base_limit = max(
+        1,
+        limit // len(active_document_ids),
+    )
+
+    remainder = max(
+        0,
+        limit
+        - base_limit
+        * len(active_document_ids),
+    )
+
+    sampled_chunks = []
+
+    for index, document_id in enumerate(
+        active_document_ids
+    ):
+        document_limit = (
+            base_limit
+            + (1 if index < remainder else 0)
+        )
+
+        sampled_chunks.extend(
+            _evenly_sample_chunks(
+                chunks_by_document[
+                    document_id
+                ],
+                document_limit,
+            )
+        )
+
+    results = [
+        {
+            "chunk": chunk,
+            "similarity": 1.0,
+            "ranking_score": 1.0,
+            "match_type": "document_overview",
+        }
+        for chunk in sampled_chunks
+    ]
+
+    logger.debug(
+        "RAG document overview chunks=%s documents=%s",
+        len(results),
+        active_document_ids,
+    )
+
+    return results
+
+
+def build_document_overview_guidance(
+    documents,
+) -> str:
+    document_lines = [
+        (
+            f"- {document.filename}"
+            + (
+                f" ({document.pages_count} pages)"
+                if document.pages_count
+                is not None
+                else ""
+            )
+        )
+        for document in documents
+    ]
+
+    return (
+        "DOCUMENT OVERVIEW REQUEST\n"
+        "The user is asking for a high-level overview of the selected "
+        "document scope, not for one narrowly matching passage.\n"
+        "The evidence below is sampled across the document from beginning "
+        "to end so that the answer represents the file as a whole.\n"
+        "Explain the main subject, purpose, major themes or sections, and "
+        "the most important takeaways supported by the evidence.\n"
+        "Do not invent missing sections or details. If the sampled evidence "
+        "is incomplete, describe only what is supported.\n"
+        "If more than one document is selected, describe them separately "
+        "before giving any combined observation.\n"
+        "Selected documents:\n"
+        + "\n".join(document_lines)
     )
 
 
@@ -1133,6 +1355,106 @@ def prepare_answer_context(
             question
         )
     )
+
+    overview_question = (
+        is_document_overview_question(
+            question
+        )
+    )
+
+    if overview_question and page_number is None:
+        logger.debug(
+            "RAG retrieval mode=document_overview"
+        )
+
+        overview_results = (
+            get_document_overview_chunks(
+                db=db,
+                document_ids=(
+                    target_document_ids
+                ),
+            )
+        )
+
+        if not overview_results:
+            if allow_general_knowledge:
+                return {
+                    "immediate_answer": None,
+                    "context": "",
+                    "conversation_history": (
+                        conversation_history
+                    ),
+                    "candidate_sources": [],
+                    "mode": "files_and_general",
+                    "retrieval_mode": (
+                        "general_fallback_overview"
+                    ),
+                    "target_document_ids": (
+                        target_document_ids
+                    ),
+                }
+
+            return {
+                "immediate_answer": (
+                    build_no_answer(
+                        question
+                    )
+                ),
+                "context": "",
+                "conversation_history": (
+                    conversation_history
+                ),
+                "candidate_sources": [],
+                "mode": "files_only",
+                "retrieval_mode": (
+                    "document_overview_no_content"
+                ),
+                "target_document_ids": (
+                    target_document_ids
+                ),
+            }
+
+        overview_context = (
+            build_context(
+                overview_results
+            )
+        )
+
+        context = (
+            build_document_overview_guidance(
+                documents
+            )
+            + "\n\n"
+            + overview_context
+        )
+
+        candidate_sources = (
+            build_sources(
+                overview_results
+            )
+        )
+
+        return {
+            "immediate_answer": None,
+            "context": context,
+            "conversation_history": (
+                conversation_history
+            ),
+            "candidate_sources": (
+                candidate_sources
+            ),
+            "mode": (
+                "files_and_general"
+                if allow_general_knowledge
+                else "files_only"
+            ),
+            "retrieval_mode": (
+                "document_overview"
+            ),
+            "target_document_ids": (
+                target_document_ids
+            ),
+        }
 
     if page_number is not None:
         logger.debug(
