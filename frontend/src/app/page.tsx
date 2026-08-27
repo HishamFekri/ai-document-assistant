@@ -4,6 +4,8 @@ import {
   ArrowRight,
   FileSpreadsheet,
   FileText,
+  Github,
+  Linkedin,
   MessageSquareText,
   Search,
   ShieldCheck,
@@ -1379,9 +1381,65 @@ function Footer() {
           AI Document Assistant
         </span>
 
-        <span>
-          Your documents. Your answers.
-        </span>
+        <div className="flex items-center gap-4">
+          <span>
+            Your documents. Your answers.
+          </span>
+
+          <div className="flex items-center gap-2">
+            <a
+              href="https://github.com/HishamFekri"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="GitHub"
+              title="GitHub"
+              className="
+                flex
+                h-9
+                w-9
+                items-center
+                justify-center
+                rounded-full
+                border
+                border-[var(--border)]
+                text-[var(--text-secondary)]
+                transition-all
+                duration-200
+                hover:-translate-y-0.5
+                hover:bg-[var(--surface-hover)]
+                hover:text-[var(--text-primary)]
+              "
+            >
+              <Github size={16} />
+            </a>
+
+            <a
+              href="https://www.linkedin.com/in/hishamjouda"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="LinkedIn"
+              title="LinkedIn"
+              className="
+                flex
+                h-9
+                w-9
+                items-center
+                justify-center
+                rounded-full
+                border
+                border-[var(--border)]
+                text-[var(--text-secondary)]
+                transition-all
+                duration-200
+                hover:-translate-y-0.5
+                hover:bg-[var(--surface-hover)]
+                hover:text-[var(--text-primary)]
+              "
+            >
+              <Linkedin size={16} />
+            </a>
+          </div>
+        </div>
       </div>
     </footer>
   );
