@@ -15,7 +15,6 @@ import {
   ArrowDown,
   Loader2,
   Menu,
-  Sparkles,
 } from "lucide-react";
 
 import ChatSidebar from "@/components/chat/ChatSidebar";
@@ -1304,26 +1303,6 @@ export default function ChatPage({
                     "
                   >
                     <div>
-                      <div
-                        className="
-                          mx-auto
-                          mb-3
-                          flex
-                          h-10
-                          w-10
-                          items-center
-                          justify-center
-                          rounded-xl
-                          bg-red-500/10
-                          text-red-500
-                        "
-                      >
-                        <Sparkles
-                          size={17}
-                        />
-                      </div>
-
-
                       <p
                         className="
                           text-sm
