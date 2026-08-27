@@ -66,6 +66,21 @@ RAG_RELATED_VISUAL_MAX_CHUNKS = int(
 )
 
 
+RAG_RELATED_VISUAL_MIN_SIMILARITY = float(
+    os.getenv(
+        "RAG_RELATED_VISUAL_MIN_SIMILARITY",
+        "0.40",
+    )
+)
+
+RAG_DECORATIVE_VISUAL_REPEAT_THRESHOLD = int(
+    os.getenv(
+        "RAG_DECORATIVE_VISUAL_REPEAT_THRESHOLD",
+        "3",
+    )
+)
+
+
 ARABIC_DIGIT_TRANSLATION = str.maketrans(
     "٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹",
     "01234567890123456789",
@@ -1365,19 +1380,121 @@ def get_representative_document_chunks(
 
 
 
+def normalize_visual_signature(
+    chunk: DocumentChunk,
+) -> str:
+    metadata = (
+        chunk.chunk_metadata
+        or {}
+    )
+
+    parts = []
+
+    for value in (
+        metadata.get("caption"),
+        metadata.get("description"),
+        metadata.get("alt_text"),
+        metadata.get("title"),
+        chunk.content,
+    ):
+        if not value:
+            continue
+
+        value = str(
+            value
+        ).strip()
+
+        if value:
+            parts.append(
+                value
+            )
+
+    if not parts:
+        return ""
+
+    text = " ".join(
+        parts
+    ).lower()
+
+    # Remove values that make the same repeated graphic
+    # look unique only because it came from another page/file.
+    text = re.sub(
+        r"\bpage\s+\d+\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\bimage\s+asset\s*:\s*\S+",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\b[\w.-]+\.(?:png|jpe?g|webp|gif)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    ).strip()
+
+    return text[:500]
+
+
+def is_generic_visual_text(
+    signature: str,
+) -> bool:
+    if not signature:
+        return True
+
+    generic_patterns = {
+        "image extracted from the document",
+        "engine",
+        "preface",
+        "technical manual",
+        "porsche motorsport",
+    }
+
+    cleaned = (
+        signature
+        .strip()
+        .lower()
+    )
+
+    if cleaned in generic_patterns:
+        return True
+
+    if (
+        cleaned.startswith(
+            "image extracted from the document"
+        )
+        and len(cleaned.split()) <= 10
+    ):
+        return True
+
+    return False
+
+
 def get_related_visual_results(
     db: Session,
     search_results,
     document_ids: list[int],
+    question: str,
     limit: int | None = None,
 ):
     """
-    Attach image chunks from pages that already contain
-    strong text/table/equation evidence.
+    Return only useful images that are semantically related
+    to the user's question and located on pages already used
+    as evidence.
 
-    This makes images appear automatically when they are
-    relevant to the answer, even if the user did not
-    explicitly say "image" or "picture".
+    Repeated decorative/header images are filtered out.
     """
     if not search_results:
         return []
@@ -1393,8 +1510,7 @@ def get_related_visual_results(
     if limit <= 0:
         return []
 
-    anchor_pages = []
-    anchor_score_by_page = {}
+    anchor_pages = set()
 
     for result in search_results:
         chunk = result["chunk"]
@@ -1412,44 +1528,23 @@ def get_related_visual_results(
         if page is None:
             continue
 
-        key = (
-            chunk.document_id,
-            page,
-        )
-
-        if key not in anchor_pages:
-            anchor_pages.append(
-                key
+        anchor_pages.add(
+            (
+                chunk.document_id,
+                page,
             )
-
-        score = float(
-            result.get(
-                "ranking_score",
-                result.get(
-                    "similarity",
-                    0.0,
-                ),
-            )
-            or 0.0
         )
 
-        anchor_score_by_page[
-            key
-        ] = max(
-            anchor_score_by_page.get(
-                key,
-                0.0,
-            ),
-            score,
-        )
-
-        if len(anchor_pages) >= 6:
+        if len(anchor_pages) >= 8:
             break
 
     if not anchor_pages:
         return []
 
-    image_chunks = (
+    # Count repeated visual descriptions across the selected
+    # documents. A header/logo that repeats on many pages should
+    # not be attached to every answer.
+    all_image_chunks = (
         db.query(DocumentChunk)
         .filter(
             DocumentChunk.document_id.in_(
@@ -1465,10 +1560,52 @@ def get_related_visual_results(
         .all()
     )
 
-    results = []
-    seen_assets = set()
+    signature_counts = {}
 
-    for chunk in image_chunks:
+    for image_chunk in all_image_chunks:
+        signature = (
+            normalize_visual_signature(
+                image_chunk
+            )
+        )
+
+        if not signature:
+            continue
+
+        signature_counts[
+            signature
+        ] = (
+            signature_counts.get(
+                signature,
+                0,
+            )
+            + 1
+        )
+
+    candidate_limit = max(
+        12,
+        limit * 4,
+    )
+
+    visual_candidates = (
+        search_visual_chunks(
+            db=db,
+            query=question,
+            document_ids=document_ids,
+            limit=candidate_limit,
+            min_similarity=(
+                RAG_RELATED_VISUAL_MIN_SIMILARITY
+            ),
+        )
+    )
+
+    selected = []
+    seen_assets = set()
+    seen_signatures = set()
+
+    for result in visual_candidates:
+        chunk = result["chunk"]
+
         page = get_chunk_page(
             chunk
         )
@@ -1476,14 +1613,55 @@ def get_related_visual_results(
         if page is None:
             continue
 
-        key = (
+        page_key = (
             chunk.document_id,
             page,
         )
 
-        if key not in (
-            anchor_score_by_page
+        # Automatic images must support evidence that was
+        # actually selected for the answer.
+        if page_key not in anchor_pages:
+            continue
+
+        signature = (
+            normalize_visual_signature(
+                chunk
+            )
+        )
+
+        repeated_count = (
+            signature_counts.get(
+                signature,
+                0,
+            )
+            if signature
+            else 0
+        )
+
+        # Repeated headers, logos and section banners are noise.
+        if (
+            repeated_count
+            >= RAG_DECORATIVE_VISUAL_REPEAT_THRESHOLD
         ):
+            logger.debug(
+                (
+                    "Skipping repeated visual "
+                    "chunk=%s repeats=%s signature=%s"
+                ),
+                chunk.id,
+                repeated_count,
+                signature[:120],
+            )
+            continue
+
+        if is_generic_visual_text(
+            signature
+        ):
+            logger.debug(
+                "Skipping generic visual chunk=%s signature=%s",
+                chunk.id,
+                signature[:120],
+            )
             continue
 
         metadata = (
@@ -1505,36 +1683,48 @@ def get_related_visual_results(
         if asset_key in seen_assets:
             continue
 
+        if (
+            signature
+            and signature
+            in seen_signatures
+        ):
+            continue
+
         seen_assets.add(
             asset_key
         )
 
-        base_score = (
-            anchor_score_by_page[
-                key
-            ]
+        if signature:
+            seen_signatures.add(
+                signature
+            )
+
+        result = dict(
+            result
         )
 
-        results.append(
-            {
-                "chunk": chunk,
-                "similarity": max(
-                    base_score - 0.01,
-                    0.0,
-                ),
-                "ranking_score": max(
-                    base_score - 0.01,
-                    0.0,
-                ),
-                "match_type":
-                    "related_visual",
-            }
+        result[
+            "match_type"
+        ] = "related_visual"
+
+        selected.append(
+            result
         )
 
-        if len(results) >= limit:
+        if len(selected) >= limit:
             break
 
-    return results
+    logger.debug(
+        (
+            "Related visuals selected=%s "
+            "from_candidates=%s"
+        ),
+        len(selected),
+        len(visual_candidates),
+    )
+
+    return selected
+
 
 
 def build_retrieval_guidance(
@@ -2150,6 +2340,7 @@ def prepare_answer_context(
             document_ids=(
                 target_document_ids
             ),
+            question=question,
         )
     )
 
