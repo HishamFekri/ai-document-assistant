@@ -7,7 +7,10 @@ from fastapi import (
     Query,
 )
 
-from fastapi.responses import FileResponse
+from fastapi.responses import (
+    FileResponse,
+    RedirectResponse,
+)
 
 from sqlalchemy.orm import Session
 
@@ -53,8 +56,10 @@ def get_owned_document(
     document = (
         db.query(Document)
         .filter(
-            Document.id == document_id,
-            Document.user_id == current_user.id,
+            Document.id
+            == document_id,
+            Document.user_id
+            == current_user.id,
         )
         .first()
     )
@@ -86,7 +91,7 @@ def list_document_assets(
         get_db
     ),
 ):
-    document = get_owned_document(
+    get_owned_document(
         document_id=document_id,
         current_user=current_user,
         db=db,
@@ -162,7 +167,7 @@ def read_document_asset_file(
         get_db
     ),
 ):
-    document = get_owned_document(
+    get_owned_document(
         document_id=document_id,
         current_user=current_user,
         db=db,
@@ -192,31 +197,50 @@ def read_document_asset_file(
             ),
         )
 
-    if not asset.file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Image file path not found",
-        )
-
-    path = Path(
+    asset_path = (
         asset.file_path
+    )
+
+    if not asset_path:
+        metadata = (
+            asset.asset_metadata
+            or {}
+        )
+
+        asset_path = (
+            metadata.get(
+                "asset_path"
+            )
+        )
+
+    if not asset_path:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Image file path not found"
+            ),
+        )
+
+    asset_path = str(
+        asset_path
+    ).strip()
+
+    # Production / Cloudinary
+    if asset_path.startswith(
+        (
+            "https://",
+            "http://",
+        )
+    ):
+        return RedirectResponse(
+            url=asset_path,
+            status_code=307,
+        )
+
+    # Backwards compatibility for local files.
+    path = Path(
+        asset_path
     ).resolve()
-
-    if not document.file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Document file not found",
-        )
-
-    assets_root = Path(
-        document.file_path
-    ).resolve().parent
-
-    if path != assets_root and assets_root not in path.parents:
-        raise HTTPException(
-            status_code=404,
-            detail="Image file not found",
-        )
 
     if (
         not path.exists()
