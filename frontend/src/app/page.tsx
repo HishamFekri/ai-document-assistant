@@ -321,21 +321,34 @@ function Hero() {
 
         <h1
           className="
-            text-[48px]
             font-semibold
             leading-[1.02]
             tracking-[-0.055em]
-            sm:text-[64px]
-            lg:text-[78px]
           "
         >
-          <span className="hero-title-main">
+          <span
+            className="
+              hero-title-main
+              block
+              text-[48px]
+              sm:text-[64px]
+              lg:text-[78px]
+            "
+          >
             Your documents,
           </span>
 
-          <br />
-
-          <span className="hero-title-accent">
+          <span
+            className="
+              hero-title-accent
+              mt-1
+              inline-block
+              whitespace-nowrap
+              text-[clamp(34px,10.2vw,44px)]
+              sm:text-[64px]
+              lg:text-[78px]
+            "
+          >
             Finally make sense.
           </span>
         </h1>
