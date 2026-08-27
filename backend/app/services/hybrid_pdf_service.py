@@ -1,5 +1,6 @@
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -39,6 +40,14 @@ MAX_DATALAB_RATIO = float(
     os.getenv(
         "MAX_DATALAB_RATIO",
         "0.35",
+    )
+)
+
+
+DATALAB_PARALLEL_BATCHES = int(
+    os.getenv(
+        "DATALAB_PARALLEL_BATCHES",
+        "2",
     )
 )
 
@@ -872,6 +881,100 @@ def get_asset_directory(
     )
 
 
+
+def process_datalab_batch(
+    *,
+    path: Path,
+    batch_number: int,
+    batch_pages: list[int],
+    total_batches: int,
+    asset_directory: Path,
+):
+    page_range = (
+        build_page_range(
+            batch_pages
+        )
+    )
+
+    logger.info(
+        (
+            "Processing Datalab batch "
+            "%s/%s range=%s"
+        ),
+        batch_number,
+        total_batches,
+        page_range,
+    )
+
+    datalab_result = (
+        extract_content_with_datalab(
+            file_path=path,
+            page_range=page_range,
+        )
+    )
+
+    document_json = (
+        datalab_result.get(
+            "document_json"
+        )
+    )
+
+    images = (
+        datalab_result.get(
+            "images"
+        )
+        or {}
+    )
+
+    if not document_json:
+        raise ValueError(
+            (
+                "Datalab returned no "
+                "document JSON"
+            )
+        )
+
+    logger.info(
+        "Datalab batch %s returned %s images",
+        batch_number,
+        len(images),
+    )
+
+    batch_asset_directory = (
+        asset_directory
+        / f"batch_{batch_number}"
+    )
+
+    saved_images = {}
+
+    if images:
+        saved_images = (
+            save_datalab_images(
+                images=images,
+                output_directory=(
+                    batch_asset_directory
+                ),
+            )
+        )
+
+    logger.info(
+        "Datalab batch %s saved %s images",
+        batch_number,
+        len(saved_images),
+    )
+
+    return {
+        "batch_number":
+            batch_number,
+        "batch_pages":
+            batch_pages,
+        "document_json":
+            document_json,
+        "saved_images":
+            saved_images,
+    }
+
+
 def extract_content_from_hybrid_pdf(
     file_path,
     document_id: int | None = None,
@@ -960,88 +1063,136 @@ def extract_content_from_hybrid_pdf(
             )
         )
 
-        for batch_number, batch_pages in enumerate(
-            page_batches,
-            start=1,
-        ):
-            page_range = (
-                build_page_range(
-                    batch_pages
-                )
-            )
+        total_batches = len(
+            page_batches
+        )
 
-            logger.info(
-                (
-                    "Processing Datalab batch "
-                    "%s/%s range=%s"
-                ),
+        max_workers = max(
+            1,
+            min(
+                DATALAB_PARALLEL_BATCHES,
+                total_batches,
+            ),
+        )
+
+        batch_results = []
+
+        if max_workers == 1:
+            for (
                 batch_number,
-                len(page_batches),
-                page_range,
-            )
-
-            datalab_result = (
-                extract_content_with_datalab(
-                    file_path=path,
-                    page_range=page_range,
-                )
-            )
-
-            document_json = (
-                datalab_result.get(
-                    "document_json"
-                )
-            )
-
-            images = (
-                datalab_result.get(
-                    "images"
-                )
-                or {}
-            )
-
-            if not document_json:
-                raise ValueError(
-                    (
-                        "Datalab returned no "
-                        "document JSON"
-                    )
-                )
-
-            logger.info(
-                "Datalab batch %s returned %s images",
-                batch_number,
-                len(images),
-            )
-
-            batch_asset_directory = (
-                asset_directory
-                / f"batch_{batch_number}"
-            )
-
-            saved_images = {}
-
-            if images:
-                saved_images = (
-                    save_datalab_images(
-                        images=images,
-                        output_directory=(
-                            batch_asset_directory
+                batch_pages,
+            ) in enumerate(
+                page_batches,
+                start=1,
+            ):
+                batch_results.append(
+                    process_datalab_batch(
+                        path=path,
+                        batch_number=(
+                            batch_number
+                        ),
+                        batch_pages=(
+                            batch_pages
+                        ),
+                        total_batches=(
+                            total_batches
+                        ),
+                        asset_directory=(
+                            asset_directory
                         ),
                     )
                 )
 
+        else:
             logger.info(
-                "Datalab batch %s saved %s images",
-                batch_number,
-                len(saved_images),
+                (
+                    "Running Datalab batches "
+                    "in parallel workers=%s "
+                    "total_batches=%s"
+                ),
+                max_workers,
+                total_batches,
             )
 
+            with ThreadPoolExecutor(
+                max_workers=max_workers
+            ) as executor:
+                future_to_batch = {
+                    executor.submit(
+                        process_datalab_batch,
+                        path=path,
+                        batch_number=(
+                            batch_number
+                        ),
+                        batch_pages=(
+                            batch_pages
+                        ),
+                        total_batches=(
+                            total_batches
+                        ),
+                        asset_directory=(
+                            asset_directory
+                        ),
+                    ):
+                        batch_number
+                    for (
+                        batch_number,
+                        batch_pages,
+                    ) in enumerate(
+                        page_batches,
+                        start=1,
+                    )
+                }
+
+                for future in as_completed(
+                    future_to_batch
+                ):
+                    batch_number = (
+                        future_to_batch[
+                            future
+                        ]
+                    )
+
+                    try:
+                        batch_results.append(
+                            future.result()
+                        )
+
+                    except Exception:
+                        logger.exception(
+                            (
+                                "Datalab batch %s "
+                                "failed during parallel "
+                                "processing"
+                            ),
+                            batch_number,
+                        )
+
+                        raise
+
+        batch_results.sort(
+            key=lambda item:
+                item["batch_number"]
+        )
+
+        for batch_result in batch_results:
             batch_blocks = (
                 extract_datalab_blocks(
-                    document_json=document_json,
-                    complex_pages=batch_pages,
-                    saved_images=saved_images,
+                    document_json=(
+                        batch_result[
+                            "document_json"
+                        ]
+                    ),
+                    complex_pages=(
+                        batch_result[
+                            "batch_pages"
+                        ]
+                    ),
+                    saved_images=(
+                        batch_result[
+                            "saved_images"
+                        ]
+                    ),
                 )
             )
 
