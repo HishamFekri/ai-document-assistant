@@ -1,1782 +1,1342 @@
 "use client";
 
 import {
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-
-import {
-  useParams,
-  useRouter,
-} from "next/navigation";
-
-import {
-  ArrowDown,
-  Loader2,
-  Menu,
+  ArrowRight,
+  FileSpreadsheet,
+  FileText,
+  MessageSquareText,
+  Search,
+  ShieldCheck,
 } from "lucide-react";
 
-import ChatSidebar from "@/components/chat/ChatSidebar";
-import ChatMessage from "@/components/chat/ChatMessage";
-import ChatComposer from "@/components/chat/ChatComposer";
-import UploadedDocsPanel from "@/components/chat/UploadedDocsPanel";
-import ChatHeaderActions from "@/components/chat/ChatHeaderActions";
+import GoogleLoginButton from "@/components/google-login-button";
 
-import DocumentSummaryPanel from "@/components/documents/DocumentSummaryPanel";
 
-import {
-  Document,
-  Chat,
-} from "@/types/chat";
-
-import {
-  useChat,
-} from "@/hooks/useChat";
-
-import {
-  useChatStream,
-} from "@/hooks/useChatStream";
-
-type ActiveView =
-  | "chat"
-  | "summary"
-  | "transcription";
-
-type DocumentView =
-  | "summary"
-  | "transcription";
-
-
-export default function ChatPage({
-  draft = false,
-}: {
-  draft?: boolean;
-}) {
-  const params =
-    useParams();
-
-  const router =
-    useRouter();
-
-
-  const rawChatId =
-    draft ? undefined : params?.id;
-
-
-  let chatId:
-    number | null = null;
-
-
-  if (
-    typeof rawChatId ===
-    "string"
-  ) {
-    const parsed =
-      Number(
-        rawChatId
-      );
-
-    if (
-      Number.isInteger(
-        parsed
-      )
-      && parsed > 0
-    ) {
-      chatId = parsed;
-    }
-  }
-
-
-  if (
-    Array.isArray(
-      rawChatId
-    )
-    && rawChatId.length > 0
-  ) {
-    const parsed =
-      Number(
-        rawChatId[0]
-      );
-
-    if (
-      Number.isInteger(
-        parsed
-      )
-      && parsed > 0
-    ) {
-      chatId = parsed;
-    }
-  }
-
-
-  const fileInputRef =
-    useRef<HTMLInputElement | null>(
-      null
-    );
-
-  const messagesEndRef =
-    useRef<HTMLDivElement | null>(
-      null
-    );
-
-  const messagesContainerRef =
-    useRef<HTMLElement | null>(
-      null
-    );
-
-  const [
-    showScrollToBottom,
-    setShowScrollToBottom,
-  ] = useState(false);
-
-  const [
-    chatDeleteError,
-    setChatDeleteError,
-  ] = useState<string | null>(null);
-
-
-  const [
-    activeView,
-    setActiveView,
-  ] = useState<ActiveView>(
-    "chat"
-  );
-
-
-  const [
-    filesOpen,
-    setFilesOpen,
-  ] = useState(false);
-
-
-  const [
-    mobileSidebarOpen,
-    setMobileSidebarOpen,
-  ] = useState(false);
-
-
-  const [
-    selectedDocument,
-    setSelectedDocument,
-  ] = useState<
-    Document | null
-  >(null);
-
-
-  const [
-    summaryToken,
-    setSummaryToken,
-  ] = useState<
-    string | null
-  >(null);
-
-
-  const {
-    user,
-    chat,
-    chats,
-    messages,
-
-    setChat,
-    setChats,
-    setMessages,
-
-    loading,
-    chatLoading,
-
-    uploading,
-    attachment,
-    creatingChat,
-
-    getToken,
-    refreshMessages,
-
-    createPersistedChat,
-    attachDocumentToChat,
-
-    handleCreateChat,
-    handleUpload,
-    handleRemoveAttachment,
-    clearComposerAttachment,
-    handleRemoveDocument,
-
-    handleRenameChat,
-    handlePinChat,
-    handleArchiveChat,
-    handleDeleteChat,
-
-    logout,
-  } = useChat(
-    chatId
-  );
-
-  const workspaceChat: Chat | null =
-    chat
-    ?? (draft
-      ? {
-          id: 0,
-          title: "New chat",
-          is_pinned: false,
-          is_archived: false,
-          created_at: new Date().toISOString(),
-          documents: [],
-        }
-      : null);
-
-
-  async function openDocumentView(
-    document: Document,
-    view: DocumentView
-  ) {
-    const token =
-      getToken();
-
-    if (!token) {
-      console.error(
-        "[DOCUMENT VIEW] No auth token"
-      );
-
-      return;
-    }
-
-
-    setSelectedDocument(document);
-    setSummaryToken(token);
-    setFilesOpen(false);
-    setActiveView(view);
-  }
-
-
-  async function openDocumentSummary(
-    document: Document
-  ) {
-    await openDocumentView(
-      document,
-      "summary"
-    );
-  }
-
-
-  async function openDocumentTranscription(
-    document: Document
-  ) {
-    await openDocumentView(
-      document,
-      "transcription"
-    );
-  }
-
-
-  async function openDocumentModeView(
-    view: DocumentView
-  ) {
-    const currentSelectedDocument =
-      selectedDocument
-        ? chat?.documents.find(
-            (document) =>
-              document.id
-              === selectedDocument.id
-          )
-        : null;
-
-
-    if (
-      currentSelectedDocument
-      && summaryToken
-    ) {
-      setSelectedDocument(
-        currentSelectedDocument
-      );
-
-      setFilesOpen(
-        false
-      );
-
-      setActiveView(
-        view
-      );
-
-      return;
-    }
-
-
-    const firstDocument =
-      chat?.documents.find(
-        (document) =>
-          document.processing_status
-          === "ready"
-      )
-      ?? chat?.documents[0];
-
-
-    if (!firstDocument) {
-      setActiveView(
-        view
-      );
-
-      setFilesOpen(
-        false
-      );
-
-      return;
-    }
-
-
-    await openDocumentView(
-      firstDocument,
-      view
-    );
-  }
-
-
-  async function openSummaryView() {
-    await openDocumentModeView(
-      "summary"
-    );
-  }
-
-
-  async function openTranscriptionView() {
-    await openDocumentModeView(
-      "transcription"
-    );
-  }
-
-
-  function openChatView() {
-    setActiveView(
-      "chat"
-    );
-  }
-
-
-  useEffect(() => {
-    if (
-      activeView === "chat"
-      || selectedDocument
-      || !chat
-      || chat.documents.length === 0
-    ) {
-      return;
-    }
-
-    const document =
-      chat.documents.find(
-        (item) =>
-          item.processing_status
-          === "ready"
-      )
-      ?? chat.documents[0];
-
-    const token =
-      getToken();
-
-    if (!token) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      setSelectedDocument(document);
-      setSummaryToken(token);
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    activeView,
-    selectedDocument,
-    chat,
-    getToken,
-  ]);
-
-
-  const {
-    question,
-    setQuestion,
-
-    sending,
-
-    composerError,
-    setComposerError,
-
-    allowGeneralKnowledge,
-    setAllowGeneralKnowledge,
-
-    sendQuestion,
-    sendQuestionText,
-  } = useChatStream({
-    chatId:
-      chatId ?? 0,
-
-    chat,
-
-    messages,
-
-    setMessages,
-
-    refreshMessages,
-
-    getToken,
-
-    createPersistedChat,
-
-    attachDocumentToChat,
-
-    attachment,
-
-    clearComposerAttachment,
-
-    onSummaryGenerated:
-      async ({
-        documentId,
-      }) => {
-        const document =
-          chat?.documents.find(
-            (
-              item
-            ) =>
-              item.id
-              === documentId
-          );
-
-        if (!document) {
-          return;
-        }
-
-        await openDocumentSummary(
-          document
-        );
-      },
-
-    onChatTitleGenerated:
-      ({
-        title,
-      }) => {
-        const nextTitle =
-          title.trim();
-
-        if (!nextTitle) {
-          return;
-        }
-
-        setChat(
-          (current) =>
-            current
-            && current.id === chatId
-              ? {
-                  ...current,
-                  title: nextTitle,
-                }
-              : current
-        );
-
-        setChats(
-          (current) =>
-            current.map(
-              (item) =>
-                item.id === chatId
-                  ? {
-                      ...item,
-                      title: nextTitle,
-                    }
-                  : item
-            )
-        );
-      },
-  });
-
-
-  useEffect(() => {
-    if (
-      chatLoading
-      || activeView
-      !== "chat"
-    ) {
-      return;
-    }
-
-    messagesEndRef
-      .current
-      ?.scrollIntoView({
-        behavior:
-          "smooth",
-      });
-
-  }, [
-    messages,
-    chatLoading,
-    activeView,
-  ]);
-
-
-  useEffect(() => {
-    if (
-      activeView !== "chat"
-    ) {
-      setShowScrollToBottom(
-        false
-      );
-
-      return;
-    }
-
-    const container =
-      messagesContainerRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    const updateScrollButton = () => {
-      const hasScrollableContent =
-        container.scrollHeight
-        > container.clientHeight + 8;
-
-      const distanceFromBottom =
-        container.scrollHeight
-        - container.scrollTop
-        - container.clientHeight;
-
-      const nearBottom =
-        distanceFromBottom <= 24;
-
-      setShowScrollToBottom(
-        hasScrollableContent
-        && !nearBottom
-      );
-    };
-
-    updateScrollButton();
-
-    container.addEventListener(
-      "scroll",
-      updateScrollButton,
-      { passive: true }
-    );
-
-    return () => {
-      container.removeEventListener(
-        "scroll",
-        updateScrollButton
-      );
-    };
-  }, [
-    chatLoading,
-    activeView,
-    chatId,
-  ]);
-
-
-  useEffect(() => {
-    if (
-      activeView !== "chat"
-    ) {
-      return;
-    }
-
-    const frameId =
-      window.requestAnimationFrame(
-        () => {
-          const container =
-            messagesContainerRef.current;
-
-          if (!container) {
-            return;
-          }
-
-          const hasScrollableContent =
-            container.scrollHeight
-            > container.clientHeight + 8;
-
-          const distanceFromBottom =
-            container.scrollHeight
-            - container.scrollTop
-            - container.clientHeight;
-
-          const nearBottom =
-            distanceFromBottom <= 24;
-
-          setShowScrollToBottom(
-            hasScrollableContent
-            && !nearBottom
-          );
-        }
-      );
-
-    return () => {
-      window.cancelAnimationFrame(
-        frameId
-      );
-    };
-  }, [
-    messages,
-    chatLoading,
-    activeView,
-    chatId,
-  ]);
-
-
-  function scrollToBottom() {
-    const container =
-      messagesContainerRef.current;
-
-    if (!container) {
-      return;
-    }
-
-    setShowScrollToBottom(
-      false
-    );
-
-    container.scrollTo({
-      top:
-        container.scrollHeight,
-      behavior:
-        "smooth",
-    });
-  }
-
-
-  useEffect(() => {
-    if (
-      rawChatId !== undefined
-      && chatId === null
-    ) {
-      router.replace(
-        "/chat"
-      );
-    }
-
-  }, [
-    rawChatId,
-    chatId,
-    router,
-  ]);
-
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setActiveView("chat");
-      setSelectedDocument(null);
-      setSummaryToken(null);
-      setFilesOpen(false);
-      setMobileSidebarOpen(false);
-    }, 0);
-
-    return () => window.clearTimeout(timeoutId);
-
-  }, [
-    chatId,
-  ]);
-
-
-  if (
-    chatId === null
-    && !draft
-  ) {
-    return (
-      <main
-        className="
-          flex
-          min-h-screen
-          items-center
-          justify-center
-          bg-[var(--background)]
-          text-[var(--foreground)]
-          transition-colors
-          duration-200
-        "
-      >
-        <div
-          className="
-            flex
-            items-center
-            gap-2
-            text-sm
-            text-[var(--text-secondary)]
-          "
-        >
-          <Loader2
-            size={17}
-            className="
-              animate-spin
-            "
-          />
-
-          Opening chat...
-        </div>
-      </main>
-    );
-  }
-
-
-  if (
-    loading
-    && !user
-  ) {
-    return (
-      <main
-        className="
-          flex
-          min-h-screen
-          items-center
-          justify-center
-          bg-[var(--background)]
-          text-[var(--foreground)]
-          transition-colors
-          duration-200
-        "
-      >
-        <div
-          className="
-            flex
-            items-center
-            gap-2
-            text-sm
-            text-[var(--text-secondary)]
-          "
-        >
-          <Loader2
-            size={17}
-            className="
-              animate-spin
-              text-[var(--primary)]
-            "
-          />
-
-          Loading...
-        </div>
-      </main>
-    );
-  }
-
-
-  const documentsProcessing =
-    chat?.documents.some(
-      (
-        document
-      ) =>
-        document.processing_status
-        === "processing"
-    ) ?? false;
-
-
-  function renameCurrentChat() {
-    if (
-      !chat
-      || chatId === null
-    ) {
-      return;
-    }
-
-
-    const currentTitle =
-      chat.title
-      || "New chat";
-
-
-    const nextTitle =
-      window.prompt(
-        "Rename chat",
-        currentTitle
-      );
-
-
-    if (!nextTitle) {
-      return;
-    }
-
-
-    handleRenameChat(
-      chatId,
-      nextTitle
-    );
-  }
-
-
-  async function deleteCurrentChat() {
-    if (
-      chatId === null
-    ) {
-      return;
-    }
-
-
-    const confirmed =
-      window.confirm(
-        "Delete this chat?"
-      );
-
-
-    if (!confirmed) {
-      return;
-    }
-
-    setChatDeleteError(null);
-
-    try {
-      await handleDeleteChat(chatId);
-    } catch (error) {
-      setChatDeleteError(
-        error instanceof Error
-          ? error.message
-          : "Could not delete chat. Please try again."
-      );
-    }
-  }
-
-
+export default function Home() {
   return (
     <main
       className="
-        flex
-        h-[100dvh]
+        relative
+        min-h-screen
         overflow-hidden
         bg-[var(--background)]
-        text-[var(--foreground)]
+        text-[var(--text-primary)]
         transition-colors
         duration-200
       "
     >
-      <div className="hidden md:block">
-        <ChatSidebar
-        user={
-          user
-        }
+      <LandingAmbient />
 
-        chats={
-          chats
-        }
+      <div className="relative z-10">
+        <Navbar />
+        <Hero />
+        <ProductPreview />
+        <Features />
+        <HowItWorks />
+        <FinalCTA />
+        <Footer />
+      </div>
+    </main>
+  );
+}
 
-        activeChatId={
-          chatId ?? 0
-        }
 
-        creatingChat={
-          creatingChat
-        }
+/* =========================================================
+   BACKGROUND
+========================================================= */
 
-        onCreateChat={
-          handleCreateChat
-        }
+function LandingAmbient() {
+  return (
+    <div
+      aria-hidden="true"
+      className="
+        pointer-events-none
+        absolute
+        inset-0
+        overflow-hidden
+      "
+    >
+      {/* Main hero blue glow */}
+      <div
+        className="
+          absolute
+          left-1/2
+          top-[170px]
+          h-[620px]
+          w-[1000px]
+          -translate-x-1/2
+          rounded-full
+          bg-blue-500/[0.11]
+          blur-[155px]
+        "
+      />
 
-        onOpenChat={(
-          id
-        ) => {
-          if (
-            id === chatId
-          ) {
-            return;
-          }
+      {/* Left indigo glow */}
+      <div
+        className="
+          absolute
+          -left-[170px]
+          top-[420px]
+          h-[520px]
+          w-[520px]
+          rounded-full
+          bg-indigo-500/[0.08]
+          blur-[150px]
+        "
+      />
 
-          router.push(
-            `/chat/${id}`
-          );
-        }}
+      {/* Right blue glow */}
+      <div
+        className="
+          absolute
+          -right-[180px]
+          top-[230px]
+          h-[520px]
+          w-[520px]
+          rounded-full
+          bg-sky-400/[0.08]
+          blur-[150px]
+        "
+      />
 
-        onRenameChat={
-          handleRenameChat
-        }
+      {/* Preview area glow */}
+      <div
+        className="
+          absolute
+          left-1/2
+          top-[1000px]
+          h-[520px]
+          w-[950px]
+          -translate-x-1/2
+          rounded-full
+          bg-blue-500/[0.06]
+          blur-[170px]
+        "
+      />
 
-        onPinChat={
-          handlePinChat
-        }
+      {/* Soft wash from top */}
+      <div
+        className="
+          absolute
+          inset-x-0
+          top-0
+          h-[850px]
+          bg-gradient-to-b
+          from-blue-500/[0.025]
+          via-transparent
+          to-transparent
+        "
+      />
+    </div>
+  );
+}
 
-        onArchiveChat={
-          handleArchiveChat
-        }
 
-        onDeleteChat={
-          handleDeleteChat
-        }
+/* =========================================================
+   NAVBAR
+========================================================= */
 
-        onLogout={
-          logout
-        }
-        />
+function Navbar() {
+  return (
+    <nav
+      className="
+        mx-auto
+        flex
+        max-w-7xl
+        items-center
+        justify-between
+        px-6
+        py-6
+        lg:px-8
+      "
+    >
+      <div className="flex items-center">
+        <span
+          className="
+            text-[15px]
+            font-semibold
+            tracking-[-0.02em]
+          "
+        >
+          AI Document Assistant
+        </span>
       </div>
 
 
-      {mobileSidebarOpen && (
-        <div
+      <div
+        className="
+          hidden
+          items-center
+          gap-8
+          text-[13px]
+          text-[var(--text-secondary)]
+          md:flex
+        "
+      >
+        <a
+          href="#features"
           className="
-            fixed
-            inset-0
-            z-[80]
-            md:hidden
+            transition-colors
+            hover:text-[var(--primary)]
           "
         >
-          <button
-            type="button"
-            aria-label="Close sidebar"
-            onClick={() =>
-              setMobileSidebarOpen(false)
-            }
-            className="
-              absolute
-              inset-0
-              bg-black/55
-              backdrop-blur-[1px]
-            "
-          />
+          Features
+        </a>
 
-          <div
-            className="
-              relative
-              z-10
-              h-full
-              w-fit
-              shadow-2xl
-            "
-          >
-          <ChatSidebar
-            mobile
-            onMobileClose={() =>
-              setMobileSidebarOpen(false)
-            }
-        user={
-          user
-        }
-
-        chats={
-          chats
-        }
-
-        activeChatId={
-          chatId ?? 0
-        }
-
-        creatingChat={
-          creatingChat
-        }
-
-        onCreateChat={
-          handleCreateChat
-        }
-
-        onOpenChat={(
-          id
-        ) => {
-          if (
-            id === chatId
-          ) {
-            return;
-          }
-
-          router.push(
-            `/chat/${id}`
-          );
-        }}
-
-        onRenameChat={
-          handleRenameChat
-        }
-
-        onPinChat={
-          handlePinChat
-        }
-
-        onArchiveChat={
-          handleArchiveChat
-        }
-
-        onDeleteChat={
-          handleDeleteChat
-        }
-
-        onLogout={
-          logout
-        }
-          />
-          </div>
-        </div>
-      )}
-
-      {chatDeleteError && (
-        <div
-          role="alert"
-          className="absolute left-1/2 top-4 z-50 -translate-x-1/2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-600 shadow-lg"
+        <a
+          href="#how-it-works"
+          className="
+            transition-colors
+            hover:text-[var(--primary)]
+          "
         >
-          {chatDeleteError}
-        </div>
-      )}
+          How it works
+        </a>
+      </div>
 
 
-      <section
+      <GoogleLoginButton variant="header" />
+    </nav>
+  );
+}
+
+
+/* =========================================================
+   HERO
+========================================================= */
+
+function Hero() {
+  return (
+    <section
+      className="
+        relative
+        mx-auto
+        max-w-7xl
+        px-6
+        pb-10
+        pt-24
+        lg:px-8
+        lg:pt-32
+      "
+    >
+      {/* Extra glow directly behind hero */}
+      <div
+        aria-hidden="true"
         className="
-          relative
-          flex
-          min-w-0
-          flex-1
-          bg-[var(--background)]
-          transition-colors
-          duration-200
+          pointer-events-none
+          absolute
+          left-1/2
+          top-[45%]
+          -z-10
+          h-[360px]
+          w-[780px]
+          max-w-[95vw]
+          -translate-x-1/2
+          -translate-y-1/2
+          rounded-full
+          bg-blue-500/[0.09]
+          blur-[115px]
+        "
+      />
+
+
+      <div
+        className="
+          mx-auto
+          max-w-4xl
+          text-center
         "
       >
         <div
           className="
-            flex
-            min-w-0
-            flex-1
-            flex-col
+            mb-7
+            inline-flex
+            items-center
+            gap-2
+            rounded-full
+            border
+            border-[var(--border)]
+            bg-[var(--surface)]
+            px-3.5
+            py-1.5
+            text-[12px]
+            font-medium
+            text-[var(--text-secondary)]
+            shadow-sm
+            backdrop-blur-xl
           "
         >
-          <header
+          <span
+            className="
+              h-1.5
+              w-1.5
+              rounded-full
+              bg-[var(--primary)]
+              shadow-[0_0_12px_rgba(102,117,232,0.7)]
+            "
+          />
+
+          AI that understands your files
+        </div>
+
+
+        <h1
+          className="
+            text-[48px]
+            font-semibold
+            leading-[1.02]
+            tracking-[-0.055em]
+            sm:text-[64px]
+            lg:text-[78px]
+          "
+        >
+          <span className="hero-title-main">
+            Your documents,
+          </span>
+
+          <br />
+
+          <span className="hero-title-accent">
+            Finally make sense.
+          </span>
+        </h1>
+
+
+        <p
+          className="
+            mx-auto
+            mt-7
+            max-w-2xl
+            text-[17px]
+            leading-7
+            text-[var(--text-secondary)]
+            sm:text-[18px]
+          "
+        >
+          Ask questions across PDFs, Word files,
+          spreadsheets, and notes. Get clear answers
+          grounded in the content you actually uploaded.
+        </p>
+
+
+        <div
+          className="
+            mt-9
+            flex
+            flex-col
+            items-center
+            justify-center
+            gap-3
+            sm:flex-row
+          "
+        >
+          <a
+            href="#how-it-works"
+            className="
+              group
+              flex
+              h-12
+              items-center
+              justify-center
+              gap-2
+              rounded-full
+              bg-[var(--primary)]
+              px-6
+              text-sm
+              font-medium
+              text-white
+              shadow-[0_10px_35px_rgba(79,70,229,0.22)]
+              transition-all
+              duration-200
+              hover:-translate-y-0.5
+              hover:opacity-90
+              hover:shadow-[0_14px_40px_rgba(79,70,229,0.30)]
+              active:translate-y-0
+              active:scale-[0.98]
+            "
+          >
+            See how it works
+
+            <ArrowRight
+              size={16}
+              className="
+                transition-transform
+                duration-200
+                group-hover:translate-x-0.5
+              "
+            />
+          </a>
+
+
+          <div
+            className="
+              flex
+              h-12
+              items-center
+            "
+          >
+            <GoogleLoginButton variant="hero" />
+          </div>
+        </div>
+
+
+        <div
+          className="
+            mt-8
+            flex
+            flex-wrap
+            items-center
+            justify-center
+            gap-2
+            text-[11px]
+            text-[var(--text-muted)]
+          "
+        >
+          <FileBadge label="PDF" />
+          <FileBadge label="DOCX" />
+          <FileBadge label="XLSX" />
+          <FileBadge label="TXT" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+/* =========================================================
+   FILE BADGE
+========================================================= */
+
+function FileBadge({
+  label,
+}: {
+  label: string;
+}) {
+  return (
+    <span
+      className="
+        rounded-md
+        border
+        border-[var(--border)]
+        bg-[var(--surface)]
+        px-2
+        py-1
+        backdrop-blur-xl
+      "
+    >
+      {label}
+    </span>
+  );
+}
+
+
+/* =========================================================
+   PRODUCT PREVIEW
+========================================================= */
+
+function ProductPreview() {
+  return (
+    <section
+      className="
+        mx-auto
+        max-w-6xl
+        px-4
+        pb-28
+        pt-16
+        sm:px-6
+        lg:px-8
+      "
+    >
+      <div
+        className="
+          relative
+          mx-auto
+          max-w-5xl
+        "
+      >
+        <div
+          aria-hidden="true"
+          className="
+            pointer-events-none
+            absolute
+            left-1/2
+            top-[50%]
+            -z-10
+            h-[460px]
+            w-[85%]
+            -translate-x-1/2
+            -translate-y-1/2
+            rounded-full
+            bg-blue-500/[0.08]
+            blur-[140px]
+          "
+        />
+
+
+        <div
+          className="
+            overflow-hidden
+            rounded-[28px]
+            border
+            border-[var(--border)]
+            bg-[var(--surface)]
+            shadow-[0_30px_100px_rgba(0,0,0,0.16)]
+            backdrop-blur-xl
+          "
+        >
+          <div
             className="
               relative
               flex
-              min-h-14
-              shrink-0
+              h-12
               items-center
               border-b
-              border-transparent
-              px-2
-              sm:px-4
-              md:px-6
+              border-[var(--border)]
+              px-5
             "
           >
-            <button
-              type="button"
-              aria-label="Open sidebar"
-              onClick={() =>
-                setMobileSidebarOpen(true)
-              }
+            <div className="flex gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
+              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
+            </div>
+
+            <span
               className="
-                mr-1
-                inline-flex
-                h-10
-                w-10
-                shrink-0
-                items-center
-                justify-center
-                rounded-xl
-                text-[var(--text-primary)]
-                transition
-                hover:bg-[var(--surface-hover)]
-                md:hidden
+                absolute
+                left-1/2
+                -translate-x-1/2
+                text-[11px]
+                text-[var(--text-muted)]
               "
             >
-              <Menu size={21} />
-            </button>
+              AI Document Assistant
+            </span>
+          </div>
 
-            <nav
-              aria-label="Chat workspace views"
+
+          <div
+            className="
+              grid
+              min-h-[540px]
+              md:grid-cols-[220px_1fr]
+            "
+          >
+            <div
               className="
+                hidden
+                border-r
+                border-[var(--border)]
+                bg-[var(--background)]
+                p-4
+                md:block
+              "
+            >
+              <div
+                className="
+                  flex
+                  items-center
+                  rounded-xl
+                  px-2
+                  py-2
+                  text-[12px]
+                  font-medium
+                "
+              >
+                New chat
+              </div>
+
+
+              <div
+                className="
+                  mt-6
+                  px-2
+                  text-[10px]
+                  font-medium
+                  uppercase
+                  tracking-[0.08em]
+                  text-[var(--text-muted)]
+                "
+              >
+                Recent
+              </div>
+
+
+              <div className="mt-2 space-y-1">
+                <DemoChatRow
+                  active
+                  text="Technical manual"
+                />
+
+                <DemoChatRow
+                  text="Project requirements"
+                />
+
+                <DemoChatRow
+                  text="Research notes"
+                />
+              </div>
+            </div>
+
+
+            <div
+              className="
+                flex
                 min-w-0
-                flex-1
-                overflow-x-auto
-                [scrollbar-width:none]
-                [&::-webkit-scrollbar]:hidden
-                md:absolute
-                md:left-1/2
-                md:top-0
-                md:h-full
-                md:-translate-x-1/2
+                flex-col
+                bg-[var(--background)]
               "
             >
               <div
                 className="
                   flex
                   h-14
-                  w-max
-                  min-w-full
-                  items-stretch
-                  justify-start
-                  gap-5
-                  px-1
-                  md:h-full
-                  md:min-w-0
-                  md:justify-center
-                  md:gap-7
+                  items-center
+                  justify-between
+                  border-b
+                  border-[var(--border)]
+                  px-5
                 "
               >
-                <button
-                  type="button"
-                  onClick={openChatView}
-                  className={`
-                    relative
-                    flex
-                    h-full
-                    shrink-0
-                    items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
-
-                    ${
-                      activeView === "chat"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    }
-                  `}
+                <p
+                  className="
+                    truncate
+                    text-[13px]
+                    font-medium
+                  "
                 >
-                  Chat
+                  Technical manual
+                </p>
 
-                  {activeView === "chat" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
-                    />
-                  )}
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    void openSummaryView();
-                  }}
-                  className={`
-                    relative
+                <div
+                  className="
                     flex
-                    h-full
-                    shrink-0
                     items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
-
-                    ${
-                      activeView === "summary"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    }
-                  `}
+                    gap-2
+                    text-[11px]
+                    text-[var(--text-muted)]
+                  "
                 >
-                  Summary
+                  <FileText size={14} />
 
-                  {activeView === "summary" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
-                    />
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    void openTranscriptionView();
-                  }}
-                  className={`
-                    relative
-                    flex
-                    h-full
-                    shrink-0
-                    items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
-
-                    ${
-                      activeView === "transcription"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    }
-                  `}
-                >
-                  Transcription
-
-                  {activeView === "transcription" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
-                    />
-                  )}
-                </button>
+                  Documents
+                </div>
               </div>
-            </nav>
-
-            <div
-              className="
-                ml-1
-                shrink-0
-                md:ml-auto
-              "
-            >
-              {workspaceChat && (
-                <ChatHeaderActions
-                  filesOpen={
-                    filesOpen
-                  }
-
-                  onToggleFiles={() => {
-                    setFilesOpen(
-                      (
-                        current
-                      ) => !current
-                    );
-                  }}
-
-                  onRename={
-                    renameCurrentChat
-                  }
-
-                  onDelete={
-                    deleteCurrentChat
-                  }
-                />
-              )}
-            </div>
-          </header>
 
 
-          {activeView === "chat" ? (
-            <>
-              <section
-                ref={messagesContainerRef}
+              <div
                 className="
-                  relative
-                  min-h-0
+                  flex
                   flex-1
-                  overflow-y-auto
+                  flex-col
+                  justify-between
+                  p-5
+                  sm:p-8
                 "
               >
-                {chatLoading ? (
-                  <div
-                    className="
-                      flex
-                      h-full
-                      items-center
-                      justify-center
-                    "
-                  >
+                <div
+                  className="
+                    mx-auto
+                    w-full
+                    max-w-2xl
+                    space-y-8
+                  "
+                >
+                  <div className="flex justify-end">
                     <div
                       className="
-                        flex
-                        items-center
-                        gap-2
-                        rounded-full
-                        bg-[var(--surface)]
+                        max-w-[75%]
+                        rounded-[20px]
+                        rounded-br-[6px]
+                        bg-[var(--surface-active)]
                         px-4
-                        py-2
-                        text-xs
-                        text-[var(--text-muted)]
-                        transition-colors
-                        duration-200
+                        py-3
+                        text-[13px]
+                        leading-6
+                        text-[var(--text-primary)]
                       "
                     >
-                      <Loader2
-                        size={14}
-                        className="
-                          animate-spin
-                          text-[var(--primary)]
-                        "
-                      />
-
-                      Loading messages...
+                      What do labels 1 and 2 identify in
+                      the diagram?
                     </div>
                   </div>
 
-                ) : !workspaceChat ? (
-                  <div
-                    className="
-                      flex
-                      h-full
-                      items-center
-                      justify-center
-                      px-6
-                      text-center
-                    "
-                  >
-                    <div>
+
+                  <div className="flex gap-3">
+                    <div
+                      className="
+                        mt-0.5
+                        flex
+                        h-7
+                        w-7
+                        shrink-0
+                        items-center
+                        justify-center
+                        rounded-full
+                        border
+                        border-[var(--border)]
+                        bg-[var(--surface)]
+                        text-[9px]
+                        font-semibold
+                        text-[var(--primary)]
+                      "
+                    >
+                      AI
+                    </div>
+
+
+                    <div className="max-w-xl">
                       <p
                         className="
-                          text-sm
-                          font-medium
+                          text-[13px]
+                          leading-6
                           text-[var(--text-primary)]
                         "
                       >
-                        Could not load this chat
+                        Labels 1 and 2 identify the vacuum
+                        cells. Label 1 refers to the vacuum
+                        cell for the large flap, while label
+                        2 identifies the vacuum cell for the
+                        small flap.
                       </p>
 
 
-                      <p
+                      <button
+                        type="button"
                         className="
-                          mt-1
-                          text-xs
-                          text-[var(--text-muted)]
+                          mt-4
+                          flex
+                          items-center
+                          gap-2
+                          rounded-lg
+                          border
+                          border-[var(--border)]
+                          bg-[var(--surface)]
+                          px-2.5
+                          py-1.5
+                          text-[10px]
+                          text-[var(--text-secondary)]
+                          transition
+                          hover:bg-[var(--surface-hover)]
+                          hover:text-[var(--primary)]
                         "
                       >
-                        Try opening another chat.
-                      </p>
+                        <FileText
+                          size={12}
+                          className="
+                            text-[var(--primary)]
+                          "
+                        />
+
+                        Technical Manual · Page 24
+                      </button>
                     </div>
                   </div>
-
-                ) : (
-                  <div
-                    className="
-                      mx-auto
-                      flex
-                      min-h-full
-                      w-full
-                      max-w-3xl
-                      flex-col
-                      px-3
-                      py-4
-                      sm:px-5
-                      sm:py-6
-                      md:px-6
-                    "
-                  >
-                    {messages.length ===
-                    0 ? (
-                      <div
-                        className="
-                          flex
-                          flex-1
-                          flex-col
-                          items-center
-                          justify-center
-                          pb-6
-                          text-center
-                        "
-                      >
-                        <h2
-                          className="
-                            text-xl
-                            font-semibold
-                            sm:text-2xl
-                            tracking-tight
-                            text-[var(--text-primary)]
-                          "
-                        >
-                          What&apos;s on your mind today?
-                        </h2>
+                </div>
 
 
-                        <p
-                          className="
-                            mt-2
-                            max-w-sm
-                            text-sm
-                            leading-6
-                            text-[var(--text-secondary)]
-                          "
-                        >
-                          Ask anything or attach files
-                          to work with your documents.
-                        </p>
-                      </div>
-
-                    ) : (
-                      <div
-                        className="
-                          space-y-8
-                          pb-8
-                        "
-                      >
-                        {messages.map(
-                          (
-                            message
-                          ) => (
-                            <ChatMessage
-                              key={
-                                message.id
-                              }
-
-                              message={
-                                message
-                              }
-                            />
-                          )
-                        )}
-
-
-                        <div
-                          ref={
-                            messagesEndRef
-                          }
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-
-              </section>
-
-
-              {showScrollToBottom && (
-                <button
-                  type="button"
-                  onClick={scrollToBottom}
-                  title="Scroll to latest message"
-                  aria-label="Scroll to latest message"
-                  className="absolute bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 z-20 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-lg transition hover:bg-[var(--surface-hover)]"
-                >
-                  <ArrowDown size={18} />
-                </button>
-              )}
-
-
-              {workspaceChat && (
-                <ChatComposer
-                  question={
-                    question
-                  }
-
-                  sending={
-                    sending
-                  }
-
-                  uploading={
-                    uploading
-                  }
-
-                  attachment={
-                    attachment
-                  }
-
-                  documentsProcessing={
-                    documentsProcessing
-                  }
-
-                  allowGeneralKnowledge={
-                    allowGeneralKnowledge
-                  }
-
-                  composerError={
-                    composerError
-                  }
-
-                  fileInputRef={
-                    fileInputRef
-                  }
-
-                  onQuestionChange={
-                    setQuestion
-                  }
-
-                  onSetGeneralKnowledge={
-                    setAllowGeneralKnowledge
-                  }
-
-                  onUpload={
-                    handleUpload
-                  }
-
-                  onRemoveAttachment={
-                    handleRemoveAttachment
-                  }
-
-                  onSubmit={
-                    sendQuestion
-                  }
-                />
-              )}
-            </>
-
-          ) : (
-            <>
-              {selectedDocument
-              && summaryToken
-              && chat ? (
-                <DocumentSummaryPanel
-                  key={
-                    `${selectedDocument.id}-${activeView}`
-                  }
-
-                  open={
-                    true
-                  }
-
-                  chatId={
-                    chatId
-                  }
-
-                  documentId={
-                    selectedDocument.id
-                  }
-
-                  filename={
-                    selectedDocument.filename
-                  }
-
-                  pagesCount={
-                    selectedDocument.pages_count
-                  }
-
-                  token={
-                    summaryToken
-                  }
-
-                  mode={
-                    activeView
-                    === "transcription"
-                      ? "transcription"
-                      : "summary"
-                  }
-
-                  uploading={
-                    uploading
-                  }
-
-                  fileInputRef={
-                    fileInputRef
-                  }
-
-                  onUpload={
-                    handleUpload
-                  }
-
-                  documents={
-                    chat.documents
-                  }
-
-                  onSelectDocument={(
-                    document
-                  ) => {
-                    const nextDocument =
-                      chat.documents.find(
-                        (item) =>
-                          item.id
-                          === document.id
-                      );
-
-                    if (!nextDocument) {
-                      return;
-                    }
-
-                    void openDocumentView(
-                      nextDocument,
-                      activeView
-                      === "transcription"
-                        ? "transcription"
-                        : "summary"
-                    );
-                  }}
-                />
-
-              ) : (
-                <section
+                <div
                   className="
-                    flex
-                    min-h-0
-                    flex-1
-                    items-center
-                    justify-center
-                    px-6
+                    mx-auto
+                    mt-12
+                    w-full
+                    max-w-2xl
                   "
                 >
                   <div
                     className="
-                      w-full
-                      max-w-2xl
+                      flex
+                      min-h-[56px]
+                      items-center
+                      gap-3
+                      rounded-[28px]
+                      border
+                      border-[var(--border)]
+                      bg-[var(--surface)]
+                      px-4
+                      shadow-sm
                     "
                   >
-                    <p
+                    <span
                       className="
-                        text-xs
-                        font-medium
-                        uppercase
-                        tracking-[0.18em]
+                        text-xl
+                        font-light
                         text-[var(--text-muted)]
                       "
                     >
-                      {
-                        activeView
-                        === "transcription"
-                          ? "Transcription"
-                          : "Summary"
-                      }
-                    </p>
+                      +
+                    </span>
 
-
-                    <h2
+                    <span
                       className="
-                        mt-3
-                        text-2xl
-                        font-semibold
-                        leading-tight
-                        text-[var(--text-primary)]
-                        sm:text-3xl
+                        flex-1
+                        text-[12px]
+                        text-[var(--text-muted)]
                       "
                     >
-                      {
-                        activeView
-                        === "transcription"
-                          ? "Read your document in detail"
-                          : "Understand your document faster"
-                      }
-                    </h2>
+                      Ask anything
+                    </span>
 
-
-                    <p
+                    <div
                       className="
-                        mt-4
-                        max-w-xl
-                        text-[15px]
-                        leading-7
-                        text-[var(--text-secondary)]
+                        flex
+                        h-8
+                        w-8
+                        items-center
+                        justify-center
+                        rounded-full
+                        bg-[var(--primary)]
+                        text-white
                       "
                     >
-                      {
-                        activeView
-                        === "transcription"
-                          ? (
-                            "Transcription works through the document page by page and keeps the important detail, including tables, charts, images, equations, and technical content."
-                          )
-                          : (
-                            "Summary condenses the document into its main ideas, key points, conclusions, and the most important takeaway from each section."
-                          )
-                      }
-                    </p>
-
-
-                    {workspaceChat
-                    && workspaceChat.documents.length === 0 ? (
-                      <div
-                        className="
-                          mt-7
-                        "
-                      >
-                        <input
-                          ref={
-                            fileInputRef
-                          }
-                          type="file"
-                          accept=".pdf,.docx,.xlsx,.txt"
-                          onChange={
-                            handleUpload
-                          }
-                          className="hidden"
-                        />
-
-                        <button
-                          type="button"
-                          onClick={() =>
-                            fileInputRef
-                              .current
-                              ?.click()
-                          }
-                          disabled={
-                            uploading
-                            || Boolean(
-                              attachment
-                            )
-                          }
-                          className="
-                            inline-flex
-                            min-h-10
-                            items-center
-                            justify-center
-                            rounded-xl
-                            bg-[var(--primary)]
-                            px-5
-                            py-2.5
-                            text-sm
-                            font-medium
-                            text-white
-                            transition
-                            hover:opacity-90
-                            disabled:cursor-not-allowed
-                            disabled:opacity-50
-                          "
-                        >
-                          {
-                            uploading
-                              ? "Uploading..."
-                              : attachment
-                                ? "Processing file..."
-                                : "Upload a file"
-                          }
-                        </button>
-
-                        <p
-                          className="
-                            mt-3
-                            text-xs
-                            leading-5
-                            text-[var(--text-muted)]
-                          "
-                        >
-                          PDF, DOCX, XLSX, or TXT
-                        </p>
-                      </div>
-
-                    ) : workspaceChat
-                    && workspaceChat.documents.length > 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilesOpen(
-                            true
-                          );
-                        }}
-                        className="
-                          mt-7
-                          rounded-xl
-                          bg-[var(--primary)]
-                          px-5
-                          py-2.5
-                          text-sm
-                          font-medium
-                          text-white
-                          transition
-                          hover:opacity-90
-                        "
-                      >
-                        Choose document
-                      </button>
-
-                    ) : null}
+                      <ArrowRight size={14} />
+                    </div>
                   </div>
-                </section>
-              )}
-            </>
-          )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
 
-        {chat && (
-          <UploadedDocsPanel
-            open={
-              filesOpen
-            }
+        <p
+          className="
+            mt-5
+            text-center
+            text-[11px]
+            text-[var(--text-muted)]
+          "
+        >
+          A focused workspace for understanding your
+          documents.
+        </p>
+      </div>
+    </section>
+  );
+}
 
-            documents={
-              chat.documents
-            }
 
-            onClose={() =>
-              setFilesOpen(
-                false
-              )
-            }
+/* =========================================================
+   DEMO CHAT ROW
+========================================================= */
 
-            onRemove={
-              handleRemoveDocument
-            }
+function DemoChatRow({
+  text,
+  active = false,
+}: {
+  text: string;
+  active?: boolean;
+}) {
+  return (
+    <div
+      className={`
+        truncate
+        rounded-lg
+        px-2
+        py-2
+        text-[11px]
 
-            onOpenSummary={
-              openDocumentSummary
-            }
-          />
-        )}
-      </section>
-    </main>
+        ${
+          active
+            ? "bg-[var(--surface-active)] text-[var(--text-primary)]"
+            : "text-[var(--text-secondary)]"
+        }
+      `}
+    >
+      {text}
+    </div>
+  );
+}
+
+
+/* =========================================================
+   FEATURES
+========================================================= */
+
+function Features() {
+  return (
+    <section
+      id="features"
+      className="
+        border-y
+        border-[var(--border)]
+      "
+    >
+      <div
+        className="
+          mx-auto
+          max-w-6xl
+          px-6
+          py-28
+          lg:px-8
+        "
+      >
+        <div
+          className="
+            grid
+            gap-12
+            lg:grid-cols-[0.8fr_1.2fr]
+            lg:gap-20
+          "
+        >
+          <div>
+            <span
+              className="
+                text-[11px]
+                font-semibold
+                uppercase
+                tracking-[0.12em]
+                text-[var(--primary)]
+              "
+            >
+              Built for clarity
+            </span>
+
+
+            <h2
+              className="
+                mt-4
+                max-w-md
+                text-3xl
+                font-semibold
+                leading-tight
+                tracking-[-0.035em]
+                sm:text-4xl
+              "
+            >
+              Less searching.
+              <br />
+              More understanding.
+            </h2>
+
+
+            <p
+              className="
+                mt-5
+                max-w-md
+                text-[15px]
+                leading-7
+                text-[var(--text-secondary)]
+              "
+            >
+              Your files become one searchable knowledge
+              space, so you can spend less time finding
+              information and more time using it.
+            </p>
+          </div>
+
+
+          <div
+            className="
+              grid
+              gap-px
+              overflow-hidden
+              rounded-2xl
+              border
+              border-[var(--border)]
+              bg-[var(--border)]
+              sm:grid-cols-2
+            "
+          >
+            <Feature
+              icon={<Search size={18} />}
+              title="Grounded answers"
+              description="Answers are based on your uploaded documents, with relevant context retrieved automatically."
+            />
+
+            <Feature
+              icon={<FileSpreadsheet size={18} />}
+              title="One workspace"
+              description="Work across PDFs, Word documents, spreadsheets, and text files together."
+            />
+
+            <Feature
+              icon={<ShieldCheck size={18} />}
+              title="Trace the source"
+              description="See the document and location behind an answer instead of trusting a black box."
+            />
+
+            <Feature
+              icon={<MessageSquareText size={18} />}
+              title="Natural conversation"
+              description="Ask follow-up questions naturally without repeatedly searching through files."
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+/* =========================================================
+   FEATURE
+========================================================= */
+
+function Feature({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div
+      className="
+        bg-[var(--background)]
+        p-7
+        transition-colors
+        duration-200
+        hover:bg-[var(--surface)]
+      "
+    >
+      <div
+        className="
+          mb-8
+          flex
+          h-9
+          w-9
+          items-center
+          justify-center
+          rounded-lg
+          border
+          border-[var(--border)]
+          text-[var(--primary)]
+        "
+      >
+        {icon}
+      </div>
+
+      <h3
+        className="
+          text-[14px]
+          font-semibold
+        "
+      >
+        {title}
+      </h3>
+
+      <p
+        className="
+          mt-2
+          text-[13px]
+          leading-6
+          text-[var(--text-secondary)]
+        "
+      >
+        {description}
+      </p>
+    </div>
+  );
+}
+
+
+/* =========================================================
+   HOW IT WORKS
+========================================================= */
+
+function HowItWorks() {
+  return (
+    <section
+      id="how-it-works"
+      className="
+        mx-auto
+        max-w-6xl
+        px-6
+        py-28
+        lg:px-8
+      "
+    >
+      <div
+        className="
+          mx-auto
+          max-w-2xl
+          text-center
+        "
+      >
+        <span
+          className="
+            text-[11px]
+            font-semibold
+            uppercase
+            tracking-[0.12em]
+            text-[var(--primary)]
+          "
+        >
+          Simple by design
+        </span>
+
+        <h2
+          className="
+            mt-4
+            text-3xl
+            font-semibold
+            tracking-[-0.035em]
+            sm:text-4xl
+          "
+        >
+          From file to answer.
+        </h2>
+
+        <p
+          className="
+            mt-4
+            text-[15px]
+            leading-7
+            text-[var(--text-secondary)]
+          "
+        >
+          No complicated setup. Add your documents and
+          start asking questions.
+        </p>
+      </div>
+
+
+      <div
+        className="
+          relative
+          mx-auto
+          mt-16
+          grid
+          max-w-4xl
+          gap-4
+          md:grid-cols-3
+        "
+      >
+        <Step
+          number="01"
+          title="Add your files"
+          description="Upload the documents you want to work with."
+        />
+
+        <Step
+          number="02"
+          title="We prepare them"
+          description="The system extracts, organizes, and indexes their content."
+        />
+
+        <Step
+          number="03"
+          title="Start asking"
+          description="Ask naturally and get answers grounded in those files."
+        />
+      </div>
+    </section>
+  );
+}
+
+
+/* =========================================================
+   STEP
+========================================================= */
+
+function Step({
+  number,
+  title,
+  description,
+}: {
+  number: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div
+      className="
+        rounded-2xl
+        border
+        border-[var(--border)]
+        bg-[var(--surface)]
+        p-6
+      "
+    >
+      <div
+        className="
+          mb-12
+          flex
+          items-center
+          justify-between
+        "
+      >
+        <span
+          className="
+            text-[11px]
+            font-medium
+            text-[var(--text-muted)]
+          "
+        >
+          {number}
+        </span>
+
+        <span
+          className="
+            h-1.5
+            w-1.5
+            rounded-full
+            bg-[var(--primary)]
+          "
+        />
+      </div>
+
+      <h3
+        className="
+          text-[14px]
+          font-semibold
+        "
+      >
+        {title}
+      </h3>
+
+      <p
+        className="
+          mt-2
+          text-[13px]
+          leading-6
+          text-[var(--text-secondary)]
+        "
+      >
+        {description}
+      </p>
+    </div>
+  );
+}
+
+
+/* =========================================================
+   FINAL CTA
+========================================================= */
+
+function FinalCTA() {
+  return (
+    <section
+      className="
+        px-6
+        pb-28
+        pt-8
+        lg:px-8
+      "
+    >
+      <div
+        className="
+          relative
+          mx-auto
+          max-w-5xl
+          overflow-hidden
+          rounded-[32px]
+          border
+          border-[var(--border)]
+          bg-[var(--surface)]
+          px-6
+          py-20
+          text-center
+          shadow-2xl
+          shadow-black/10
+          sm:px-12
+        "
+      >
+        <div
+          aria-hidden="true"
+          className="
+            pointer-events-none
+            absolute
+            left-1/2
+            top-0
+            h-64
+            w-[650px]
+            max-w-[100vw]
+            -translate-x-1/2
+            -translate-y-1/2
+            rounded-full
+            bg-blue-500/[0.18]
+            blur-[110px]
+          "
+        />
+
+
+        <h2
+          className="
+            relative
+            mx-auto
+            max-w-xl
+            text-3xl
+            font-semibold
+            tracking-[-0.035em]
+            sm:text-4xl
+          "
+        >
+          Stop digging through documents.
+        </h2>
+
+        <p
+          className="
+            relative
+            mx-auto
+            mt-4
+            max-w-lg
+            text-[14px]
+            leading-6
+            text-[var(--text-secondary)]
+          "
+        >
+          Turn your files into a workspace you can
+          actually have a conversation with.
+        </p>
+
+        <div
+          className="
+            relative
+            mt-8
+            flex
+            justify-center
+          "
+        >
+          <GoogleLoginButton variant="hero" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+/* =========================================================
+   FOOTER
+========================================================= */
+
+function Footer() {
+  return (
+    <footer
+      className="
+        border-t
+        border-[var(--border)]
+      "
+    >
+      <div
+        className="
+          mx-auto
+          flex
+          max-w-7xl
+          flex-col
+          gap-3
+          px-6
+          py-8
+          text-[12px]
+          text-[var(--text-muted)]
+          sm:flex-row
+          sm:items-center
+          sm:justify-between
+          lg:px-8
+        "
+      >
+        <span>
+          AI Document Assistant
+        </span>
+
+        <span>
+          Your documents. Your answers.
+        </span>
+      </div>
+    </footer>
   );
 }

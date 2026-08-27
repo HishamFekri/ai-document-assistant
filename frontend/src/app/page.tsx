@@ -7,7 +7,6 @@ import {
   MessageSquareText,
   Search,
   ShieldCheck,
-  Sparkles,
 } from "lucide-react";
 
 import GoogleLoginButton from "@/components/google-login-button";
@@ -42,27 +41,139 @@ export default function Home() {
 }
 
 
+/* =========================================================
+   BACKGROUND
+========================================================= */
+
 function LandingAmbient() {
   return (
     <div
-      className="landing-ambient"
       aria-hidden="true"
+      className="
+        pointer-events-none
+        absolute
+        inset-0
+        overflow-hidden
+      "
     >
-      <div className="ambient-orb ambient-orb-one" />
-      <div className="ambient-orb ambient-orb-two" />
-      <div className="ambient-orb ambient-orb-three" />
-      <div className="ambient-orb ambient-orb-four" />
-      <div className="ambient-orb ambient-orb-five" />
-      <div className="ambient-orb ambient-orb-six" />
-      <div className="ambient-orb ambient-orb-seven" />
-      <div className="ambient-orb ambient-orb-eight" />
+      {/* Hero center glow */}
+      <div
+        className="
+          absolute
+          left-1/2
+          top-[200px]
+          h-[560px]
+          w-[900px]
+          -translate-x-1/2
+          rounded-full
+          bg-blue-500/[0.10]
+          blur-[150px]
+        "
+      />
 
-      <div className="ambient-grid" />
-      <div className="ambient-noise" />
+      {/* Purple-blue glow */}
+      <div
+        className="
+          absolute
+          left-[12%]
+          top-[420px]
+          h-[430px]
+          w-[430px]
+          rounded-full
+          bg-indigo-500/[0.08]
+          blur-[140px]
+        "
+      />
+
+      {/* Right blue glow */}
+      <div
+        className="
+          absolute
+          right-[-100px]
+          top-[170px]
+          h-[470px]
+          w-[470px]
+          rounded-full
+          bg-blue-400/[0.08]
+          blur-[150px]
+        "
+      />
+
+      {/* Lower subtle glow */}
+      <div
+        className="
+          absolute
+          left-1/2
+          top-[1050px]
+          h-[500px]
+          w-[900px]
+          -translate-x-1/2
+          rounded-full
+          bg-indigo-500/[0.05]
+          blur-[170px]
+        "
+      />
+
+      {/* Very soft blue wash */}
+      <div
+        className="
+          absolute
+          inset-x-0
+          top-0
+          h-[780px]
+          bg-gradient-to-b
+          from-blue-500/[0.025]
+          via-transparent
+          to-transparent
+        "
+      />
     </div>
   );
 }
 
+
+/* =========================================================
+   GOOGLE BUTTON THEME WRAPPER
+========================================================= */
+
+function ThemedGoogleLoginButton() {
+  return (
+    <div
+      className="
+        [&_button]:!border
+        [&_button]:!border-[var(--border)]
+        [&_button]:!bg-[var(--surface)]
+        [&_button]:!text-[var(--text-primary)]
+        [&_button]:!shadow-sm
+        [&_button]:!transition-all
+        [&_button]:!duration-200
+
+        [&_button:hover]:!bg-[var(--surface-hover)]
+
+        [&_button_span]:!text-inherit
+
+        [&_a]:!border
+        [&_a]:!border-[var(--border)]
+        [&_a]:!bg-[var(--surface)]
+        [&_a]:!text-[var(--text-primary)]
+        [&_a]:!shadow-sm
+        [&_a]:!transition-all
+        [&_a]:!duration-200
+
+        [&_a:hover]:!bg-[var(--surface-hover)]
+
+        [&_a_span]:!text-inherit
+      "
+    >
+      <GoogleLoginButton />
+    </div>
+  );
+}
+
+
+/* =========================================================
+   NAVBAR
+========================================================= */
 
 function Navbar() {
   return (
@@ -78,28 +189,7 @@ function Navbar() {
         lg:px-8
       "
     >
-      <div className="flex items-center gap-2.5">
-        <div
-          className="
-            flex
-            h-8
-            w-8
-            items-center
-            justify-center
-            rounded-[10px]
-            border
-            border-[var(--border)]
-            bg-[var(--surface)]
-            text-[var(--primary)]
-            shadow-sm
-          "
-        >
-          <Sparkles
-            size={15}
-            strokeWidth={2}
-          />
-        </div>
-
+      <div className="flex items-center">
         <span
           className="
             text-[15px]
@@ -144,16 +234,21 @@ function Navbar() {
       </div>
 
 
-      <GoogleLoginButton />
+      <ThemedGoogleLoginButton />
     </nav>
   );
 }
 
 
+/* =========================================================
+   HERO
+========================================================= */
+
 function Hero() {
   return (
     <section
       className="
+        relative
         mx-auto
         max-w-7xl
         px-6
@@ -163,6 +258,27 @@ function Hero() {
         lg:pt-32
       "
     >
+      {/* Local glow directly behind headline */}
+      <div
+        aria-hidden="true"
+        className="
+          pointer-events-none
+          absolute
+          left-1/2
+          top-[44%]
+          -z-10
+          h-[340px]
+          w-[760px]
+          max-w-[90vw]
+          -translate-x-1/2
+          -translate-y-1/2
+          rounded-full
+          bg-blue-500/[0.08]
+          blur-[110px]
+        "
+      />
+
+
       <div
         className="
           mx-auto
@@ -263,14 +379,18 @@ function Hero() {
               justify-center
               gap-2
               rounded-full
-              bg-[var(--text-primary)]
+              bg-[var(--primary)]
               px-6
               text-sm
               font-medium
-              text-[var(--background)]
+              text-white
+              shadow-[0_10px_35px_rgba(79,70,229,0.20)]
               transition-all
               duration-200
-              hover:opacity-85
+              hover:-translate-y-0.5
+              hover:opacity-90
+              hover:shadow-[0_14px_40px_rgba(79,70,229,0.28)]
+              active:translate-y-0
               active:scale-[0.98]
             "
           >
@@ -295,7 +415,7 @@ function Hero() {
               px-1
             "
           >
-            <GoogleLoginButton />
+            <ThemedGoogleLoginButton />
           </div>
         </div>
 
@@ -323,6 +443,10 @@ function Hero() {
 }
 
 
+/* =========================================================
+   FILE BADGE
+========================================================= */
+
 function FileBadge({
   label,
 }: {
@@ -346,6 +470,10 @@ function FileBadge({
 }
 
 
+/* =========================================================
+   PRODUCT PREVIEW
+========================================================= */
+
 function ProductPreview() {
   return (
     <section
@@ -366,6 +494,26 @@ function ProductPreview() {
           max-w-5xl
         "
       >
+        {/* Glow behind preview */}
+        <div
+          aria-hidden="true"
+          className="
+            pointer-events-none
+            absolute
+            left-1/2
+            top-[45%]
+            -z-10
+            h-[420px]
+            w-[80%]
+            -translate-x-1/2
+            -translate-y-1/2
+            rounded-full
+            bg-blue-500/[0.07]
+            blur-[130px]
+          "
+        />
+
+
         <div
           className="
             overflow-hidden
@@ -373,7 +521,7 @@ function ProductPreview() {
             border
             border-[var(--border)]
             bg-[var(--surface)]
-            shadow-[0_30px_100px_rgba(0,0,0,0.28)]
+            shadow-[0_30px_100px_rgba(0,0,0,0.16)]
             backdrop-blur-xl
           "
         >
@@ -415,6 +563,7 @@ function ProductPreview() {
               md:grid-cols-[220px_1fr]
             "
           >
+            {/* Sidebar preview */}
             <div
               className="
                 hidden
@@ -429,7 +578,6 @@ function ProductPreview() {
                 className="
                   flex
                   items-center
-                  gap-2
                   rounded-xl
                   px-2
                   py-2
@@ -437,13 +585,6 @@ function ProductPreview() {
                   font-medium
                 "
               >
-                <Sparkles
-                  size={14}
-                  className="
-                    text-[var(--primary)]
-                  "
-                />
-
                 New chat
               </div>
 
@@ -480,6 +621,7 @@ function ProductPreview() {
             </div>
 
 
+            {/* Main preview */}
             <div
               className="
                 flex
@@ -544,6 +686,7 @@ function ProductPreview() {
                     space-y-8
                   "
                 >
+                  {/* User message */}
                   <div className="flex justify-end">
                     <div
                       className="
@@ -564,6 +707,7 @@ function ProductPreview() {
                   </div>
 
 
+                  {/* AI message */}
                   <div className="flex gap-3">
                     <div
                       className="
@@ -578,10 +722,12 @@ function ProductPreview() {
                         border
                         border-[var(--border)]
                         bg-[var(--surface)]
+                        text-[9px]
+                        font-semibold
                         text-[var(--primary)]
                       "
                     >
-                      <Sparkles size={13} />
+                      AI
                     </div>
 
 
@@ -635,6 +781,7 @@ function ProductPreview() {
                 </div>
 
 
+                {/* Fake composer */}
                 <div
                   className="
                     mx-auto
@@ -716,6 +863,10 @@ function ProductPreview() {
 }
 
 
+/* =========================================================
+   DEMO CHAT ROW
+========================================================= */
+
 function DemoChatRow({
   text,
   active = false,
@@ -744,6 +895,10 @@ function DemoChatRow({
   );
 }
 
+
+/* =========================================================
+   FEATURES
+========================================================= */
 
 function Features() {
   return (
@@ -861,6 +1016,10 @@ function Features() {
 }
 
 
+/* =========================================================
+   FEATURE
+========================================================= */
+
 function Feature({
   icon,
   title,
@@ -920,6 +1079,10 @@ function Feature({
   );
 }
 
+
+/* =========================================================
+   HOW IT WORKS
+========================================================= */
 
 function HowItWorks() {
   return (
@@ -1012,6 +1175,10 @@ function HowItWorks() {
 }
 
 
+/* =========================================================
+   STEP
+========================================================= */
+
 function Step({
   number,
   title,
@@ -1083,6 +1250,10 @@ function Step({
 }
 
 
+/* =========================================================
+   FINAL CTA
+========================================================= */
+
 function FinalCTA() {
   return (
     <section
@@ -1112,33 +1283,28 @@ function FinalCTA() {
         "
       >
         <div
+          aria-hidden="true"
           className="
             pointer-events-none
             absolute
             left-1/2
             top-0
-            h-52
-            w-[520px]
+            h-64
+            w-[650px]
+            max-w-[100vw]
             -translate-x-1/2
             -translate-y-1/2
             rounded-full
-            bg-[rgba(65,105,225,0.22)]
-            blur-[100px]
+            bg-blue-500/[0.18]
+            blur-[110px]
           "
         />
 
-        <Sparkles
-          size={20}
-          className="
-            mx-auto
-            text-[var(--primary)]
-          "
-        />
 
         <h2
           className="
+            relative
             mx-auto
-            mt-6
             max-w-xl
             text-3xl
             font-semibold
@@ -1151,6 +1317,7 @@ function FinalCTA() {
 
         <p
           className="
+            relative
             mx-auto
             mt-4
             max-w-lg
@@ -1165,18 +1332,23 @@ function FinalCTA() {
 
         <div
           className="
+            relative
             mt-8
             flex
             justify-center
           "
         >
-          <GoogleLoginButton />
+          <ThemedGoogleLoginButton />
         </div>
       </div>
     </section>
   );
 }
 
+
+/* =========================================================
+   FOOTER
+========================================================= */
 
 function Footer() {
   return (

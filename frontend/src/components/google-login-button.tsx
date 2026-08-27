@@ -42,33 +42,34 @@ export default function GoogleLoginButton({
       type="button"
       onClick={signIn}
       className={`
+        group
+
         inline-flex
         w-auto
         shrink-0
         items-center
         justify-center
         gap-2.5
+
         rounded-full
 
         border
-        border-neutral-300
-        bg-white
-        text-neutral-800
+        border-[var(--border)]
+
+        bg-[var(--surface)]
+        text-[var(--text-primary)]
 
         shadow-sm
 
         transition-all
-        duration-150
+        duration-200
 
-        hover:bg-neutral-50
-        hover:shadow
+        hover:-translate-y-[1px]
+        hover:bg-[var(--surface-hover)]
+        hover:shadow-md
 
+        active:translate-y-0
         active:scale-[0.98]
-
-        dark:border-neutral-700
-        dark:bg-neutral-950
-        dark:text-neutral-100
-        dark:hover:bg-neutral-900
 
         ${sizeClasses}
       `}
@@ -102,6 +103,7 @@ export default function GoogleLoginButton({
           d="M12 6.2c1.43 0 2.72.49 3.73 1.45l2.79-2.79C16.83 3.29 14.63 2.33 12 2.33A9.72 9.72 0 0 0 3.32 7.69l3.24 2.52C7.33 7.91 9.47 6.2 12 6.2Z"
         />
       </svg>
+
 
       <span
         className="
