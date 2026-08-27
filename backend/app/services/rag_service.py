@@ -1494,7 +1494,12 @@ def get_related_visual_results(
     to the user's question and located on pages already used
     as evidence.
 
-    Repeated decorative/header images are filtered out.
+    Strong duplicate protection:
+    - repeated asset URLs are treated as decorative/repeated
+      and are not auto-attached;
+    - repeated normalized visual descriptions are skipped;
+    - generic headers/logos/banners are skipped;
+    - images must still pass visual semantic retrieval.
     """
     if not search_results:
         return []
@@ -1541,9 +1546,6 @@ def get_related_visual_results(
     if not anchor_pages:
         return []
 
-    # Count repeated visual descriptions across the selected
-    # documents. A header/logo that repeats on many pages should
-    # not be attached to every answer.
     all_image_chunks = (
         db.query(DocumentChunk)
         .filter(
@@ -1561,30 +1563,61 @@ def get_related_visual_results(
     )
 
     signature_counts = {}
+    asset_path_counts = {}
 
     for image_chunk in all_image_chunks:
+        metadata = (
+            image_chunk.chunk_metadata
+            or {}
+        )
+
+        asset_path = (
+            metadata.get(
+                "asset_path"
+            )
+        )
+
+        if (
+            isinstance(
+                asset_path,
+                str,
+            )
+            and asset_path.strip()
+        ):
+            normalized_path = (
+                asset_path.strip()
+            )
+
+            asset_path_counts[
+                normalized_path
+            ] = (
+                asset_path_counts.get(
+                    normalized_path,
+                    0,
+                )
+                + 1
+            )
+
         signature = (
             normalize_visual_signature(
                 image_chunk
             )
         )
 
-        if not signature:
-            continue
-
-        signature_counts[
-            signature
-        ] = (
-            signature_counts.get(
-                signature,
-                0,
+        if signature:
+            signature_counts[
+                signature
+            ] = (
+                signature_counts.get(
+                    signature,
+                    0,
+                )
+                + 1
             )
-            + 1
-        )
 
     candidate_limit = max(
-        12,
-        limit * 4,
+        16,
+        limit * 6,
     )
 
     visual_candidates = (
@@ -1618,9 +1651,52 @@ def get_related_visual_results(
             page,
         )
 
-        # Automatic images must support evidence that was
-        # actually selected for the answer.
         if page_key not in anchor_pages:
+            continue
+
+        metadata = (
+            chunk.chunk_metadata
+            or {}
+        )
+
+        asset_path = (
+            metadata.get(
+                "asset_path"
+            )
+        )
+
+        normalized_asset_path = (
+            asset_path.strip()
+            if (
+                isinstance(
+                    asset_path,
+                    str,
+                )
+                and asset_path.strip()
+            )
+            else None
+        )
+
+        # The same actual Cloudinary URL appearing on multiple
+        # pages is almost always a repeated page banner/header.
+        if (
+            normalized_asset_path
+            and asset_path_counts.get(
+                normalized_asset_path,
+                0,
+            )
+            >= RAG_DECORATIVE_VISUAL_REPEAT_THRESHOLD
+        ):
+            logger.debug(
+                (
+                    "Skipping repeated asset URL "
+                    "chunk=%s repeats=%s"
+                ),
+                chunk.id,
+                asset_path_counts[
+                    normalized_asset_path
+                ],
+            )
             continue
 
         signature = (
@@ -1629,7 +1705,7 @@ def get_related_visual_results(
             )
         )
 
-        repeated_count = (
+        repeated_signature_count = (
             signature_counts.get(
                 signature,
                 0,
@@ -1638,19 +1714,17 @@ def get_related_visual_results(
             else 0
         )
 
-        # Repeated headers, logos and section banners are noise.
         if (
-            repeated_count
+            repeated_signature_count
             >= RAG_DECORATIVE_VISUAL_REPEAT_THRESHOLD
         ):
             logger.debug(
                 (
                     "Skipping repeated visual "
-                    "chunk=%s repeats=%s signature=%s"
+                    "description chunk=%s repeats=%s"
                 ),
                 chunk.id,
-                repeated_count,
-                signature[:120],
+                repeated_signature_count,
             )
             continue
 
@@ -1658,26 +1732,21 @@ def get_related_visual_results(
             signature
         ):
             logger.debug(
-                "Skipping generic visual chunk=%s signature=%s",
+                (
+                    "Skipping generic visual "
+                    "chunk=%s signature=%s"
+                ),
                 chunk.id,
                 signature[:120],
             )
             continue
 
-        metadata = (
-            chunk.chunk_metadata
-            or {}
-        )
-
         asset_key = (
-            chunk.document_id,
-            metadata.get(
+            normalized_asset_path
+            or metadata.get(
                 "asset_filename"
             )
-            or metadata.get(
-                "asset_path"
-            )
-            or chunk.id,
+            or f"chunk:{chunk.id}"
         )
 
         if asset_key in seen_assets:
@@ -1699,16 +1768,16 @@ def get_related_visual_results(
                 signature
             )
 
-        result = dict(
+        selected_result = dict(
             result
         )
 
-        result[
+        selected_result[
             "match_type"
         ] = "related_visual"
 
         selected.append(
-            result
+            selected_result
         )
 
         if len(selected) >= limit:

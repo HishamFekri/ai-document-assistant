@@ -1,5 +1,6 @@
 import base64
 import binascii
+import hashlib
 import io
 import logging
 import os
@@ -490,11 +491,13 @@ def save_datalab_images(
     """
     Upload Datalab-extracted images to Cloudinary.
 
-    The return shape stays the same as before:
-        {filename: path_or_url}
+    Duplicate image bytes generate the same content hash and
+    therefore the same Cloudinary public_id. This prevents
+    repeated page headers / decorative images from becoming
+    separate assets only because their filenames differ.
 
-    hybrid_pdf_service.py can therefore keep using
-    the returned value as metadata["asset_path"].
+    Return shape remains:
+        {original_filename: cloudinary_secure_url}
     """
     output_path = Path(
         output_directory
@@ -505,15 +508,9 @@ def save_datalab_images(
         or "document"
     )
 
-    batch_folder = (
-        output_path.name
-        or "batch"
-    )
-
     cloudinary_folder = (
         "ai-document-assistant/"
-        f"{document_folder}/"
-        f"{batch_folder}"
+        f"{document_folder}"
     )
 
     saved_images = {}
@@ -551,6 +548,16 @@ def save_datalab_images(
 
             continue
 
+        image_hash = (
+            hashlib.sha256(
+                image_bytes
+            ).hexdigest()
+        )
+
+        public_id = (
+            f"img_{image_hash[:40]}"
+        )
+
         try:
             upload_result = (
                 cloudinary.uploader.upload(
@@ -561,9 +568,7 @@ def save_datalab_images(
                         cloudinary_folder
                     ),
                     public_id=(
-                        Path(
-                            safe_filename
-                        ).stem
+                        public_id
                     ),
                     resource_type="image",
                     overwrite=True,
