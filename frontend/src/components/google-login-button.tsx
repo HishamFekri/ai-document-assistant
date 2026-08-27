@@ -4,35 +4,12 @@ import { GoogleLogin } from "@react-oauth/google";
 import { useRouter } from "next/navigation";
 
 
-function isSafariBrowser() {
-  if (
-    typeof window
-    === "undefined"
-  ) {
-    return false;
-  }
-
-  const userAgent =
-    window.navigator.userAgent;
-
-  return (
-    /Safari/i.test(userAgent)
-    && !/Chrome|CriOS|Edg|OPR|Android/i.test(
-      userAgent
-    )
-  );
-}
-
-
 export default function GoogleLoginButton() {
   const router = useRouter();
 
   const apiUrl =
     process.env.NEXT_PUBLIC_API_URL
     ?? "http://localhost:8000";
-
-  const safari =
-    isSafariBrowser();
 
 
   const handleSuccess = async (
@@ -82,7 +59,7 @@ export default function GoogleLoginButton() {
         );
       }
 
-      router.push(
+      router.replace(
         "/chat"
       );
 
@@ -105,44 +82,6 @@ export default function GoogleLoginButton() {
       "Google sign-in failed."
     );
   };
-
-
-  if (safari) {
-    const loginUri =
-      typeof window !== "undefined"
-        ? `${window.location.origin}/api/backend/auth/google/redirect`
-        : undefined;
-
-    return (
-      <GoogleLogin
-        ux_mode="redirect"
-
-        login_uri={
-          loginUri
-        }
-
-        onSuccess={
-          handleSuccess
-        }
-
-        onError={
-          handleError
-        }
-
-        useOneTap={
-          false
-        }
-
-        itp_support
-
-        shape="pill"
-
-        size="large"
-
-        text="signin_with"
-      />
-    );
-  }
 
 
   return (
