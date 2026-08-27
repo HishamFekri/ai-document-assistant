@@ -17,6 +17,16 @@ type Props = {
 };
 
 
+function isAbsoluteHttpUrl(
+  value: string
+) {
+  return (
+    value.startsWith("https://")
+    || value.startsWith("http://")
+  );
+}
+
+
 export default function SourceImage({
   imageUrl,
   alt,
@@ -52,17 +62,33 @@ export default function SourceImage({
         setLoading(true);
         setFailed(false);
 
+        const isExternal =
+          isAbsoluteHttpUrl(
+            imageUrl
+          );
+
+        const finalUrl =
+          isExternal
+            ? imageUrl
+            : (
+              `${process.env.NEXT_PUBLIC_API_URL}${imageUrl}`
+            );
+
         const response =
           await fetch(
-            `${process.env.NEXT_PUBLIC_API_URL}${imageUrl}`,
+            finalUrl,
             {
-              credentials: "include",
+              credentials:
+                isExternal
+                  ? "omit"
+                  : "include",
+              cache: "force-cache",
             }
           );
 
         if (!response.ok) {
           throw new Error(
-            "Could not load image"
+            `Could not load image (${response.status})`
           );
         }
 

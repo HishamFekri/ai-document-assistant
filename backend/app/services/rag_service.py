@@ -11,6 +11,7 @@ from app.database.models import (
 )
 
 from app.services.search_service import (
+    get_chunk_page,
     search_chunks_by_page,
     search_similar_chunks,
     search_visual_chunks,
@@ -53,6 +54,14 @@ RAG_FILE_MODE_SEMANTIC_CHUNKS = int(
     os.getenv(
         "RAG_FILE_MODE_SEMANTIC_CHUNKS",
         "8",
+    )
+)
+
+
+RAG_RELATED_VISUAL_MAX_CHUNKS = int(
+    os.getenv(
+        "RAG_RELATED_VISUAL_MAX_CHUNKS",
+        "4",
     )
 )
 
@@ -497,6 +506,12 @@ def build_sources(
             )
         )
 
+        asset_path = (
+            metadata.get(
+                "asset_path"
+            )
+        )
+
         if (
             chunk.content_type
             == "image"
@@ -506,14 +521,33 @@ def build_sources(
                 "asset_filename"
             ] = asset_filename
 
-            source[
-                "asset_url"
-            ] = (
-                f"/documents/"
-                f"{document.id}"
-                f"/assets/"
-                f"{asset_filename}"
-            )
+            if (
+                isinstance(
+                    asset_path,
+                    str,
+                )
+                and (
+                    asset_path.startswith(
+                        "https://"
+                    )
+                    or asset_path.startswith(
+                        "http://"
+                    )
+                )
+            ):
+                source[
+                    "asset_url"
+                ] = asset_path
+
+            else:
+                source[
+                    "asset_url"
+                ] = (
+                    f"/documents/"
+                    f"{document.id}"
+                    f"/assets/"
+                    f"{asset_filename}"
+                )
 
         sources.append(
             source
@@ -1330,6 +1364,179 @@ def get_representative_document_chunks(
     ]
 
 
+
+def get_related_visual_results(
+    db: Session,
+    search_results,
+    document_ids: list[int],
+    limit: int | None = None,
+):
+    """
+    Attach image chunks from pages that already contain
+    strong text/table/equation evidence.
+
+    This makes images appear automatically when they are
+    relevant to the answer, even if the user did not
+    explicitly say "image" or "picture".
+    """
+    if not search_results:
+        return []
+
+    if not document_ids:
+        return []
+
+    if limit is None:
+        limit = (
+            RAG_RELATED_VISUAL_MAX_CHUNKS
+        )
+
+    if limit <= 0:
+        return []
+
+    anchor_pages = []
+    anchor_score_by_page = {}
+
+    for result in search_results:
+        chunk = result["chunk"]
+
+        if (
+            chunk.content_type
+            == "image"
+        ):
+            continue
+
+        page = get_chunk_page(
+            chunk
+        )
+
+        if page is None:
+            continue
+
+        key = (
+            chunk.document_id,
+            page,
+        )
+
+        if key not in anchor_pages:
+            anchor_pages.append(
+                key
+            )
+
+        score = float(
+            result.get(
+                "ranking_score",
+                result.get(
+                    "similarity",
+                    0.0,
+                ),
+            )
+            or 0.0
+        )
+
+        anchor_score_by_page[
+            key
+        ] = max(
+            anchor_score_by_page.get(
+                key,
+                0.0,
+            ),
+            score,
+        )
+
+        if len(anchor_pages) >= 6:
+            break
+
+    if not anchor_pages:
+        return []
+
+    image_chunks = (
+        db.query(DocumentChunk)
+        .filter(
+            DocumentChunk.document_id.in_(
+                document_ids
+            ),
+            DocumentChunk.content_type
+            == "image",
+        )
+        .order_by(
+            DocumentChunk.document_id,
+            DocumentChunk.id,
+        )
+        .all()
+    )
+
+    results = []
+    seen_assets = set()
+
+    for chunk in image_chunks:
+        page = get_chunk_page(
+            chunk
+        )
+
+        if page is None:
+            continue
+
+        key = (
+            chunk.document_id,
+            page,
+        )
+
+        if key not in (
+            anchor_score_by_page
+        ):
+            continue
+
+        metadata = (
+            chunk.chunk_metadata
+            or {}
+        )
+
+        asset_key = (
+            chunk.document_id,
+            metadata.get(
+                "asset_filename"
+            )
+            or metadata.get(
+                "asset_path"
+            )
+            or chunk.id,
+        )
+
+        if asset_key in seen_assets:
+            continue
+
+        seen_assets.add(
+            asset_key
+        )
+
+        base_score = (
+            anchor_score_by_page[
+                key
+            ]
+        )
+
+        results.append(
+            {
+                "chunk": chunk,
+                "similarity": max(
+                    base_score - 0.01,
+                    0.0,
+                ),
+                "ranking_score": max(
+                    base_score - 0.01,
+                    0.0,
+                ),
+                "match_type":
+                    "related_visual",
+            }
+        )
+
+        if len(results) >= limit:
+            break
+
+    return results
+
+
 def build_retrieval_guidance(
     search_results,
     documents,
@@ -1933,6 +2140,25 @@ def prepare_answer_context(
             "target_document_ids":
                 target_document_ids,
         }
+
+    related_visual_results = (
+        get_related_visual_results(
+            db=db,
+            search_results=(
+                search_results
+            ),
+            document_ids=(
+                target_document_ids
+            ),
+        )
+    )
+
+    search_results = (
+        merge_search_results(
+            search_results,
+            related_visual_results,
+        )
+    )
 
     raw_context = (
         build_context(

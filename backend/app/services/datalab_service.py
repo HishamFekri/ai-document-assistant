@@ -1,15 +1,34 @@
 import base64
 import binascii
+import io
 import logging
 import os
 import time
 from pathlib import Path
 
+import cloudinary
+import cloudinary.uploader
 import requests
 from dotenv import load_dotenv
 
 
 load_dotenv()
+
+
+CLOUDINARY_URL = os.getenv(
+    "CLOUDINARY_URL"
+)
+
+if not CLOUDINARY_URL:
+    raise RuntimeError(
+        "CLOUDINARY_URL is not set"
+    )
+
+# The Cloudinary Python SDK reads CLOUDINARY_URL
+# automatically from the environment.
+cloudinary.config(
+    secure=True
+)
 
 
 logger = logging.getLogger(__name__)
@@ -468,18 +487,41 @@ def save_datalab_images(
     images: dict,
     output_directory,
 ):
+    """
+    Upload Datalab-extracted images to Cloudinary.
+
+    The return shape stays the same as before:
+        {filename: path_or_url}
+
+    hybrid_pdf_service.py can therefore keep using
+    the returned value as metadata["asset_path"].
+    """
     output_path = Path(
         output_directory
     )
 
-    output_path.mkdir(
-        parents=True,
-        exist_ok=True,
+    document_folder = (
+        output_path.parent.name
+        or "document"
+    )
+
+    batch_folder = (
+        output_path.name
+        or "batch"
+    )
+
+    cloudinary_folder = (
+        "ai-document-assistant/"
+        f"{document_folder}/"
+        f"{batch_folder}"
     )
 
     saved_images = {}
 
-    for filename, encoded_image in images.items():
+    for (
+        filename,
+        encoded_image,
+    ) in images.items():
         if not encoded_image:
             continue
 
@@ -489,11 +531,6 @@ def save_datalab_images(
 
         if not safe_filename:
             continue
-
-        image_path = (
-            output_path
-            / safe_filename
-        )
 
         try:
             image_bytes = (
@@ -515,17 +552,45 @@ def save_datalab_images(
             continue
 
         try:
-            with open(
-                image_path,
-                "wb",
-            ) as image_file:
-                image_file.write(
-                    image_bytes
+            upload_result = (
+                cloudinary.uploader.upload(
+                    io.BytesIO(
+                        image_bytes
+                    ),
+                    folder=(
+                        cloudinary_folder
+                    ),
+                    public_id=(
+                        Path(
+                            safe_filename
+                        ).stem
+                    ),
+                    resource_type="image",
+                    overwrite=True,
+                    unique_filename=False,
+                    use_filename=False,
                 )
+            )
 
-        except OSError:
+        except Exception:
             logger.exception(
-                "Could not save Datalab image: %s",
+                "Could not upload Datalab image "
+                "to Cloudinary: %s",
+                safe_filename,
+            )
+
+            continue
+
+        secure_url = (
+            upload_result.get(
+                "secure_url"
+            )
+        )
+
+        if not secure_url:
+            logger.warning(
+                "Cloudinary returned no secure URL "
+                "for image: %s",
                 safe_filename,
             )
 
@@ -534,12 +599,14 @@ def save_datalab_images(
         saved_images[
             safe_filename
         ] = str(
-            image_path
+            secure_url
         )
 
     logger.info(
-        "Saved %s Datalab images",
+        "Uploaded %s Datalab images "
+        "to Cloudinary",
         len(saved_images),
     )
 
     return saved_images
+
