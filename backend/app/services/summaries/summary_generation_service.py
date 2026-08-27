@@ -16,6 +16,7 @@ from app.database.summary_assistant_models import (
 )
 
 from app.services.summaries.summary_context_service import (
+    find_scope_page_numbers,
     get_document_summary_context,
     get_document_transcription_context,
 )
@@ -338,8 +339,391 @@ def resolve_output_language(
         chat_id=chat_id,
     )
 
+
+def build_generation_request_system_prompt() -> str:
+    return """
+You convert summary-workspace instructions into a structured request.
+
+Return valid JSON only.
+
+Schema:
+{
+  "operation": "summarize" | "explain" | "translate",
+  "scope_type": "whole_document" | "pages" | "topic",
+  "scope_query": "string or null",
+  "start_page": 1 or null,
+  "end_page": 5 or null,
+  "target_language": "Arabic" | "English" | null
+}
+
+Rules:
+
+- Read the FULL instruction history in order.
+- Newer instructions override only the fields they explicitly change.
+- Preserve an earlier scope if the newest message only changes language/style.
+- "Make it Arabic" changes target_language only; it does NOT reset scope.
+- "Explain only the engine section" means:
+  operation=explain, scope_type=topic, scope_query="engine".
+- "Summarize the engine section" means:
+  operation=summarize, scope_type=topic, scope_query="engine".
+- "Translate only pages 15-20 to Arabic" means:
+  operation=translate, scope_type=pages,
+  start_page=15, end_page=20, target_language=Arabic.
+- "Translate the engine section to Arabic" means:
+  operation=translate, scope_type=topic,
+  scope_query="engine", target_language=Arabic.
+- "Do the whole document" or an explicit reset to the whole file means
+  scope_type=whole_document and clears page/topic scope.
+- If the operation is not explicitly changed, infer it from the selected
+  product mode:
+  summary mode -> summarize
+  transcription mode -> explain
+- If scope is not specified anywhere, use whole_document.
+- Do not invent page numbers.
+- scope_query should contain only the requested subject/section/topic,
+  not the whole user sentence.
+""".strip()
+
+
+def resolve_generation_request(
+    db: Session,
+    chat_id: int,
+    document_id: int,
+    mode: SummaryMode,
+) -> dict:
+    history = (
+        get_summary_instruction_history(
+            db=db,
+            chat_id=chat_id,
+            document_id=document_id,
+        )
+    )
+
+    user_instructions = [
+        message.content.strip()
+        for message in history
+        if (
+            message.role == "user"
+            and message.content
+            and message.content.strip()
+        )
+    ]
+
+    default_operation = (
+        "summarize"
+        if mode == "summary"
+        else "explain"
+    )
+
+    if not user_instructions:
+        return {
+            "operation":
+                default_operation,
+            "scope_type":
+                "whole_document",
+            "scope_query":
+                None,
+            "start_page":
+                None,
+            "end_page":
+                None,
+            "target_language":
+                None,
+        }
+
+    response = (
+        client.chat.completions.create(
+            model=DEEPSEEK_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content":
+                        build_generation_request_system_prompt(),
+                },
+                {
+                    "role": "user",
+                    "content":
+                        (
+                            "SELECTED PRODUCT MODE:\n"
+                            f"{mode}\n\n"
+                            "INSTRUCTION HISTORY:\n"
+                            + "\n".join(
+                                f"- {instruction}"
+                                for instruction
+                                in user_instructions
+                            )
+                        ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=300,
+            response_format={
+                "type":
+                    "json_object"
+            },
+        )
+    )
+
+    raw = (
+        response
+        .choices[0]
+        .message
+        .content
+        or ""
+    ).strip()
+
+    try:
+        parsed = json.loads(
+            raw
+        )
+
+    except json.JSONDecodeError:
+        parsed = {}
+
+    operation = parsed.get(
+        "operation"
+    )
+
+    if operation not in {
+        "summarize",
+        "explain",
+        "translate",
+    }:
+        operation = (
+            default_operation
+        )
+
+    scope_type = parsed.get(
+        "scope_type"
+    )
+
+    if scope_type not in {
+        "whole_document",
+        "pages",
+        "topic",
+    }:
+        scope_type = (
+            "whole_document"
+        )
+
+    scope_query = parsed.get(
+        "scope_query"
+    )
+
+    if not isinstance(
+        scope_query,
+        str,
+    ):
+        scope_query = None
+
+    elif not scope_query.strip():
+        scope_query = None
+
+    else:
+        scope_query = (
+            scope_query.strip()
+        )
+
+    start_page = parsed.get(
+        "start_page"
+    )
+
+    end_page = parsed.get(
+        "end_page"
+    )
+
+    if not isinstance(
+        start_page,
+        int,
+    ):
+        start_page = None
+
+    if not isinstance(
+        end_page,
+        int,
+    ):
+        end_page = None
+
+    target_language = parsed.get(
+        "target_language"
+    )
+
+    if target_language not in {
+        "Arabic",
+        "English",
+    }:
+        target_language = None
+
+    return {
+        "operation":
+            operation,
+        "scope_type":
+            scope_type,
+        "scope_query":
+            scope_query,
+        "start_page":
+            start_page,
+        "end_page":
+            end_page,
+        "target_language":
+            target_language,
+    }
+
+
+def resolve_generation_pages(
+    db: Session,
+    document: Document,
+    request: dict,
+) -> list[int] | None:
+    scope_type = request.get(
+        "scope_type"
+    )
+
+    if scope_type == "whole_document":
+        return None
+
+    if scope_type == "pages":
+        start_page = request.get(
+            "start_page"
+        )
+
+        end_page = request.get(
+            "end_page"
+        )
+
+        if (
+            not isinstance(
+                start_page,
+                int,
+            )
+            or not isinstance(
+                end_page,
+                int,
+            )
+        ):
+            return None
+
+        if start_page > end_page:
+            start_page, end_page = (
+                end_page,
+                start_page,
+            )
+
+        if document.pages_count:
+            start_page = max(
+                1,
+                min(
+                    start_page,
+                    document.pages_count,
+                ),
+            )
+
+            end_page = max(
+                1,
+                min(
+                    end_page,
+                    document.pages_count,
+                ),
+            )
+
+        return list(
+            range(
+                start_page,
+                end_page + 1,
+            )
+        )
+
+    scope_query = request.get(
+        "scope_query"
+    )
+
+    if (
+        scope_type == "topic"
+        and isinstance(
+            scope_query,
+            str,
+        )
+        and scope_query.strip()
+    ):
+        pages = (
+            find_scope_page_numbers(
+                db=db,
+                document=document,
+                scope_query=(
+                    scope_query
+                ),
+            )
+        )
+
+        return pages or None
+
+    return None
+
+
+def build_request_guidance(
+    request: dict,
+    selected_pages:
+        list[int] | None,
+) -> str:
+    operation = request.get(
+        "operation",
+        "summarize",
+    )
+
+    scope_type = request.get(
+        "scope_type",
+        "whole_document",
+    )
+
+    scope_query = request.get(
+        "scope_query"
+    )
+
+    lines = [
+        "STRUCTURED USER REQUEST",
+        f"Operation: {operation}",
+        f"Scope type: {scope_type}",
+    ]
+
+    if scope_query:
+        lines.append(
+            f"Requested topic/section: {scope_query}"
+        )
+
+    if selected_pages:
+        lines.append(
+            "Selected pages: "
+            + ", ".join(
+                str(page)
+                for page
+                in selected_pages
+            )
+        )
+
+    lines.extend(
+        [
+            (
+                "Honor this scope strictly. "
+                "Do not cover unrelated parts "
+                "of the document."
+            ),
+            (
+                "If the selected scope does not "
+                "contain enough information, say so "
+                "instead of silently switching back "
+                "to the whole document."
+            ),
+        ]
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
 def build_summary_system_prompt(
     mode: SummaryMode,
+    request: dict | None = None,
 ) -> str:
     if mode == "transcription":
         mode_rules = """
@@ -382,7 +766,7 @@ or:
         mode_rules = """
 SELECTED MODE: SUMMARY
 
-This mode is a concise high-value summary of the whole document.
+This mode creates a concise high-value response for the SELECTED DOCUMENT SCOPE.
 
 - Give the reader the overall purpose and main message of the document.
 - Identify the document's real sections/topics and preserve their logical order.
@@ -414,7 +798,7 @@ You are an expert document analyst.
 Generate output grounded only in the supplied document.
 
 The SELECTED MODE is a product-level constraint.
-Summary Assistant preferences may change language, emphasis, tone, or desired level of detail, but they must not change the fundamental behavior of the selected mode.
+Summary Assistant instructions may change language, scope, emphasis, tone, level of detail, and whether the selected scope should be summarized, explained, or translated. The selected product mode still controls the output format.
 
 SUMMARY LANGUAGE PRIORITY
 
@@ -479,6 +863,9 @@ def build_summary_user_prompt(
     instructions: str,
     default_language: str | None,
     mode: SummaryMode,
+    request: dict,
+    selected_pages:
+        list[int] | None,
 ) -> str:
     document = context[
         "document"
@@ -515,13 +902,44 @@ Prefer completeness and detail.
 """.strip()
 
     else:
-        task = """
-Create a high-value summary of the whole document.
+        operation = request.get(
+            "operation",
+            "summarize",
+        )
+
+        if operation == "explain":
+            task = """
+Explain the selected document scope clearly and thoroughly.
+
+Focus only on the selected scope.
+Teach the important concepts, relationships, procedures, specifications,
+warnings, and conclusions found there.
+Do not switch back to summarizing unrelated parts of the document.
+Do not transcribe page by page unless page order is necessary to explain
+a procedure.
+""".strip()
+
+        elif operation == "translate":
+            task = """
+Translate the meaningful content of the selected document scope while
+preserving its technical meaning.
+
+Focus only on the selected scope.
+Preserve important numbers, units, identifiers, equations, and technical
+terminology accurately.
+Do not add unrelated document sections.
+""".strip()
+
+        else:
+            task = """
+Create a high-value summary of the selected document scope.
 
 Do not transcribe page by page.
-Do not display images, tables, or equations as visual blocks.
-Identify the main sections/topics and give the key takeaway from each.
-Emphasize the overall conclusions, findings, and what the reader should remember.
+Identify the main ideas inside the selected scope and give the key takeaway
+from each meaningful part.
+Emphasize the conclusions, findings, specifications, and what the reader
+should remember.
+Do not include unrelated parts of the document.
 """.strip()
 
     return f"""
@@ -540,6 +958,11 @@ Pages:
 SELECTED GENERATION MODE
 
 {mode.upper()}
+
+{build_request_guidance(
+    request=request,
+    selected_pages=selected_pages,
+)}
 
 {task}
 
@@ -2107,11 +2530,36 @@ def stream_transcription_content(
     db: Session,
     document: Document,
     chat_id: int,
+    request: dict | None = None,
+    selected_pages:
+        list[int] | None = None,
 ):
+    if request is None:
+        request = (
+            resolve_generation_request(
+                db=db,
+                chat_id=chat_id,
+                document_id=document.id,
+                mode="transcription",
+            )
+        )
+
+    if selected_pages is None:
+        selected_pages = (
+            resolve_generation_pages(
+                db=db,
+                document=document,
+                request=request,
+            )
+        )
+
     context = (
         get_document_transcription_context(
             db=db,
             document=document,
+            page_numbers=(
+                selected_pages
+            ),
         )
     )
 
@@ -2134,10 +2582,20 @@ def stream_transcription_content(
             chat_id=chat_id,
             document_id=document.id,
         )
+        + "\n\n"
+        + build_request_guidance(
+            request=request,
+            selected_pages=(
+                selected_pages
+            ),
+        )
     )
 
     output_language = (
-        resolve_output_language(
+        request.get(
+            "target_language"
+        )
+        or resolve_output_language(
             db=db,
             chat_id=chat_id,
             document_id=document.id,
@@ -2350,12 +2808,33 @@ def stream_summary_content(
             "Invalid summary mode"
         )
 
+    request = (
+        resolve_generation_request(
+            db=db,
+            chat_id=chat_id,
+            document_id=document.id,
+            mode=mode,
+        )
+    )
+
+    selected_pages = (
+        resolve_generation_pages(
+            db=db,
+            document=document,
+            request=request,
+        )
+    )
+
     if mode == "transcription":
         transcription_generator = (
             stream_transcription_content(
                 db=db,
                 document=document,
                 chat_id=chat_id,
+                request=request,
+                selected_pages=(
+                    selected_pages
+                ),
             )
         )
 
@@ -2381,6 +2860,9 @@ def stream_summary_content(
         get_document_summary_context(
             db=db,
             document=document,
+            page_numbers=(
+                selected_pages
+            ),
         )
     )
 
@@ -2402,10 +2884,20 @@ def stream_summary_content(
             chat_id=chat_id,
             document_id=document.id,
         )
+        + "\n\n"
+        + build_request_guidance(
+            request=request,
+            selected_pages=(
+                selected_pages
+            ),
+        )
     )
 
     default_language = (
-        resolve_output_language(
+        request.get(
+            "target_language"
+        )
+        or resolve_output_language(
             db=db,
             chat_id=chat_id,
             document_id=document.id,
@@ -2424,6 +2916,7 @@ def stream_summary_content(
                     "content":
                         build_summary_system_prompt(
                             mode=mode,
+                            request=request,
                         ),
                 },
                 {
@@ -2438,6 +2931,10 @@ def stream_summary_content(
                                 default_language
                             ),
                             mode=mode,
+                            request=request,
+                            selected_pages=(
+                                selected_pages
+                            ),
                         ),
                 },
             ],
