@@ -8,14 +8,55 @@ import Providers from "@/components/providers";
 import BackendWarmup from "@/components/chat/BackendWarmup";
 
 
-export const metadata:
-  Metadata = {
+export const metadata: Metadata = {
+  title:
+    "AI Document Assistant",
+
+  description:
+    "Chat with your documents using AI and get answers grounded in your files.",
+
+  openGraph: {
     title:
       "AI Document Assistant",
 
     description:
       "Chat with your documents using AI and get answers grounded in your files.",
-  };
+
+    type:
+      "website",
+
+    images: [
+      {
+        url:
+          "/og-image.jpeg",
+
+        width:
+          1200,
+
+        height:
+          630,
+
+        alt:
+          "AI Document Assistant",
+      },
+    ],
+  },
+
+  twitter: {
+    card:
+      "summary_large_image",
+
+    title:
+      "AI Document Assistant",
+
+    description:
+      "Chat with your documents using AI and get answers grounded in your files.",
+
+    images: [
+      "/og-image.jpeg",
+    ],
+  },
+};
 
 
 const themeScript = `
