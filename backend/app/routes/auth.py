@@ -4,8 +4,8 @@ from fastapi import (
     APIRouter,
     Cookie,
     Depends,
-    Form,
     HTTPException,
+    Request,
     Response,
 )
 
@@ -82,11 +82,13 @@ def get_current_user(
         | None = Depends(
             security
         ),
+
     access_token_cookie:
         str | None = Cookie(
             default=None,
             alias=AUTH_COOKIE_NAME,
         ),
+
     db: Session = Depends(
         get_db
     ),
@@ -163,7 +165,9 @@ def get_current_user(
 )
 def login_with_google(
     data: GoogleAuthRequest,
+
     response: Response,
+
     db: Session = Depends(
         get_db
     ),
@@ -226,32 +230,68 @@ def login_with_google(
         )
 
 
-@router.post(
-    "/google/redirect"
+@router.api_route(
+    "/google/redirect",
+    methods=[
+        "GET",
+        "POST",
+    ],
 )
-def login_with_google_redirect(
-    credential: str = Form(...),
-
-    g_csrf_token_form: str = Form(
-        ...,
-        alias="g_csrf_token",
-    ),
-
-    g_csrf_token_cookie:
-        str | None = Cookie(
-            default=None,
-            alias="g_csrf_token",
-        ),
+async def login_with_google_redirect(
+    request: Request,
 
     db: Session = Depends(
         get_db
     ),
 ):
+    if request.method == "GET":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google redirect did not "
+                "include a credential"
+            ),
+        )
+
+    form = await request.form()
+
+    credential = (
+        form.get(
+            "credential"
+        )
+    )
+
+    csrf_form = (
+        form.get(
+            "g_csrf_token"
+        )
+    )
+
+    csrf_cookie = (
+        request.cookies.get(
+            "g_csrf_token"
+        )
+    )
+
     if (
-        not g_csrf_token_cookie
-        or not g_csrf_token_form
-        or g_csrf_token_cookie
-        != g_csrf_token_form
+        not isinstance(
+            credential,
+            str,
+        )
+        or not credential.strip()
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Google credential missing"
+            ),
+        )
+
+    if (
+        not csrf_cookie
+        or not csrf_form
+        or csrf_cookie
+        != csrf_form
     ):
         raise HTTPException(
             status_code=400,
