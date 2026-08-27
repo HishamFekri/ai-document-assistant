@@ -1,4 +1,5 @@
 import os
+import time
 
 import requests
 
@@ -21,7 +22,14 @@ EMBEDDING_DIMENSION = 512
 VOYAGE_BATCH_SIZE = int(
     os.getenv(
         "VOYAGE_BATCH_SIZE",
-        "64",
+        "128",
+    )
+)
+
+VOYAGE_MAX_RETRIES = int(
+    os.getenv(
+        "VOYAGE_MAX_RETRIES",
+        "5",
     )
 )
 
@@ -36,34 +44,69 @@ def _create_embeddings(
     texts: list[str],
     input_type: str,
 ) -> list[list[float]]:
-    response = requests.post(
-        VOYAGE_API_URL,
-        headers={
-            "Authorization": (
-                f"Bearer {VOYAGE_API_KEY}"
-            ),
-            "Content-Type": "application/json",
-        },
-        json={
-            "input": texts,
-            "model": VOYAGE_MODEL,
-            "input_type": input_type,
-            "output_dimension": (
-                EMBEDDING_DIMENSION
-            ),
-            "output_dtype": "float",
-        },
-        timeout=60,
+    for attempt in range(
+        VOYAGE_MAX_RETRIES
+    ):
+        response = requests.post(
+            VOYAGE_API_URL,
+            headers={
+                "Authorization": (
+                    f"Bearer {VOYAGE_API_KEY}"
+                ),
+                "Content-Type": "application/json",
+            },
+            json={
+                "input": texts,
+                "model": VOYAGE_MODEL,
+                "input_type": input_type,
+                "output_dimension": (
+                    EMBEDDING_DIMENSION
+                ),
+                "output_dtype": "float",
+            },
+            timeout=120,
+        )
+
+        if response.status_code == 429:
+            if attempt == VOYAGE_MAX_RETRIES - 1:
+                response.raise_for_status()
+
+            retry_after = response.headers.get(
+                "Retry-After"
+            )
+
+            if retry_after:
+                wait_seconds = float(
+                    retry_after
+                )
+            else:
+                wait_seconds = 2 ** (
+                    attempt + 1
+                )
+
+            print(
+                f"[VOYAGE] Rate limited. "
+                f"Retrying in {wait_seconds}s..."
+            )
+
+            time.sleep(
+                wait_seconds
+            )
+
+            continue
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        return [
+            item["embedding"]
+            for item in data["data"]
+        ]
+
+    raise RuntimeError(
+        "Voyage embedding request failed"
     )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    return [
-        item["embedding"]
-        for item in data["data"]
-    ]
 
 
 def create_passage_embedding(
@@ -127,6 +170,22 @@ def create_passage_embeddings(
             start:
             start + VOYAGE_BATCH_SIZE
         ]
+
+        batch_number = (
+            start // VOYAGE_BATCH_SIZE
+        ) + 1
+
+        total_batches = (
+            len(cleaned_texts)
+            + VOYAGE_BATCH_SIZE
+            - 1
+        ) // VOYAGE_BATCH_SIZE
+
+        print(
+            f"[VOYAGE] Embedding batch "
+            f"{batch_number}/{total_batches} "
+            f"({len(batch)} chunks)"
+        )
 
         batch_embeddings = (
             _create_embeddings(
