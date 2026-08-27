@@ -1,22 +1,30 @@
-from sentence_transformers import SentenceTransformer
 import os
 
 
 MODEL_NAME = "intfloat/multilingual-e5-small"
 
 EMBEDDING_BATCH_SIZE = int(
-    os.getenv("EMBEDDING_BATCH_SIZE", "32")
+    os.getenv(
+        "EMBEDDING_BATCH_SIZE",
+        "32",
+    )
 )
 
 
-_model: SentenceTransformer | None = None
+_model = None
 
 
-def get_model() -> SentenceTransformer:
+def get_model():
     global _model
 
     if _model is None:
-        _model = SentenceTransformer(MODEL_NAME)
+        from sentence_transformers import (
+            SentenceTransformer,
+        )
+
+        _model = SentenceTransformer(
+            MODEL_NAME
+        )
 
     return _model
 
