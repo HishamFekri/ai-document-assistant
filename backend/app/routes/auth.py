@@ -4,8 +4,13 @@ from fastapi import (
     APIRouter,
     Cookie,
     Depends,
+    Form,
     HTTPException,
     Response,
+)
+
+from fastapi.responses import (
+    RedirectResponse,
 )
 
 from fastapi.security import (
@@ -15,8 +20,13 @@ from fastapi.security import (
 
 from sqlalchemy.orm import Session
 
-from app.database.database import get_db
-from app.database.models import User
+from app.database.database import (
+    get_db,
+)
+
+from app.database.models import (
+    User,
+)
 
 from app.schemas.schemas import (
     GoogleAuthRequest,
@@ -206,6 +216,99 @@ def login_with_google(
                     user
                 ),
         }
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=401,
+            detail=str(
+                error
+            ),
+        )
+
+
+@router.post(
+    "/google/redirect"
+)
+def login_with_google_redirect(
+    credential: str = Form(...),
+
+    g_csrf_token_form: str = Form(
+        ...,
+        alias="g_csrf_token",
+    ),
+
+    g_csrf_token_cookie:
+        str | None = Cookie(
+            default=None,
+            alias="g_csrf_token",
+        ),
+
+    db: Session = Depends(
+        get_db
+    ),
+):
+    if (
+        not g_csrf_token_cookie
+        or not g_csrf_token_form
+        or g_csrf_token_cookie
+        != g_csrf_token_form
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Invalid Google CSRF token"
+            ),
+        )
+
+    try:
+        google_user = (
+            verify_google_token(
+                credential
+            )
+        )
+
+        user = (
+            get_or_create_user(
+                db=db,
+                google_user=(
+                    google_user
+                ),
+            )
+        )
+
+        access_token = (
+            create_access_token(
+                user
+            )
+        )
+
+        redirect_response = (
+            RedirectResponse(
+                url="/chat",
+                status_code=303,
+            )
+        )
+
+        redirect_response.set_cookie(
+            key=AUTH_COOKIE_NAME,
+            value=access_token,
+            httponly=True,
+            secure=(
+                COOKIE_SECURE
+            ),
+            samesite=(
+                COOKIE_SAMESITE
+            ),
+            max_age=(
+                60
+                * 60
+                * 24
+                * 7
+            ),
+            path="/",
+        )
+
+        return redirect_response
 
     except ValueError as error:
         raise HTTPException(
