@@ -25,7 +25,7 @@ export default function GoogleLoginButton({
     variant === "header"
       ? `
           h-10
-          w-[190px]
+          w-[175px]
           px-3
           text-[13px]
 
@@ -36,14 +36,14 @@ export default function GoogleLoginButton({
         `
       : `
           h-12
-          w-[365px]
-          max-w-[calc(100vw-48px)]
-          px-5
-          text-[15px]
+          w-[182px]
+          px-4
+          text-[14px]
 
           sm:w-auto
           sm:min-w-[220px]
           sm:px-6
+          sm:text-[15px]
         `;
 
 
@@ -56,7 +56,7 @@ export default function GoogleLoginButton({
         shrink-0
         items-center
         justify-center
-        gap-2.5
+        gap-2
         rounded-full
 
         border
@@ -75,9 +75,9 @@ export default function GoogleLoginButton({
         active:scale-[0.98]
 
         dark:border-neutral-700
-        dark:bg-neutral-950
+        dark:bg-neutral-900
         dark:text-neutral-100
-        dark:hover:bg-neutral-900
+        dark:hover:bg-neutral-800
 
         ${sizeClasses}
       `}
