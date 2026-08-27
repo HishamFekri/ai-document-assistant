@@ -16,9 +16,7 @@ function isSafariBrowser() {
     window.navigator.userAgent;
 
   return (
-    /Safari/i.test(
-      userAgent
-    )
+    /Safari/i.test(userAgent)
     && !/Chrome|CriOS|Edg|OPR|Android/i.test(
       userAgent
     )

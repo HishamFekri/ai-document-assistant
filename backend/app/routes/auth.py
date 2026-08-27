@@ -4,8 +4,8 @@ from fastapi import (
     APIRouter,
     Cookie,
     Depends,
+    Form,
     HTTPException,
-    Request,
     Response,
 )
 
@@ -52,9 +52,7 @@ security = HTTPBearer(
 )
 
 
-AUTH_COOKIE_NAME = (
-    "access_token"
-)
+AUTH_COOKIE_NAME = "access_token"
 
 
 IS_PRODUCTION = (
@@ -66,14 +64,10 @@ IS_PRODUCTION = (
 )
 
 
-COOKIE_SECURE = (
-    IS_PRODUCTION
-)
+COOKIE_SECURE = IS_PRODUCTION
 
 
-COOKIE_SAMESITE = (
-    "lax"
-)
+COOKIE_SAMESITE = "lax"
 
 
 def get_current_user(
@@ -102,30 +96,22 @@ def get_current_user(
     if not token:
         raise HTTPException(
             status_code=401,
-            detail=(
-                "Authentication required"
-            ),
+            detail="Authentication required",
         )
 
     try:
-        payload = (
-            decode_access_token(
-                token
-            )
+        payload = decode_access_token(
+            token
         )
 
     except ValueError as error:
         raise HTTPException(
             status_code=401,
-            detail=str(
-                error
-            ),
+            detail=str(error),
         )
 
-    user_id = (
-        payload.get(
-            "sub"
-        )
+    user_id = payload.get(
+        "sub"
     )
 
     if (
@@ -137,24 +123,18 @@ def get_current_user(
     ):
         raise HTTPException(
             status_code=401,
-            detail=(
-                "Invalid access token"
-            ),
+            detail="Invalid access token",
         )
 
     user = db.get(
         User,
-        int(
-            user_id
-        ),
+        int(user_id),
     )
 
     if not user:
         raise HTTPException(
             status_code=401,
-            detail=(
-                "User not found"
-            ),
+            detail="User not found",
         )
 
     return user
@@ -165,9 +145,7 @@ def get_current_user(
 )
 def login_with_google(
     data: GoogleAuthRequest,
-
     response: Response,
-
     db: Session = Depends(
         get_db
     ),
@@ -182,9 +160,7 @@ def login_with_google(
         user = (
             get_or_create_user(
                 db=db,
-                google_user=(
-                    google_user
-                ),
+                google_user=google_user,
             )
         )
 
@@ -198,25 +174,15 @@ def login_with_google(
             key=AUTH_COOKIE_NAME,
             value=access_token,
             httponly=True,
-            secure=(
-                COOKIE_SECURE
-            ),
-            samesite=(
-                COOKIE_SAMESITE
-            ),
-            max_age=(
-                60
-                * 60
-                * 24
-                * 7
-            ),
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=60 * 60 * 24 * 7,
             path="/",
         )
 
         return {
             "user":
-                UserResponse
-                .model_validate(
+                UserResponse.model_validate(
                     user
                 ),
         }
@@ -224,80 +190,42 @@ def login_with_google(
     except ValueError as error:
         raise HTTPException(
             status_code=401,
-            detail=str(
-                error
-            ),
+            detail=str(error),
         )
 
 
-@router.api_route(
-    "/google/redirect",
-    methods=[
-        "GET",
-        "POST",
-    ],
+@router.post(
+    "/google/redirect"
 )
-async def login_with_google_redirect(
-    request: Request,
+def login_with_google_redirect(
+    credential: str = Form(
+        ...
+    ),
+
+    g_csrf_token_form: str = Form(
+        ...,
+        alias="g_csrf_token",
+    ),
+
+    g_csrf_token_cookie:
+        str | None = Cookie(
+            default=None,
+            alias="g_csrf_token",
+        ),
 
     db: Session = Depends(
         get_db
     ),
 ):
-    if request.method == "GET":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Google redirect did not "
-                "include a credential"
-            ),
-        )
-
-    form = await request.form()
-
-    credential = (
-        form.get(
-            "credential"
-        )
-    )
-
-    csrf_form = (
-        form.get(
-            "g_csrf_token"
-        )
-    )
-
-    csrf_cookie = (
-        request.cookies.get(
-            "g_csrf_token"
-        )
-    )
-
     if (
-        not isinstance(
-            credential,
-            str,
-        )
-        or not credential.strip()
+        not g_csrf_token_cookie
+        or not g_csrf_token_form
+        or g_csrf_token_cookie
+        != g_csrf_token_form
     ):
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Google credential missing"
-            ),
-        )
-
-    if (
-        not csrf_cookie
-        or not csrf_form
-        or csrf_cookie
-        != csrf_form
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid Google CSRF token"
-            ),
+            detail="Invalid Google CSRF token",
         )
 
     try:
@@ -310,9 +238,7 @@ async def login_with_google_redirect(
         user = (
             get_or_create_user(
                 db=db,
-                google_user=(
-                    google_user
-                ),
+                google_user=google_user,
             )
         )
 
@@ -322,48 +248,33 @@ async def login_with_google_redirect(
             )
         )
 
-        redirect_response = (
-            RedirectResponse(
-                url="/chat",
-                status_code=303,
-            )
+        response = RedirectResponse(
+            url="/chat",
+            status_code=303,
         )
 
-        redirect_response.set_cookie(
+        response.set_cookie(
             key=AUTH_COOKIE_NAME,
             value=access_token,
             httponly=True,
-            secure=(
-                COOKIE_SECURE
-            ),
-            samesite=(
-                COOKIE_SAMESITE
-            ),
-            max_age=(
-                60
-                * 60
-                * 24
-                * 7
-            ),
+            secure=COOKIE_SECURE,
+            samesite=COOKIE_SAMESITE,
+            max_age=60 * 60 * 24 * 7,
             path="/",
         )
 
-        return redirect_response
+        return response
 
     except ValueError as error:
         raise HTTPException(
             status_code=401,
-            detail=str(
-                error
-            ),
+            detail=str(error),
         )
 
 
 @router.get(
     "/me",
-    response_model=(
-        UserResponse
-    ),
+    response_model=UserResponse,
 )
 def get_me(
     current_user: User = Depends(
@@ -382,12 +293,8 @@ def logout(
     response.delete_cookie(
         key=AUTH_COOKIE_NAME,
         httponly=True,
-        secure=(
-            COOKIE_SECURE
-        ),
-        samesite=(
-            COOKIE_SAMESITE
-        ),
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
         path="/",
     )
 
