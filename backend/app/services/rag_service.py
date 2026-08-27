@@ -34,10 +34,25 @@ RAG_MIN_CONFIDENCE_SCORE = float(
     )
 )
 
-RAG_OVERVIEW_MAX_CHUNKS = int(
+
+RAG_FILE_FALLBACK_MIN_SIMILARITY = float(
     os.getenv(
-        "RAG_OVERVIEW_MAX_CHUNKS",
-        "18",
+        "RAG_FILE_FALLBACK_MIN_SIMILARITY",
+        "0.20",
+    )
+)
+
+RAG_FILE_MODE_MAX_CHUNKS = int(
+    os.getenv(
+        "RAG_FILE_MODE_MAX_CHUNKS",
+        "16",
+    )
+)
+
+RAG_FILE_MODE_SEMANTIC_CHUNKS = int(
+    os.getenv(
+        "RAG_FILE_MODE_SEMANTIC_CHUNKS",
+        "8",
     )
 )
 
@@ -62,21 +77,6 @@ PAGE_COUNT_PATTERNS = [
     r"\bnumber\s+of\s+pages\b",
     r"\btotal\s+pages\b",
 ]
-
-OVERVIEW_PATTERNS = [
-    r"\bwhat\s+is\s+(?:this|the)\s+(?:file|document)\s+about\b",
-    r"\bwhat\s+does\s+(?:this|the)\s+(?:file|document)\s+(?:discuss|cover)\b",
-    r"\bgive\s+me\s+(?:an?\s+)?overview\b",
-    r"\boverview\s+(?:of|for)\s+(?:this|the)\s+(?:file|document)\b",
-    r"\bwhat\s+are\s+the\s+main\s+(?:topics|ideas|points)\b",
-    r"\bmain\s+(?:topic|idea|theme)\s+(?:of|in)\s+(?:this|the)\s+(?:file|document)\b",
-    r"\bdescribe\s+(?:this|the)\s+(?:file|document)\b",
-    r"(?:عن|شو|ما)\s+(?:شو|ماذا|ايش|إيش)?\s*(?:هذا|هاد|هال)?\s*(?:الملف|المستند|الوثيقة|الوثيقه)",
-    r"(?:الملف|المستند|الوثيقة|الوثيقه)\s+(?:عن|يتحدث|يحكي|يناقش)\s*(?:ماذا|شو|ايش|إيش)?",
-    r"(?:اعطيني|أعطيني|اعطني|أعطني)\s+(?:نظرة|نبذة|فكرة)\s+(?:عامة|عامه)?\s*(?:عن)?\s*(?:الملف|المستند|الوثيقة|الوثيقه)",
-    r"(?:ما|شو|ايش|إيش)\s+(?:هي|هو)?\s*(?:الفكرة|الفكره|الموضوع)\s+(?:الرئيسية|الرئيسيه)?\s*(?:للملف|للمستند|للوثيقة|للوثيقه)",
-]
-
 
 VISUAL_KEYWORDS = {
     "image",
@@ -219,205 +219,6 @@ def is_visual_question(
     return any(
         keyword in lowered
         for keyword in VISUAL_KEYWORDS
-    )
-
-
-def is_document_overview_question(
-    question: str,
-) -> bool:
-    normalized = (
-        normalize_digits(
-            question
-        )
-        .strip()
-        .lower()
-    )
-
-    return any(
-        re.search(
-            pattern,
-            normalized,
-            flags=re.IGNORECASE,
-        )
-        is not None
-        for pattern in OVERVIEW_PATTERNS
-    )
-
-
-def _evenly_sample_chunks(
-    chunks: list[DocumentChunk],
-    limit: int,
-) -> list[DocumentChunk]:
-    if not chunks or limit <= 0:
-        return []
-
-    if len(chunks) <= limit:
-        return chunks
-
-    if limit == 1:
-        return [chunks[0]]
-
-    positions = [
-        round(
-            index
-            * (len(chunks) - 1)
-            / (limit - 1)
-        )
-        for index in range(limit)
-    ]
-
-    selected = []
-    seen_ids = set()
-
-    for position in positions:
-        chunk = chunks[position]
-
-        if chunk.id in seen_ids:
-            continue
-
-        seen_ids.add(chunk.id)
-        selected.append(chunk)
-
-    return selected
-
-
-def get_document_overview_chunks(
-    db: Session,
-    document_ids: list[int],
-    limit: int | None = None,
-):
-    if not document_ids:
-        return []
-
-    if limit is None:
-        limit = RAG_OVERVIEW_MAX_CHUNKS
-
-    limit = max(1, limit)
-
-    chunks = (
-        db.query(DocumentChunk)
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            ),
-            DocumentChunk.content.isnot(None),
-            DocumentChunk.content_type.in_(
-                [
-                    "text",
-                    "table",
-                    "equation",
-                ]
-            ),
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
-
-    if not chunks:
-        return []
-
-    chunks_by_document = {}
-
-    for chunk in chunks:
-        chunks_by_document.setdefault(
-            chunk.document_id,
-            [],
-        ).append(chunk)
-
-    active_document_ids = [
-        document_id
-        for document_id in document_ids
-        if chunks_by_document.get(
-            document_id
-        )
-    ]
-
-    if not active_document_ids:
-        return []
-
-    base_limit = max(
-        1,
-        limit // len(active_document_ids),
-    )
-
-    remainder = max(
-        0,
-        limit
-        - base_limit
-        * len(active_document_ids),
-    )
-
-    sampled_chunks = []
-
-    for index, document_id in enumerate(
-        active_document_ids
-    ):
-        document_limit = (
-            base_limit
-            + (1 if index < remainder else 0)
-        )
-
-        sampled_chunks.extend(
-            _evenly_sample_chunks(
-                chunks_by_document[
-                    document_id
-                ],
-                document_limit,
-            )
-        )
-
-    results = [
-        {
-            "chunk": chunk,
-            "similarity": 1.0,
-            "ranking_score": 1.0,
-            "match_type": "document_overview",
-        }
-        for chunk in sampled_chunks
-    ]
-
-    logger.debug(
-        "RAG document overview chunks=%s documents=%s",
-        len(results),
-        active_document_ids,
-    )
-
-    return results
-
-
-def build_document_overview_guidance(
-    documents,
-) -> str:
-    document_lines = [
-        (
-            f"- {document.filename}"
-            + (
-                f" ({document.pages_count} pages)"
-                if document.pages_count
-                is not None
-                else ""
-            )
-        )
-        for document in documents
-    ]
-
-    return (
-        "DOCUMENT OVERVIEW REQUEST\n"
-        "The user is asking for a high-level overview of the selected "
-        "document scope, not for one narrowly matching passage.\n"
-        "The evidence below is sampled across the document from beginning "
-        "to end so that the answer represents the file as a whole.\n"
-        "Explain the main subject, purpose, major themes or sections, and "
-        "the most important takeaways supported by the evidence.\n"
-        "Do not invent missing sections or details. If the sampled evidence "
-        "is incomplete, describe only what is supported.\n"
-        "If more than one document is selected, describe them separately "
-        "before giving any combined observation.\n"
-        "Selected documents:\n"
-        + "\n".join(document_lines)
     )
 
 
@@ -1159,6 +960,376 @@ def has_confident_retrieval(
     )
 
 
+
+BROAD_DOCUMENT_PATTERNS = [
+    r"\bwhat\s+is\s+(?:this|the)\s+(?:file|document)\s+about\b",
+    r"\bwhat\s+does\s+(?:this|the)\s+(?:file|document)\s+(?:talk|speak|discuss)\s+about\b",
+    r"\bwhat\s+does\s+(?:this|the)\s+(?:file|document)\s+say\b",
+    r"\bwhat(?:'s|\s+is)\s+in\s+(?:this|the)\s+(?:file|document)\b",
+    r"\btell\s+me\s+about\s+(?:this|the)\s+(?:file|document)\b",
+    r"\bgive\s+me\s+(?:an?\s+)?overview\b",
+    r"\boverview\s+of\s+(?:this|the)\s+(?:file|document)\b",
+    r"\bsummar(?:y|ize|ise)\s+(?:this|the)\s+(?:file|document)\b",
+    r"\bmain\s+(?:topic|topics|idea|ideas|point|points)\b",
+    r"\bwhat\s+is\s+(?:it|this)\s+about\b",
+    r"(?:عن\s+شو|عن\s+ماذا|ما\s+موضوع|شو\s+موضوع)\s+(?:الملف|المستند|الوثيقة|الوثيقه)?",
+    r"(?:لخص|لخّص|ملخص|ملخّص)\s+(?:الملف|المستند|الوثيقة|الوثيقه)?",
+    r"(?:اعطيني|أعطني)\s+(?:نظرة|نظره)\s+(?:عامة|عامه)",
+]
+
+FOLLOW_UP_PREFIXES = (
+    "and ",
+    "also ",
+    "then ",
+    "so ",
+    "but ",
+    "why ",
+    "how ",
+    "what about",
+    "how about",
+    "what does that",
+    "what does it",
+    "what is that",
+    "what is it",
+    "tell me more",
+    "explain that",
+    "explain it",
+    "و",
+    "طيب",
+    "طب",
+    "ليش",
+    "كيف",
+    "شو عن",
+    "ماذا عن",
+)
+
+
+def is_broad_document_question(
+    question: str,
+) -> bool:
+    normalized = (
+        normalize_digits(question)
+        .strip()
+        .lower()
+    )
+
+    if any(
+        re.search(
+            pattern,
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        is not None
+        for pattern in BROAD_DOCUMENT_PATTERNS
+    ):
+        return True
+
+    file_words = {
+        "file",
+        "document",
+        "manual",
+        "pdf",
+        "doc",
+        "الملف",
+        "المستند",
+        "الوثيقة",
+        "الوثيقه",
+    }
+
+    broad_words = {
+        "about",
+        "overview",
+        "summary",
+        "summarize",
+        "summarise",
+        "topic",
+        "topics",
+        "discuss",
+        "talk",
+        "content",
+        "contents",
+        "موضوع",
+        "ملخص",
+        "ملخّص",
+        "نظرة",
+        "نظره",
+        "يتحدث",
+        "يحكي",
+        "بحكي",
+    }
+
+    tokens = set(
+        re.findall(
+            r"[\w\u0600-\u06FF'-]+",
+            normalized,
+        )
+    )
+
+    return bool(
+        tokens & file_words
+        and tokens & broad_words
+    )
+
+
+def is_follow_up_question(
+    question: str,
+) -> bool:
+    normalized = (
+        normalize_digits(question)
+        .strip()
+        .lower()
+    )
+
+    if not normalized:
+        return False
+
+    if normalized.startswith(
+        FOLLOW_UP_PREFIXES
+    ):
+        return True
+
+    tokens = re.findall(
+        r"[\w\u0600-\u06FF'-]+",
+        normalized,
+    )
+
+    reference_words = {
+        "it",
+        "this",
+        "that",
+        "those",
+        "they",
+        "them",
+        "he",
+        "she",
+        "هو",
+        "هي",
+        "هذا",
+        "هذه",
+        "هاد",
+        "هاي",
+        "ذلك",
+        "تلك",
+        "هم",
+        "هذول",
+    }
+
+    return (
+        len(tokens) <= 8
+        and bool(
+            set(tokens)
+            & reference_words
+        )
+    )
+
+
+def build_contextual_retrieval_query(
+    question: str,
+    conversation_history,
+) -> str:
+    if not (
+        is_follow_up_question(question)
+        or len(question.split()) <= 4
+    ):
+        return question
+
+    previous_user = None
+    previous_assistant = None
+
+    for message in reversed(
+        conversation_history
+    ):
+        role = message.get("role")
+        content = (
+            message.get("content")
+            or ""
+        ).strip()
+
+        if not content:
+            continue
+
+        if (
+            previous_assistant is None
+            and role == "assistant"
+        ):
+            previous_assistant = content
+
+        elif (
+            previous_user is None
+            and role == "user"
+        ):
+            previous_user = content
+
+        if (
+            previous_user is not None
+            and previous_assistant is not None
+        ):
+            break
+
+    parts = [
+        f"Current question: {question}"
+    ]
+
+    if previous_user:
+        parts.append(
+            "Previous user question: "
+            + previous_user[:500]
+        )
+
+    if previous_assistant:
+        parts.append(
+            "Previous answer context: "
+            + previous_assistant[:700]
+        )
+
+    return "\n".join(parts)
+
+
+def get_representative_document_chunks(
+    db: Session,
+    document_ids: list[int],
+    limit: int | None = None,
+):
+    if not document_ids:
+        return []
+
+    if limit is None:
+        limit = RAG_FILE_MODE_MAX_CHUNKS
+
+    if limit <= 0:
+        return []
+
+    chunks = (
+        db.query(DocumentChunk)
+        .filter(
+            DocumentChunk.document_id.in_(
+                document_ids
+            ),
+            DocumentChunk.content_type.in_(
+                {
+                    "text",
+                    "table",
+                    "equation",
+                }
+            ),
+            DocumentChunk.content.isnot(None),
+        )
+        .order_by(
+            DocumentChunk.document_id,
+            DocumentChunk.id,
+        )
+        .all()
+    )
+
+    chunks_by_document = {}
+
+    for chunk in chunks:
+        if not (
+            chunk.content
+            and chunk.content.strip()
+        ):
+            continue
+
+        chunks_by_document.setdefault(
+            chunk.document_id,
+            [],
+        ).append(chunk)
+
+    if not chunks_by_document:
+        return []
+
+    document_order = [
+        document_id
+        for document_id in document_ids
+        if document_id
+        in chunks_by_document
+    ]
+
+    if not document_order:
+        return []
+
+    per_document_limit = max(
+        2,
+        limit // len(document_order),
+    )
+
+    selected_chunks = []
+
+    for document_id in document_order:
+        document_chunks = (
+            chunks_by_document[
+                document_id
+            ]
+        )
+
+        wanted = min(
+            per_document_limit,
+            len(document_chunks),
+        )
+
+        if wanted <= 0:
+            continue
+
+        if wanted == 1:
+            indices = [0]
+
+        else:
+            last_index = (
+                len(document_chunks) - 1
+            )
+
+            indices = [
+                round(
+                    position
+                    * last_index
+                    / (wanted - 1)
+                )
+                for position
+                in range(wanted)
+            ]
+
+        seen_indices = set()
+
+        for index in indices:
+            if index in seen_indices:
+                continue
+
+            seen_indices.add(index)
+
+            selected_chunks.append(
+                document_chunks[index]
+            )
+
+    if len(selected_chunks) < limit:
+        selected_ids = {
+            chunk.id
+            for chunk in selected_chunks
+        }
+
+        for chunk in chunks:
+            if chunk.id in selected_ids:
+                continue
+
+            selected_chunks.append(chunk)
+
+            if (
+                len(selected_chunks)
+                >= limit
+            ):
+                break
+
+    return [
+        {
+            "chunk": chunk,
+            "similarity": 0.0,
+            "ranking_score": 0.0,
+            "match_type":
+                "document_overview",
+        }
+        for chunk in selected_chunks[:limit]
+    ]
+
+
 def build_retrieval_guidance(
     search_results,
     documents,
@@ -1216,14 +1387,26 @@ def build_retrieval_guidance(
     )
 
     return (
-        "RETRIEVAL GUIDANCE\n"
+        "FILE MODE - RETRIEVAL GUIDANCE\n"
+        "The user is asking about the selected file(s). "
+        "Treat the selected documents as the primary subject "
+        "of the conversation, including broad, natural, and "
+        "follow-up questions.\n"
         f"{targeting_note}\n"
         f"{conflict_note}\n"
-        "Prefer exact values from tables, equations, "
-        "and directly matching sections over vague nearby text.\n"
-        "Companion chunks provide surrounding page context; "
-        "they are supporting context and may be less directly "
-        "matched to the question."
+        "For broad questions such as what the file is about, "
+        "synthesize the main themes from the available evidence "
+        "instead of requiring one passage to match the wording "
+        "of the question exactly.\n"
+        "For follow-up questions, use the conversation history "
+        "to resolve words such as it, this, that, why, and how.\n"
+        "Prefer exact values from tables, equations, and directly "
+        "matching sections over vague nearby text.\n"
+        "Companion and document-overview chunks provide broader "
+        "context and may be less directly matched to the question.\n"
+        "Stay grounded in the selected files. If the available "
+        "evidence truly does not contain the requested fact, say "
+        "that clearly instead of inventing it."
     )
 
 
@@ -1355,106 +1538,6 @@ def prepare_answer_context(
             question
         )
     )
-
-    overview_question = (
-        is_document_overview_question(
-            question
-        )
-    )
-
-    if overview_question and page_number is None:
-        logger.debug(
-            "RAG retrieval mode=document_overview"
-        )
-
-        overview_results = (
-            get_document_overview_chunks(
-                db=db,
-                document_ids=(
-                    target_document_ids
-                ),
-            )
-        )
-
-        if not overview_results:
-            if allow_general_knowledge:
-                return {
-                    "immediate_answer": None,
-                    "context": "",
-                    "conversation_history": (
-                        conversation_history
-                    ),
-                    "candidate_sources": [],
-                    "mode": "files_and_general",
-                    "retrieval_mode": (
-                        "general_fallback_overview"
-                    ),
-                    "target_document_ids": (
-                        target_document_ids
-                    ),
-                }
-
-            return {
-                "immediate_answer": (
-                    build_no_answer(
-                        question
-                    )
-                ),
-                "context": "",
-                "conversation_history": (
-                    conversation_history
-                ),
-                "candidate_sources": [],
-                "mode": "files_only",
-                "retrieval_mode": (
-                    "document_overview_no_content"
-                ),
-                "target_document_ids": (
-                    target_document_ids
-                ),
-            }
-
-        overview_context = (
-            build_context(
-                overview_results
-            )
-        )
-
-        context = (
-            build_document_overview_guidance(
-                documents
-            )
-            + "\n\n"
-            + overview_context
-        )
-
-        candidate_sources = (
-            build_sources(
-                overview_results
-            )
-        )
-
-        return {
-            "immediate_answer": None,
-            "context": context,
-            "conversation_history": (
-                conversation_history
-            ),
-            "candidate_sources": (
-                candidate_sources
-            ),
-            "mode": (
-                "files_and_general"
-                if allow_general_knowledge
-                else "files_only"
-            ),
-            "retrieval_mode": (
-                "document_overview"
-            ),
-            "target_document_ids": (
-                target_document_ids
-            ),
-        }
 
     if page_number is not None:
         logger.debug(
@@ -1693,18 +1776,119 @@ def prepare_answer_context(
                 target_document_ids,
         }
 
-    search_results = (
-        search_similar_chunks(
-            db=db,
-            query=question,
-            document_ids=(
-                target_document_ids
+    broad_document_question = (
+        is_broad_document_question(
+            question
+        )
+    )
+
+    retrieval_query = (
+        build_contextual_retrieval_query(
+            question=question,
+            conversation_history=(
+                conversation_history
             ),
         )
     )
 
+    search_results = (
+        search_similar_chunks(
+            db=db,
+            query=retrieval_query,
+            document_ids=(
+                target_document_ids
+            ),
+            limit=(
+                RAG_FILE_MODE_SEMANTIC_CHUNKS
+            ),
+        )
+    )
+
+    confident_retrieval = (
+        bool(search_results)
+        and has_confident_retrieval(
+            search_results
+        )
+    )
+
+    retrieval_mode = (
+        "hybrid_semantic"
+    )
+
+    if broad_document_question:
+        representative_results = (
+            get_representative_document_chunks(
+                db=db,
+                document_ids=(
+                    target_document_ids
+                ),
+                limit=(
+                    RAG_FILE_MODE_MAX_CHUNKS
+                ),
+            )
+        )
+
+        search_results = (
+            merge_search_results(
+                search_results[:4],
+                representative_results,
+            )
+        )
+
+        retrieval_mode = (
+            "document_overview"
+        )
+
+    elif not confident_retrieval:
+        logger.info(
+            "RAG weak semantic match; "
+            "using file-mode fallback"
+        )
+
+        fallback_results = (
+            search_similar_chunks(
+                db=db,
+                query=retrieval_query,
+                document_ids=(
+                    target_document_ids
+                ),
+                limit=(
+                    RAG_FILE_MODE_SEMANTIC_CHUNKS
+                ),
+                min_similarity=(
+                    RAG_FILE_FALLBACK_MIN_SIMILARITY
+                ),
+            )
+        )
+
+        representative_results = (
+            get_representative_document_chunks(
+                db=db,
+                document_ids=(
+                    target_document_ids
+                ),
+                limit=max(
+                    6,
+                    RAG_FILE_MODE_MAX_CHUNKS
+                    // 2,
+                ),
+            )
+        )
+
+        search_results = (
+            merge_search_results(
+                fallback_results,
+                representative_results,
+            )
+        )
+
+        retrieval_mode = (
+            "file_mode_fallback"
+        )
+
     logger.debug(
-        "RAG retrieval mode=hybrid_semantic"
+        "RAG retrieval mode=%s",
+        retrieval_mode,
     )
 
     logger.debug(
@@ -1745,55 +1929,7 @@ def prepare_answer_context(
             "mode":
                 "files_only",
             "retrieval_mode":
-                "no_answer",
-            "target_document_ids":
-                target_document_ids,
-        }
-
-    if not has_confident_retrieval(
-        search_results
-    ):
-        if allow_general_knowledge:
-            logger.info(
-                "RAG weak document match; using general knowledge fallback"
-            )
-
-            return {
-                "immediate_answer":
-                    None,
-                "context":
-                    "",
-                "conversation_history":
-                    conversation_history,
-                "candidate_sources":
-                    [],
-                "mode":
-                    "files_and_general",
-                "retrieval_mode":
-                    "general_fallback_low_confidence",
-                "target_document_ids":
-                    target_document_ids,
-            }
-
-        logger.info(
-            "RAG weak document match; returning no answer"
-        )
-
-        return {
-            "immediate_answer":
-                build_no_answer(
-                    question
-                ),
-            "context":
-                "",
-            "conversation_history":
-                conversation_history,
-            "candidate_sources":
-                [],
-            "mode":
-                "files_only",
-            "retrieval_mode":
-                "no_answer_low_confidence",
+                "no_extractable_file_context",
             "target_document_ids":
                 target_document_ids,
         }
@@ -1837,7 +1973,7 @@ def prepare_answer_context(
                 else "files_only"
             ),
         "retrieval_mode":
-            "hybrid_semantic",
+            retrieval_mode,
         "target_document_ids":
             target_document_ids,
     }
