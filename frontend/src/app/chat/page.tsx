@@ -1,6 +1,6 @@
 "use client";
 
-import ChatPage from "./[id]/page";
+import ChatPage from "@/components/chat/ChatPage";
 
 
 export default function ChatIndexPage() {
