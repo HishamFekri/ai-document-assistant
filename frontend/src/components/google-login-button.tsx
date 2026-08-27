@@ -25,15 +25,25 @@ export default function GoogleLoginButton({
     variant === "header"
       ? `
           h-10
-          min-w-[180px]
-          px-4
-          text-sm
+          w-[190px]
+          px-3
+          text-[13px]
+
+          sm:w-auto
+          sm:min-w-[180px]
+          sm:px-4
+          sm:text-sm
         `
       : `
           h-12
-          min-w-[220px]
-          px-6
+          w-[365px]
+          max-w-[calc(100vw-48px)]
+          px-5
           text-[15px]
+
+          sm:w-auto
+          sm:min-w-[220px]
+          sm:px-6
         `;
 
 
@@ -42,34 +52,32 @@ export default function GoogleLoginButton({
       type="button"
       onClick={signIn}
       className={`
-        group
-
         inline-flex
-        w-auto
         shrink-0
         items-center
         justify-center
         gap-2.5
-
         rounded-full
 
         border
-        border-[var(--border)]
-
-        bg-[var(--surface)]
-        text-[var(--text-primary)]
+        border-neutral-300
+        bg-white
+        text-neutral-800
 
         shadow-sm
 
         transition-all
-        duration-200
+        duration-150
 
-        hover:-translate-y-[1px]
-        hover:bg-[var(--surface-hover)]
-        hover:shadow-md
+        hover:bg-neutral-50
+        hover:shadow
 
-        active:translate-y-0
         active:scale-[0.98]
+
+        dark:border-neutral-700
+        dark:bg-neutral-950
+        dark:text-neutral-100
+        dark:hover:bg-neutral-900
 
         ${sizeClasses}
       `}
@@ -79,9 +87,7 @@ export default function GoogleLoginButton({
         height="18"
         viewBox="0 0 24 24"
         aria-hidden="true"
-        className="
-          shrink-0
-        "
+        className="shrink-0"
       >
         <path
           fill="#4285F4"
@@ -103,7 +109,6 @@ export default function GoogleLoginButton({
           d="M12 6.2c1.43 0 2.72.49 3.73 1.45l2.79-2.79C16.83 3.29 14.63 2.33 12 2.33A9.72 9.72 0 0 0 3.32 7.69l3.24 2.52C7.33 7.91 9.47 6.2 12 6.2Z"
         />
       </svg>
-
 
       <span
         className="

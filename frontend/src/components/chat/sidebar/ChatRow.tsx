@@ -377,10 +377,15 @@ export default function ChatRow({
               ? "opacity-100"
               : menuOpen
                 ? "opacity-100"
-                : "opacity-0 group-hover:opacity-100"
+                : "opacity-100 md:opacity-0 md:group-hover:opacity-100"
           }
         `}
         title={
+          chat.is_archived
+            ? "Archived chat options"
+            : "Chat options"
+        }
+        aria-label={
           chat.is_archived
             ? "Archived chat options"
             : "Chat options"
