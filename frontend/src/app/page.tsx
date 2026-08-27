@@ -1364,96 +1364,155 @@ function Footer() {
           flex
           max-w-7xl
           flex-col
-          gap-3
+          items-center
+          gap-6
           px-6
           py-8
-          text-[12px]
-          text-[var(--text-muted)]
           sm:flex-row
-          sm:items-center
           sm:justify-between
           lg:px-8
         "
       >
-        <span>
-          AI Document Assistant
-        </span>
-
-        <div className="flex items-center gap-4">
-          <span>
-            Your documents. Your answers.
-          </span>
-
-          <div className="flex items-center gap-2">
-            <a
-              href="https://github.com/HishamFekri"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="GitHub"
-              title="GitHub"
+        <div className="flex items-center gap-3">
+          <div
+            className="
+              flex
+              h-12
+              w-12
+              shrink-0
+              items-center
+              justify-center
+              overflow-hidden
+              rounded-xl
+              bg-[#080808]
+              ring-1
+              ring-white/10
+            "
+          >
+            <img
+              src="/hj-logo.png"
+              alt="Hesham Jouda logo"
               className="
-                flex
-                h-9
-                w-9
-                items-center
-                justify-center
-                rounded-full
-                border
-                border-[var(--border)]
-                text-[var(--text-secondary)]
-                transition-all
-                duration-200
-                hover:-translate-y-0.5
-                hover:bg-[var(--surface-hover)]
-                hover:text-[var(--text-primary)]
+                h-10
+                w-10
+                object-contain
+              "
+            />
+          </div>
+
+          <div className="flex flex-col leading-tight">
+            <span
+              className="
+                mb-0.5
+                text-[10px]
+                font-medium
+                uppercase
+                tracking-[0.18em]
+                text-[var(--text-muted)]
               "
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="16"
-                height="16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M12 .7a11.3 11.3 0 0 0-3.57 22.02c.56.1.77-.24.77-.54v-2.1c-3.12.68-3.78-1.32-3.78-1.32-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.68.08-.68 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.49-.28-5.11-1.25-5.11-5.57 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.11 1.16A10.8 10.8 0 0 1 12 6.2c.96 0 1.93.13 2.83.38 2.16-1.46 3.1-1.16 3.1-1.16.62 1.55.23 2.7.12 2.98.72.79 1.16 1.8 1.16 3.03 0 4.33-2.63 5.28-5.13 5.56.4.35.76 1.04.76 2.1v3.1c0 .3.2.65.78.54A11.3 11.3 0 0 0 12 .7Z" />
-              </svg>
-            </a>
+              by
+            </span>
 
-            <a
-              href="https://www.linkedin.com/in/hishamjouda"
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="LinkedIn"
-              title="LinkedIn"
+            <span
               className="
-                flex
-                h-9
-                w-9
-                items-center
-                justify-center
-                rounded-full
-                border
-                border-[var(--border)]
-                text-[var(--text-secondary)]
-                transition-all
-                duration-200
-                hover:-translate-y-0.5
-                hover:bg-[var(--surface-hover)]
-                hover:text-[var(--text-primary)]
+                text-sm
+                font-semibold
+                tracking-wide
+                text-[var(--text-primary)]
               "
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="16"
-                height="16"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.47-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.29ZM5.33 7.41a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12ZM7.11 20.45H3.55V8.98h3.56v11.47Z" />
-              </svg>
-            </a>
+              Hesham Jouda
+            </span>
           </div>
         </div>
+
+        <div className="flex items-center gap-2">
+          <a
+            href="https://github.com/HishamFekri"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub"
+            title="GitHub"
+            className="
+              flex
+              h-10
+              w-10
+              items-center
+              justify-center
+              rounded-full
+              border
+              border-[var(--border)]
+              text-[var(--text-secondary)]
+              transition-all
+              duration-200
+              hover:-translate-y-0.5
+              hover:bg-[var(--surface-hover)]
+              hover:text-[var(--text-primary)]
+            "
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M12 .7a11.3 11.3 0 0 0-3.57 22.02c.56.1.77-.24.77-.54v-2.1c-3.12.68-3.78-1.32-3.78-1.32-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.68.08-.68 1.13.08 1.72 1.16 1.72 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.49-.28-5.11-1.25-5.11-5.57 0-1.23.44-2.24 1.16-3.03-.12-.28-.5-1.43.11-2.98 0 0 .95-.3 3.11 1.16A10.8 10.8 0 0 1 12 6.2c.96 0 1.93.13 2.83.38 2.16-1.46 3.1-1.16 3.1-1.16.62 1.55.23 2.7.12 2.98.72.79 1.16 1.8 1.16 3.03 0 4.33-2.63 5.28-5.13 5.56.4.35.76 1.04.76 2.1v3.1c0 .3.2.65.78.54A11.3 11.3 0 0 0 12 .7Z" />
+            </svg>
+          </a>
+
+          <a
+            href="https://www.linkedin.com/in/hishamjouda"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="LinkedIn"
+            title="LinkedIn"
+            className="
+              flex
+              h-10
+              w-10
+              items-center
+              justify-center
+              rounded-full
+              border
+              border-[var(--border)]
+              text-[var(--text-secondary)]
+              transition-all
+              duration-200
+              hover:-translate-y-0.5
+              hover:bg-[var(--surface-hover)]
+              hover:text-[var(--text-primary)]
+            "
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.34V8.98h3.42v1.57h.05c.47-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.29ZM5.33 7.41a2.06 2.06 0 1 1 0-4.12 2.06 2.06 0 0 1 0 4.12ZM7.11 20.45H3.55V8.98h3.56v11.47Z" />
+            </svg>
+          </a>
+        </div>
+      </div>
+
+      <div
+        className="
+          mx-auto
+          max-w-7xl
+          border-t
+          border-[var(--border)]
+          px-6
+          py-5
+          text-center
+          text-[11px]
+          text-[var(--text-muted)]
+          lg:px-8
+        "
+      >
+        © 2026 AI Document Assistant
       </div>
     </footer>
   );
