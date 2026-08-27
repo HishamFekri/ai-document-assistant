@@ -18,6 +18,13 @@ VOYAGE_API_URL = (
 
 EMBEDDING_DIMENSION = 512
 
+VOYAGE_BATCH_SIZE = int(
+    os.getenv(
+        "VOYAGE_BATCH_SIZE",
+        "64",
+    )
+)
+
 
 if not VOYAGE_API_KEY:
     raise RuntimeError(
@@ -109,7 +116,27 @@ def create_passage_embeddings(
             text.strip()
         )
 
-    return _create_embeddings(
-        cleaned_texts,
-        input_type="document",
-    )
+    all_embeddings = []
+
+    for start in range(
+        0,
+        len(cleaned_texts),
+        VOYAGE_BATCH_SIZE,
+    ):
+        batch = cleaned_texts[
+            start:
+            start + VOYAGE_BATCH_SIZE
+        ]
+
+        batch_embeddings = (
+            _create_embeddings(
+                batch,
+                input_type="document",
+            )
+        )
+
+        all_embeddings.extend(
+            batch_embeddings
+        )
+
+    return all_embeddings
