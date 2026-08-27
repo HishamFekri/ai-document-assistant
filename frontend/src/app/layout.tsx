@@ -5,6 +5,7 @@ import type {
 import "./globals.css";
 
 import Providers from "@/components/providers";
+import BackendWarmup from "@/components/chat/BackendWarmup";
 
 
 export const metadata:
@@ -59,6 +60,38 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
+        <link
+          rel="preconnect"
+          href="https://accounts.google.com"
+        />
+
+        <link
+          rel="preconnect"
+          href="https://accounts.gstatic.com"
+          crossOrigin="anonymous"
+        />
+
+        <link
+          rel="preconnect"
+          href="https://www.gstatic.com"
+          crossOrigin="anonymous"
+        />
+
+        <link
+          rel="dns-prefetch"
+          href="https://accounts.google.com"
+        />
+
+        <link
+          rel="dns-prefetch"
+          href="https://accounts.gstatic.com"
+        />
+
+        <link
+          rel="dns-prefetch"
+          href="https://www.gstatic.com"
+        />
+
         <script
           dangerouslySetInnerHTML={{
             __html:
@@ -69,6 +102,8 @@ export default function RootLayout({
 
       <body>
         <Providers>
+          <BackendWarmup />
+
           {children}
         </Providers>
       </body>
