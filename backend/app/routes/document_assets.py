@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import requests
+
 from fastapi import (
     APIRouter,
     Depends,
@@ -9,7 +11,7 @@ from fastapi import (
 
 from fastapi.responses import (
     FileResponse,
-    RedirectResponse,
+    Response,
 )
 
 from sqlalchemy.orm import Session
@@ -225,19 +227,62 @@ def read_document_asset_file(
         asset_path
     ).strip()
 
-    # Production / Cloudinary
+    # Cloudinary / remote image:
+    #
+    # IMPORTANT:
+    # Do NOT redirect the browser to Cloudinary here.
+    # The frontend requests this endpoint with
+    # credentials: "include". A cross-origin redirect
+    # to Cloudinary then fails CORS because Cloudinary
+    # returns Access-Control-Allow-Origin: * while the
+    # redirected request is credentialed.
+    #
+    # Instead, the backend downloads the image and
+    # returns its bytes to the frontend from the same
+    # API endpoint.
     if asset_path.startswith(
         (
             "https://",
             "http://",
         )
     ):
-        return RedirectResponse(
-            url=asset_path,
-            status_code=307,
+        try:
+            remote_response = (
+                requests.get(
+                    asset_path,
+                    timeout=30,
+                )
+            )
+
+            remote_response.raise_for_status()
+
+        except requests.RequestException as error:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "Could not load remote image"
+                ),
+            ) from error
+
+        content_type = (
+            remote_response.headers.get(
+                "Content-Type"
+            )
+            or "image/jpeg"
         )
 
-    # Backwards compatibility for local files.
+        return Response(
+            content=(
+                remote_response.content
+            ),
+            media_type=content_type,
+            headers={
+                "Cache-Control":
+                    "public, max-age=86400",
+            },
+        )
+
+    # Backwards compatibility for local images.
     path = Path(
         asset_path
     ).resolve()
@@ -253,4 +298,8 @@ def read_document_asset_file(
 
     return FileResponse(
         path=path,
+        headers={
+            "Cache-Control":
+                "public, max-age=86400",
+        },
     )
