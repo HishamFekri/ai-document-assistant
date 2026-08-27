@@ -1,108 +1,58 @@
 "use client";
 
-import { GoogleLogin } from "@react-oauth/google";
-import { useRouter } from "next/navigation";
-
-
 export default function GoogleLoginButton() {
-  const router = useRouter();
-
   const apiUrl =
     process.env.NEXT_PUBLIC_API_URL
     ?? "http://localhost:8000";
 
-
-  const handleSuccess = async (
-    credentialResponse: {
-      credential?: string;
-    }
-  ) => {
-    const credential =
-      credentialResponse.credential;
-
-    if (!credential) {
-      alert(
-        "Google did not return a credential."
-      );
-
-      return;
-    }
-
-    try {
-      const response =
-        await fetch(
-          `${apiUrl}/auth/google`,
-          {
-            method: "POST",
-
-            credentials: "include",
-
-            headers: {
-              "Content-Type":
-                "application/json",
-            },
-
-            body:
-              JSON.stringify({
-                credential,
-              }),
-          }
-        );
-
-      const data =
-        await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.detail
-          || "Could not sign in"
-        );
-      }
-
-      router.replace(
-        "/chat"
-      );
-
-    } catch (error) {
-      console.error(
-        error
-      );
-
-      alert(
-        error instanceof Error
-          ? error.message
-          : "Could not sign in"
-      );
-    }
-  };
-
-
-  const handleError = () => {
-    alert(
-      "Google sign-in failed."
+  function signIn() {
+    window.location.assign(
+      `${apiUrl}/auth/google/start`
     );
-  };
-
+  }
 
   return (
-    <GoogleLogin
-      onSuccess={
-        handleSuccess
-      }
+    <button
+      type="button"
+      onClick={signIn}
+      className="
+        inline-flex
+        min-h-11
+        w-full
+        items-center
+        justify-center
+        gap-3
+        rounded-full
+        border
+        border-neutral-300
+        bg-white
+        px-5
+        py-2.5
+        text-sm
+        font-medium
+        text-neutral-800
+        shadow-sm
+        transition
+        hover:bg-neutral-50
+        active:scale-[0.99]
+      "
+    >
+      <span
+        aria-hidden="true"
+        className="
+          flex
+          h-5
+          w-5
+          items-center
+          justify-center
+          text-lg
+          font-semibold
+        "
+      >
+        G
+      </span>
 
-      onError={
-        handleError
-      }
-
-      useOneTap={
-        false
-      }
-
-      shape="pill"
-
-      size="large"
-
-      text="signin_with"
-    />
+      Sign in with Google
+    </button>
   );
 }
