@@ -175,13 +175,63 @@ celery -A app.worker.celery_app worker --loglevel=info
 
 ## Testing
 
-Run the backend tests:
+Backend tests require an explicit **process environment variable**
+`TEST_DATABASE_URL`. There is no fallback to `DATABASE_URL`, and a test URL in
+`.env` is not automatically selected. Use a disposable local PostgreSQL server
+with pgvector and a dedicated test role. No Docker setup is required by this
+test harness.
+
+The URL must use `postgresql` or `postgresql+psycopg`, include a username and a
+loopback host (`localhost`, `127.0.0.1`, or `::1`), and contain no query options.
+Its database name is a **base name**, not a database that will be reset: use
+`ai_document_assistant_test`, for example. Names must start with a lowercase
+letter, contain only lowercase letters/digits/underscores, be at most 26
+characters, and contain a separate `test` segment. Development/staging/production
+name segments and either application database name from the environment or
+`backend/.env` are rejected. Unset `PGHOSTADDR`, `PGSERVICE`, `PGSERVICEFILE`, and
+`PGOPTIONS`; they can override connection routing/settings.
+
+For example, set `TEST_DATABASE_URL` in your shell using your local test-role
+credentials and the shape
+`postgresql+psycopg://test_role:<password>@127.0.0.1:5432/ai_document_assistant_test`.
+Do not commit credentials or use application/production administrator credentials.
+
+Then run from the repository root:
 
 ```bash
+cd backend
+python -m pytest --collect-only -q
 python -m pytest -v
 ```
 
-Check database migrations:
+Missing or unsafe configuration fails before test-module collection. Importing
+`tests/conftest.py` never contacts PostgreSQL. Collection redirects only the
+pytest process's `DATABASE_URL` to a unique per-run name; it does not create,
+migrate, truncate, or drop a database. The original value is restored when
+pytest exits normally. Start pytest in a fresh process, before importing the app.
+
+Actual test execution creates `<base>_run_<uuid>` in a session fixture and runs
+the existing Alembic migrations there. The role needs `CREATEDB`, access to the
+local `postgres` maintenance database, and permission to enable pgvector in its
+new database. The base database is never modified. Tests retain their existing
+commit semantics and per-test truncation/identity reset. Teardown drops only a
+database successfully created by that run, without terminating connections or
+using `FORCE`. If creation collides, the existing database is left untouched.
+An interrupted process or busy database may leave a run database behind; inspect
+it manually rather than automatically removing databases by prefix.
+
+Independent test processes (including separate pytest workers) get separate
+database names. This isolates database state only, not external AI services or
+upload files. Unique databases fit the existing separate request sessions and
+commits better than wrapping one fixture session in a rollback transaction.
+
+Guard regression checks require no database and can be run directly from `backend/`:
+
+```bash
+python -B tests/test_database_safety.py
+```
+
+Separately, check application database migrations (this uses `DATABASE_URL`):
 
 ```bash
 python -m alembic check
