@@ -21,6 +21,11 @@ from app.services.chunk_service import (
 from app.services.embedding_service import (
     create_passage_embeddings,
 )
+from app.services.embedding_contract import (
+    validate_embeddings,
+    with_embedding_generation,
+)
+from app.services.embedding_completeness_service import inspect_embeddings
 
 
 logger = logging.getLogger(__name__)
@@ -59,6 +64,13 @@ def process_document(
             document.processing_status == "ready"
             and existing_chunks
         ):
+            completeness = inspect_embeddings(db, [document_id])
+            if not completeness or not completeness[0].complete:
+                logger.warning(
+                    "Document %s needs explicit embedding recovery; duplicate task skipped",
+                    document_id,
+                )
+                return
             logger.info(
                 "Document %s is already processed; skipping duplicate task",
                 document_id,
@@ -173,10 +185,7 @@ def process_document(
             embeddings_time,
         )
 
-        if len(embeddings) != len(chunks):
-            raise ValueError(
-                "Embedding count does not match chunk count"
-            )
+        embeddings = validate_embeddings(embeddings, len(chunks))
 
         document.processing_stage = "saving"
         document.processing_progress = 80
@@ -209,9 +218,7 @@ def process_document(
                 location=chunk[
                     "location"
                 ],
-                chunk_metadata=chunk[
-                    "metadata"
-                ],
+                chunk_metadata=with_embedding_generation(chunk["metadata"]),
                 embedding=embedding,
             )
 
@@ -231,6 +238,11 @@ def process_document(
             document.pages_count = len(
                 reader.pages
             )
+
+        db.flush()
+        completeness = inspect_embeddings(db, [document.id])
+        if not completeness or not completeness[0].complete:
+            raise ValueError("Document embeddings are incomplete")
 
         document.processing_status = "ready"
         document.processing_stage = "completed"

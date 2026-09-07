@@ -23,6 +23,11 @@ from app.services.chunk_service import (
 from app.services.embedding_service import (
     create_passage_embeddings,
 )
+from app.services.embedding_contract import (
+    validate_embeddings,
+    with_embedding_generation,
+)
+from app.services.embedding_completeness_service import inspect_embeddings
 
 from app.services.queued_message_service import (
     process_waiting_messages_for_document,
@@ -253,15 +258,7 @@ def process_document(
             )
         )
 
-        if len(
-            embeddings
-        ) != len(
-            chunks
-        ):
-            raise ValueError(
-                "Embedding count does not "
-                "match chunk count"
-            )
+        embeddings = validate_embeddings(embeddings, len(chunks))
 
         update_progress(
             db=db,
@@ -308,9 +305,7 @@ def process_document(
                     location=chunk[
                         "location"
                     ],
-                    chunk_metadata=chunk[
-                        "metadata"
-                    ],
+                    chunk_metadata=with_embedding_generation(chunk["metadata"]),
                     embedding=embedding,
                 )
             )
@@ -334,6 +329,11 @@ def process_document(
         # ===============================
         # Ready
         # ===============================
+
+        db.flush()
+        completeness = inspect_embeddings(db, [document.id])
+        if not completeness or not completeness[0].complete:
+            raise ValueError("Document embeddings are incomplete")
 
         document.processing_status = (
             "ready"

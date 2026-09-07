@@ -13,6 +13,10 @@ from app.database.models import (
 from app.services.embedding_service import (
     create_query_embedding,
 )
+from app.services.embedding_completeness_service import (
+    inspect_embeddings,
+    usable_embedding,
+)
 
 
 load_dotenv()
@@ -626,6 +630,17 @@ def search_similar_chunks(
         else GENERIC_CONTENT_TYPES
     )
 
+    completeness = inspect_embeddings(db, document_ids, effective_content_types)
+    for item in completeness:
+        if item.missing_chunks:
+            logger.warning(
+                "Semantic retrieval embeddings incomplete document=%s valid=%s required=%s",
+                item.document_id, item.valid_chunks, item.required_chunks,
+            )
+    if not any(item.valid_chunks for item in completeness):
+        logger.debug("Semantic retrieval has no usable embeddings in the requested scope")
+        return []
+
     candidate_limit = max(
         limit,
         limit
@@ -663,6 +678,7 @@ def search_similar_chunks(
                 None
             )
         )
+        .filter(usable_embedding())
         .filter(
             DocumentChunk.content_type.in_(
                 effective_content_types
