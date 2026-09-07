@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session
 
+from app.services.error_service import log_generation_failure
+
 from app.database.database import (
     SessionLocal,
 )
@@ -88,6 +90,9 @@ def process_waiting_message(
     if not message:
         return
 
+    # Keep context available even if rollback expires or deletes the record.
+    message_id = message.id
+    chat_id = message.chat_id
     try:
         result = answer_question(
             db=db,
@@ -119,26 +124,24 @@ def process_waiting_message(
         )
 
     except Exception as error:
+        public_error = log_generation_failure(
+            error,
+            "message",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
         db.rollback()
 
         message = db.get(
             Message,
-            message.id,
+            message_id,
         )
 
         if message:
             message.status = "failed"
-            message.error = str(
-                error
-            )
+            message.error = public_error
 
             db.commit()
-
-        print(
-            "[QUEUE] Message "
-            f"{message.id if message else 'unknown'} "
-            f"failed: {error}"
-        )
 
 
 def process_waiting_messages_for_document(

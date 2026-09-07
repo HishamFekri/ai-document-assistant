@@ -4,6 +4,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.services.assets.image_references import normalize_sources
+from app.services.error_service import public_generation_error
 
 
 class UserResponse(BaseModel):
@@ -80,6 +81,10 @@ class MessageResponse(BaseModel):
 
     status: str
     error: str | None
+
+    @field_serializer("error")
+    def serialize_error(self, error):
+        return public_generation_error(error, "message")
 
     sources: list | None = None
 

@@ -6,6 +6,8 @@ from typing import Literal
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
+from app.services.error_service import log_generation_failure
+
 from app.database.models import (
     Document,
     Message,
@@ -3251,6 +3253,10 @@ def generate_summary_for_record(
     summary,
     mode: SummaryMode = "summary",
 ):
+    # Capture identifiers before rollback can expire ORM attributes.
+    document_id = document.id
+    chat_id = summary.chat_id
+    summary_id = summary.id
     try:
         if summary.chat_id is None:
             raise ValueError(
@@ -3280,14 +3286,19 @@ def generate_summary_for_record(
         )
 
     except Exception as error:
+        public_error = log_generation_failure(
+            error,
+            "summary",
+            document_id=document_id,
+            chat_id=chat_id,
+            summary_id=summary_id,
+        )
         db.rollback()
 
         return (
             mark_summary_failed(
                 db=db,
                 summary=summary,
-                error=str(
-                    error
-                ),
+                error=public_error,
             )
         )
