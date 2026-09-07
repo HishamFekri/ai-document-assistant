@@ -22,6 +22,9 @@ from app.services.llm_service import (
 )
 
 
+from app.services.assets.image_references import normalize_image_source
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -521,48 +524,10 @@ def build_sources(
             )
         )
 
-        asset_path = (
-            metadata.get(
-                "asset_path"
-            )
-        )
-
-        if (
-            chunk.content_type
-            == "image"
-            and asset_filename
-        ):
-            source[
-                "asset_filename"
-            ] = asset_filename
-
-            if (
-                isinstance(
-                    asset_path,
-                    str,
-                )
-                and (
-                    asset_path.startswith(
-                        "https://"
-                    )
-                    or asset_path.startswith(
-                        "http://"
-                    )
-                )
-            ):
-                source[
-                    "asset_url"
-                ] = asset_path
-
-            else:
-                source[
-                    "asset_url"
-                ] = (
-                    f"/documents/"
-                    f"{document.id}"
-                    f"/assets/"
-                    f"{asset_filename}"
-                )
+        if chunk.content_type == "image" and (asset_filename or metadata.get("asset_path")):
+            if asset_filename:
+                source["asset_filename"] = asset_filename
+            source = normalize_image_source(source)
 
         sources.append(
             source

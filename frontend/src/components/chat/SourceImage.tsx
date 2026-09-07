@@ -17,14 +17,9 @@ type Props = {
 };
 
 
-function isAbsoluteHttpUrl(
-  value: string
-) {
-  return (
-    value.startsWith("https://")
-    || value.startsWith("http://")
-  );
-}
+const API_URL =
+  process.env.NEXT_PUBLIC_API_URL
+  ?? "http://localhost:8000";
 
 
 export default function SourceImage({
@@ -62,29 +57,20 @@ export default function SourceImage({
         setLoading(true);
         setFailed(false);
 
-        const isExternal =
-          isAbsoluteHttpUrl(
-            imageUrl
-          );
+        // Accept only application image paths. Historical sources are normalized
+        // by the API; never fall back to a raw origin or follow an image redirect.
+        if (!/^\/documents\/[1-9]\d*\/(?:assets\/[^/?#\\]+(?:\/file)?|image-chunks\/[1-9]\d*\/file)$/.test(imageUrl)) {
+          throw new Error("Invalid document image path");
+        }
 
-        const finalUrl =
-          isExternal
-            ? imageUrl
-            : (
-              `${process.env.NEXT_PUBLIC_API_URL}${imageUrl}`
-            );
-
-        const response =
-          await fetch(
-            finalUrl,
-            {
-              credentials:
-                isExternal
-                  ? "omit"
-                  : "include",
-              cache: "force-cache",
-            }
-          );
+        const response = await fetch(
+          `${API_URL.replace(/\/$/, "")}${imageUrl}`,
+          {
+            credentials: "include",
+            cache: "no-cache",
+            redirect: "error",
+          }
+        );
 
         if (!response.ok) {
           throw new Error(

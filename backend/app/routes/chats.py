@@ -2,7 +2,6 @@ import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 import json
 
 from fastapi import (
@@ -13,8 +12,6 @@ from fastapi import (
 )
 
 from fastapi.responses import (
-    FileResponse,
-    RedirectResponse,
     StreamingResponse,
 )
 
@@ -76,6 +73,14 @@ from app.services.chat_summary_service import (
 
 from app.services.chat_title_service import (
     maybe_generate_chat_title,
+)
+
+
+from app.services.assets.image_delivery import image_file_response
+from app.services.assets.image_references import (
+    chunk_image_url,
+    normalize_image_metadata,
+    safe_asset_filename,
 )
 
 
@@ -754,10 +759,11 @@ def search_chat_documents(
                     "chunk"
                 ].location,
 
-            "metadata":
-                result[
-                    "chunk"
-                ].chunk_metadata,
+            "metadata": normalize_image_metadata(
+                result["chunk"].chunk_metadata,
+                chunk_image_url(result["chunk"].document_id, result["chunk"].id)
+                if result["chunk"].content_type == "image" else None,
+            ),
 
             "content":
                 result[
@@ -2025,22 +2031,9 @@ def get_document_asset(
         )
     )
 
-    safe_filename = (
-        Path(
-            asset_filename
-        ).name
-    )
-
-    if (
-        safe_filename
-        != asset_filename
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid asset filename"
-            ),
-        )
+    if not safe_asset_filename(asset_filename):
+        raise HTTPException(status_code=400, detail="Invalid asset filename")
+    safe_filename = asset_filename
 
     assets = (
         db.query(
@@ -2150,32 +2143,13 @@ def get_document_asset(
             if not asset_path:
                 continue
 
-            asset_path = str(
-                asset_path
-            ).strip()
-
-            if asset_path.startswith(
-                (
-                    "https://",
-                    "http://",
-                )
-            ):
-                return RedirectResponse(
-                    url=asset_path,
-                    status_code=307,
-                )
-
-            path = Path(
-                asset_path
-            ).resolve()
-
-            if (
-                path.exists()
-                and path.is_file()
-            ):
-                return FileResponse(
-                    path=path
-                )
+            try:
+                return image_file_response(asset_path, document)
+            except HTTPException as error:
+                # Preserve the legacy search for another matching local file
+                # when an earlier chunk refers to a file that no longer exists.
+                if error.status_code != 404:
+                    raise
 
     if matched_asset is None:
         raise HTTPException(
@@ -2185,60 +2159,7 @@ def get_document_asset(
             ),
         )
 
-    asset_path = (
-        matched_asset.file_path
-    )
-
-    if not asset_path:
-        metadata = (
-            matched_asset.asset_metadata
-            or {}
-        )
-
-        asset_path = (
-            metadata.get(
-                "asset_path"
-            )
-        )
-
-    if not asset_path:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Image path not found"
-            ),
-        )
-
-    asset_path = str(
-        asset_path
-    ).strip()
-
-    if asset_path.startswith(
-        (
-            "https://",
-            "http://",
-        )
-    ):
-        return RedirectResponse(
-            url=asset_path,
-            status_code=307,
-        )
-
-    path = Path(
-        asset_path
-    ).resolve()
-
-    if (
-        not path.exists()
-        or not path.is_file()
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Image file not found"
-            ),
-        )
-
-    return FileResponse(
-        path=path
+    return image_file_response(
+        matched_asset.file_path or (matched_asset.asset_metadata or {}).get("asset_path"),
+        document,
     )

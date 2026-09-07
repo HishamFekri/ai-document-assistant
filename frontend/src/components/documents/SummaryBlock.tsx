@@ -808,7 +808,8 @@ function AuthenticatedImage({
             {
               method: "GET",
               credentials: "include",
-              cache: "no-store",
+              cache: "no-cache",
+              redirect: "error",
             }
           );
 

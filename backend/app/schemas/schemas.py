@@ -1,7 +1,9 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+from app.services.assets.image_references import normalize_sources
 
 
 class UserResponse(BaseModel):
@@ -80,6 +82,10 @@ class MessageResponse(BaseModel):
     error: str | None
 
     sources: list | None = None
+
+    @field_serializer("sources")
+    def serialize_sources(self, sources):
+        return normalize_sources(sources)
 
     documents: list[DocumentResponse] = []
 

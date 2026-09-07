@@ -5,7 +5,10 @@ from typing import Literal
 from pydantic import (
     BaseModel,
     ConfigDict,
+    model_serializer,
 )
+
+from app.services.assets.image_references import asset_file_url, normalize_image_metadata
 
 
 DocumentAssetType = Literal[
@@ -39,3 +42,10 @@ class DocumentAssetResponse(BaseModel):
     model_config = ConfigDict(
         from_attributes=True
     )
+
+    @model_serializer(mode="wrap")
+    def serialize_asset(self, handler):
+        result = handler(self)
+        if self.asset_type != "image":
+            return result
+        return normalize_image_metadata(result, asset_file_url(self.document_id, self.id))

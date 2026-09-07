@@ -489,12 +489,13 @@ def save_datalab_images(
     output_directory,
 ):
     """
-    Upload Datalab-extracted images to Cloudinary.
+    Upload newly extracted images with authenticated Cloudinary delivery.
 
     Duplicate image bytes generate the same content hash and
     therefore the same Cloudinary public_id. This prevents
     repeated page headers / decorative images from becoming
-    separate assets only because their filenames differ.
+    separate assets only because their filenames differ. Existing objects are
+    never overwritten; legacy public objects are left in their original type.
 
     Return shape remains:
         {original_filename: cloudinary_secure_url}
@@ -571,7 +572,8 @@ def save_datalab_images(
                         public_id
                     ),
                     resource_type="image",
-                    overwrite=True,
+                    type="authenticated",
+                    overwrite=False,
                     unique_filename=False,
                     use_filename=False,
                 )
