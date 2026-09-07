@@ -11,6 +11,7 @@ import cloudinary
 import cloudinary.uploader
 import requests
 from dotenv import load_dotenv
+from app.services.document_processing_errors import RetryableDocumentProcessingError
 
 
 load_dotenv()
@@ -127,7 +128,7 @@ def post_with_retry(
             ):
                 return response
 
-            last_error = RuntimeError(
+            last_error = RetryableDocumentProcessingError(
                 "Temporary Datalab upload error "
                 f"({response.status_code})"
             )
@@ -184,7 +185,7 @@ def get_with_retry(
             ):
                 return response
 
-            last_error = RuntimeError(
+            last_error = RetryableDocumentProcessingError(
                 "Temporary Datalab polling error "
                 f"({response.status_code})"
             )

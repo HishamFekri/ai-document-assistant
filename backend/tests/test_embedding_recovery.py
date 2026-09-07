@@ -121,7 +121,7 @@ class EmbeddingRecoveryTests(unittest.TestCase):
         for module_name, functions in {
             "app.services.file_service": ["extract_content"],
             "app.services.queued_message_service": ["process_waiting_messages_for_document"],
-            "app.services.assets.asset_extraction_service": ["replace_document_assets"],
+            "app.services.assets.asset_extraction_service": ["replace_document_assets", "ensure_document_assets"],
         }.items():
             module = ModuleType(module_name)
             for name in functions:
@@ -447,43 +447,52 @@ class EmbeddingRecoveryTests(unittest.TestCase):
             create_engine.assert_not_called()
 
     def test_ingestion_does_not_set_ready_until_completeness_verified(self):
-        for module in (self.processing, self.parser_service):
-            for valid_count in (0, 1):
-                with self.subTest(module=module.__name__, valid_count=valid_count), ExitStack() as stack:
-                    db = MagicMock()
-                    document = SimpleNamespace(id=1, file_type="txt", processing_status="pending")
-                    db.get.return_value = document
-                    db.query.return_value.filter.return_value.all.return_value = []
-                    stack.enter_context(patch.object(module, "SessionLocal", return_value=db))
-                    stack.enter_context(patch.object(module.Path, "exists", return_value=True))
-                    stack.enter_context(patch.object(module.Path, "is_file", return_value=True))
-                    stack.enter_context(patch.object(module, "extract_content", return_value=[{"type": "text", "content": "synthetic"}]))
-                    stack.enter_context(patch.object(module, "create_passage_embeddings", return_value=[vector()]))
-                    stack.enter_context(patch.object(module, "inspect_embeddings", return_value=[
-                        self.completeness.EmbeddingCompleteness(1, "processing", 1, valid_count)]))
-                    if module is self.processing:
-                        stack.enter_context(patch.object(module, "log_and_get_public_error", return_value="Synthetic safe failure"))
-                    else:
-                        stack.enter_context(patch.object(module.logger, "exception"))
-                    with redirect_stdout(io.StringIO()):
-                        if valid_count:
-                            module.process_document(1, "synthetic.txt")
-                        else:
-                            with self.assertRaises(ValueError):
-                                module.process_document(1, "synthetic.txt")
-                    self.assertEqual(document.processing_status, "ready" if valid_count else "failed")
-                    db.flush.assert_called_once()
-                    saved_chunk = db.add.call_args.args[0]
-                    self.assertEqual(saved_chunk.chunk_metadata["embedding_generation"]["dimension"], 512)
+        from contextlib import contextmanager
+        for valid_count in (0, 1):
+            with self.subTest(valid_count=valid_count), ExitStack() as stack:
+                db = MagicMock()
+                document = SimpleNamespace(id=1, file_type="txt", file_path="synthetic.txt",
+                                           processing_status="processing", processing_stage="uploaded")
+                db.get.return_value = document
+                db.scalar.return_value = None
+                db.execute.return_value.mappings.return_value = []
+                @contextmanager
+                def session():
+                    yield db
+                claim = SimpleNamespace(session=session)
+                @contextmanager
+                def acquire(document_id):
+                    yield claim
+                stack.enter_context(patch.object(self.processing, "claim_document_processing", acquire))
+                stack.enter_context(patch.object(self.processing.Path, "is_file", return_value=True))
+                stack.enter_context(patch.object(self.processing, "extract_content", return_value=[{"type": "text", "content": "synthetic"}]))
+                stack.enter_context(patch.object(self.processing, "inspect_embeddings", side_effect=[
+                    [self.completeness.EmbeddingCompleteness(1, "processing", 0, 0)],
+                    [self.completeness.EmbeddingCompleteness(1, "processing", 1, valid_count)],
+                ]))
+                error_log = stack.enter_context(patch.object(self.processing, "log_generation_failure", return_value="Synthetic safe failure"))
+                stack.enter_context(patch.object(self.processing.logger, "warning"))
+                self.processing.process_document(1, "ignored-task-path.txt")
+                self.assertEqual(document.processing_status, "ready" if valid_count else "failed", error_log.call_args)
+                db.flush.assert_called_once()
+                db.delete.assert_not_called()
 
     def test_legacy_duplicate_guard_requires_explicit_recovery_without_reparse(self):
+        from contextlib import contextmanager
         db = MagicMock()
         db.get.return_value = SimpleNamespace(id=1, processing_status="ready")
-        with patch.object(self.parser_service, "SessionLocal", return_value=db), \
-                patch.object(self.parser_service, "inspect_embeddings", return_value=[
+        @contextmanager
+        def session():
+            yield db
+        @contextmanager
+        def acquire(document_id):
+            yield SimpleNamespace(session=session)
+        with patch.object(self.processing, "claim_document_processing", acquire), \
+                patch.object(self.processing, "inspect_embeddings", return_value=[
                     self.completeness.EmbeddingCompleteness(1, "ready", 1, 0)]), \
-                patch.object(self.parser_service, "extract_content") as extract, self.assertLogs(self.parser_service.logger, "WARNING"):
-            self.parser_service.process_document(1, "synthetic.txt")
+                patch.object(self.processing, "extract_content") as extract, self.assertLogs(self.processing.logger, "WARNING"):
+            result = self.parser_service.process_document(1, "synthetic.txt")
+        self.assertEqual(result, "embedding_recovery_required")
         extract.assert_not_called()
         db.commit.assert_not_called()
 

@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from sqlalchemy.orm import Session
 
@@ -319,6 +320,30 @@ def build_document_assets(
         )
 
     return assets
+
+
+def ensure_document_assets(db: Session, document_id: int, content: list[dict]):
+    """Reuse matching rows under the document claim; never delete prior assets."""
+    def identity(asset):
+        return (
+            asset.asset_type, asset.location, asset.title, asset.caption,
+            asset.content, asset.file_path,
+            json.dumps(asset.asset_metadata, sort_keys=True, ensure_ascii=True),
+        )
+
+    existing = db.query(DocumentAsset).filter(DocumentAsset.document_id == document_id).all()
+    identities = {identity(asset) for asset in existing}
+    candidates = build_document_assets(document_id, content)
+    candidate_identities = {identity(asset) for asset in candidates}
+    if not identities.issubset(candidate_identities):
+        # Legacy assets can predate the chunk checkpoint. Changed extraction
+        # output must not silently add alternate copies or erase old references.
+        raise ValueError("Existing document assets require explicit review")
+    for asset in candidates:
+        key = identity(asset)
+        if key not in identities:
+            db.add(asset)
+            identities.add(key)
 
 
 def replace_document_assets(

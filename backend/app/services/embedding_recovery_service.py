@@ -64,7 +64,7 @@ def recovery_chunk_statement(document_ids, limit, after_chunk_id=0):
     )
 
 
-def recovery_update_statement(chunk, vector):
+def recovery_update_statement(chunk, vector, *, statuses=RECOVERABLE_STATUSES):
     metadata_type = func.jsonb_typeof(DocumentChunk.chunk_metadata)
     metadata = case(
         (metadata_type == "object", DocumentChunk.chunk_metadata),
@@ -82,7 +82,7 @@ def recovery_update_statement(chunk, vector):
             or_(metadata_type.is_(None), metadata_type.in_(("null", "object"))),
             select(Document.id).where(
                 Document.id == DocumentChunk.document_id,
-                Document.processing_status.in_(RECOVERABLE_STATUSES),
+                Document.processing_status.in_(statuses),
             ).exists(),
         )
         .values(

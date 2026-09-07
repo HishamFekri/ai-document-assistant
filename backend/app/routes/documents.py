@@ -1,5 +1,6 @@
 import os
 import zipfile
+import logging
 
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +17,7 @@ from fastapi import (
 )
 
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 
 from app.database.database import get_db
 
@@ -39,9 +41,13 @@ from app.services.file_service import (
 from app.services.task_queue import (
     enqueue_document_processing,
 )
+from app.services.document_processing_claim import claim_document_processing
+from app.services.embedding_completeness_service import inspect_embeddings
+from app.services.error_service import log_generation_failure
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 MAX_UPLOAD_SIZE_MB = int(
@@ -445,13 +451,78 @@ async def upload_document(
             detail="Could not create document",
         ) from error
 
-    enqueue_document_processing(
+    # Copy the response before ending the refresh transaction. Dispatch must not
+    # retain a database transaction while waiting on the broker.
+    response = DocumentResponse.model_validate(document)
+    document_id = document.id
+    db.rollback()
+    return dispatch_uploaded_document(
+        db=db,
         background_tasks=background_tasks,
-        document_id=document.id,
+        document_id=document_id,
         file_path=str(file_path),
+        response=response,
     )
 
-    return document
+
+def dispatch_uploaded_document(db, background_tasks, document_id, file_path, response):
+    logger.info("Processing dispatch attempted document=%s", document_id)
+    try:
+        enqueue_document_processing(background_tasks, document_id, file_path)
+    except Exception as error:
+        log_generation_failure(error, "document", document_id=document_id)
+        # An ambiguous broker response may already have reached a worker. Never
+        # overwrite a worker's progress or successful completion.
+        db.execute(update(Document).where(
+            Document.id == document_id,
+            Document.processing_status == "processing",
+            Document.processing_stage == "uploaded",
+        ).values(
+            processing_status="failed", processing_stage="dispatch_failed",
+            processing_error="Document processing could not be scheduled. Please retry.",
+        ).execution_options(synchronize_session=False))
+        db.commit()
+        document = db.get(Document, document_id, populate_existing=True)
+        if document is None:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Document not found") from None
+        response = DocumentResponse.model_validate(document)
+        db.rollback()
+        logger.warning("Processing dispatch failed document=%s", document_id)
+    return response
+
+
+@router.post("/{document_id}/retry", response_model=DocumentResponse)
+def retry_document_processing(
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_id = current_user.id
+    get_owned_document(db, document_id, current_user)
+    db.rollback()
+    with claim_document_processing(document_id) as claim:
+        if claim is None:
+            raise HTTPException(status_code=409, detail="Document processing is already active")
+        with claim.session() as processing_db:
+            document = processing_db.get(Document, document_id, with_for_update=True)
+            if document is None or document.user_id != owner_id:
+                raise HTTPException(status_code=404, detail="Document not found")
+            if document.processing_status == "ready":
+                if inspect_embeddings(processing_db, [document_id])[0].complete:
+                    return DocumentResponse.model_validate(document)
+                raise HTTPException(status_code=409, detail="Document requires explicit embedding recovery")
+            if not document.file_path:
+                raise HTTPException(status_code=409, detail="Document source is unavailable")
+            document.processing_status = "processing"
+            document.processing_stage = "uploaded"
+            document.processing_progress = 5
+            document.processing_error = None
+            file_path = document.file_path
+            response = DocumentResponse.model_validate(document)
+    # Release the claim before submission so an immediately delivered task can run.
+    return dispatch_uploaded_document(db, background_tasks, document_id, file_path, response)
 
 
 @router.get(

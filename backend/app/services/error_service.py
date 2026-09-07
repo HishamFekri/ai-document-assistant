@@ -18,16 +18,19 @@ def log_and_get_public_error(
     return message
 
 
-GenerationOperation = Literal["summary", "message"]
+GenerationOperation = Literal["summary", "message", "document"]
 GENERATION_FAILED = {
+    "document": "Document processing failed. Please try again.",
     "summary": "Summary generation failed. Please try again.",
     "message": "Message generation failed. Please try again.",
 }
 GENERATION_TIMED_OUT = {
+    "document": "Document processing timed out. Please try again.",
     "summary": "Summary generation timed out. Please try again.",
     "message": "Message generation timed out. Please try again.",
 }
 SAFE_GENERATION_ERRORS = {
+    "document": {GENERATION_FAILED["document"], GENERATION_TIMED_OUT["document"]},
     "summary": {GENERATION_FAILED["summary"], GENERATION_TIMED_OUT["summary"]},
     "message": {
         GENERATION_FAILED["message"], GENERATION_TIMED_OUT["message"],
