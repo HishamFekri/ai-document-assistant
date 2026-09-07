@@ -2,8 +2,12 @@ import json
 import os
 import re
 from typing import Literal
+from types import SimpleNamespace
+from contextlib import contextmanager
 
+from fastapi import HTTPException
 from openai import OpenAI
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.services.error_service import log_generation_failure
@@ -16,6 +20,7 @@ from app.database.models import (
 from app.database.summary_assistant_models import (
     SummaryAssistantMessage,
 )
+from app.database.summary_models import DocumentSummary
 
 from app.services.summaries.summary_context_service import (
     find_scope_page_numbers,
@@ -24,10 +29,78 @@ from app.services.summaries.summary_context_service import (
 )
 
 from app.services.summaries.summary_service import (
+    create_summary_record,
+    get_summary_by_id,
     mark_summary_completed,
     mark_summary_failed,
     mark_summary_generating,
 )
+
+
+from app.services.summaries.summary_claim import (
+    require_generation_owner,
+    summary_generation_session,
+)
+
+
+class SummaryGenerationStopped(Exception):
+    """Cancellation/deletion detected before another provider request."""
+
+
+def prepare_summary_provider_call(db):
+    db.rollback()
+    summary_id = db.info.get("summary_id")
+    if summary_id is not None:
+        require_generation_owner(db, *db.info["summary_context"])
+        current = db.scalar(select(DocumentSummary.status).where(
+            DocumentSummary.id == summary_id,
+        ))
+        db.rollback()
+        if current != "generating":
+            raise SummaryGenerationStopped()
+
+
+def current_generation_result(db, summary_id):
+    summary = get_summary_by_id(db, summary_id)
+    if summary is not None:
+        db.expunge(summary)
+    db.rollback()
+    if summary is None:
+        raise HTTPException(404, "Summary not found")
+    return summary
+
+
+def snapshot_document(document):
+    # Prompt/context builders use only these scalar values. Rollbacks must not
+    # cause lazy ORM refreshes to reopen a transaction during provider iteration.
+    return SimpleNamespace(**{
+        name: getattr(document, name)
+        for name in ("id", "filename", "file_type", "pages_count")
+    })
+
+
+@contextmanager
+def start_summary_generation(chat_id, document_id, mode="summary", summary_id=None):
+    with summary_generation_session(chat_id, document_id, mode) as db:
+        if summary_id is None:
+            summary = create_summary_record(db, chat_id, document_id, mode)
+        else:
+            summary = get_summary_by_id(db, summary_id)
+            if summary is None or (summary.chat_id, summary.document_id, summary.mode) != (
+                chat_id, document_id, mode,
+            ):
+                raise ValueError("Summary not found")
+            db.expunge(summary)
+            db.rollback()
+        owns_lifecycle = mark_summary_generating(db, summary)
+        if owns_lifecycle:
+            db.info["summary_id"] = summary.id
+        if not owns_lifecycle:
+            summary = get_summary_by_id(db, summary.id)
+            if summary is not None:
+                db.expunge(summary)
+            db.rollback()
+        yield db, summary, owns_lifecycle
 
 
 DEEPSEEK_API_KEY = os.getenv(
@@ -432,6 +505,8 @@ def resolve_generation_request(
             "target_language":
                 None,
         }
+
+    prepare_summary_provider_call(db)
 
     response = (
         client.chat.completions.create(
@@ -1969,6 +2044,7 @@ def generate_transcription_fallback_text(
     page: dict,
     instructions: str,
     output_language: str | None,
+    before_provider=None,
 ) -> str:
     language_text = (
         output_language
@@ -1991,6 +2067,9 @@ def generate_transcription_fallback_text(
                 page_text
             )
         )
+
+    if before_provider is not None:
+        before_provider()
 
     response = (
         client.chat.completions.create(
@@ -2269,6 +2348,7 @@ def generate_transcription_page_segments(
     page: dict,
     instructions: str,
     output_language: str | None,
+    before_provider=None,
 ) -> list[dict]:
     allowed_asset_ids = {
         asset[
@@ -2288,6 +2368,9 @@ def generate_transcription_page_segments(
             int,
         )
     }
+
+    if before_provider is not None:
+        before_provider()
 
     response = (
         client.chat.completions.create(
@@ -2373,6 +2456,7 @@ def generate_transcription_page_segments(
 
         fallback_text = (
             generate_transcription_fallback_text(
+                before_provider=before_provider,
                 document=document,
                 page=page,
                 instructions=instructions,
@@ -2536,6 +2620,8 @@ def stream_transcription_content(
     selected_pages:
         list[int] | None = None,
 ):
+    document = snapshot_document(document)
+
     if request is None:
         request = (
             resolve_generation_request(
@@ -2604,6 +2690,8 @@ def stream_transcription_content(
         )
     )
 
+    db.rollback()
+
     title = (
         "تفريغ وتحليل المستند"
         if output_language
@@ -2651,6 +2739,7 @@ def stream_transcription_content(
 
         page_segments = (
             generate_transcription_page_segments(
+                before_provider=lambda: prepare_summary_provider_call(db),
                 document=document,
                 page=page,
                 instructions=instructions,
@@ -2802,6 +2891,8 @@ def stream_summary_content(
     chat_id: int,
     mode: SummaryMode = "summary",
 ):
+    document = snapshot_document(document)
+
     if mode not in {
         "summary",
         "transcription",
@@ -2840,19 +2931,22 @@ def stream_summary_content(
             )
         )
 
-        while True:
-            try:
-                event = next(
-                    transcription_generator
-                )
+        try:
+            while True:
+                try:
+                    event = next(
+                        transcription_generator
+                    )
 
-                yield event
+                    yield event
 
-            except StopIteration as stop:
-                if stop.value:
-                    return stop.value
+                except StopIteration as stop:
+                    if stop.value:
+                        return stop.value
 
-                break
+                    break
+        finally:
+            transcription_generator.close()
 
         raise ValueError(
             "Could not complete transcription"
@@ -2906,6 +3000,8 @@ def stream_summary_content(
         )
     )
 
+    prepare_summary_provider_call(db)
+
     response = (
         client.chat.completions.create(
             model=DEEPSEEK_MODEL,
@@ -2955,117 +3051,120 @@ def stream_summary_content(
 
     used_asset_ids = set()
 
-    for chunk in response:
-        delta = (
-            chunk
-            .choices[0]
-            .delta
-            .content
-            or ""
-        )
-
-        if not delta:
-            continue
-
-        buffer += delta
-
-        while "\n" in buffer:
-            line, buffer = (
-                buffer.split(
-                    "\n",
-                    1,
-                )
+    try:
+        for chunk in response:
+            delta = (
+                chunk
+                .choices[0]
+                .delta
+                .content
+                or ""
             )
 
-            line = line.strip()
-
-            if not line:
+            if not delta:
                 continue
 
-            try:
-                item = json.loads(
-                    line
-                )
+            buffer += delta
 
-            except json.JSONDecodeError:
-                continue
-
-            if (
-                item.get(
-                    "type"
-                )
-                == "title"
-            ):
-                candidate_title = (
-                    item.get(
-                        "title"
+            while "\n" in buffer:
+                line, buffer = (
+                    buffer.split(
+                        "\n",
+                        1,
                     )
                 )
+
+                line = line.strip()
+
+                if not line:
+                    continue
+
+                try:
+                    item = json.loads(
+                        line
+                    )
+
+                except json.JSONDecodeError:
+                    continue
 
                 if (
-                    isinstance(
-                        candidate_title,
-                        str,
+                    item.get(
+                        "type"
                     )
-                    and candidate_title.strip()
+                    == "title"
                 ):
-                    title = (
-                        candidate_title
-                        .strip()
+                    candidate_title = (
+                        item.get(
+                            "title"
+                        )
                     )
 
-                    yield {
-                        "type":
-                            "title",
+                    if (
+                        isinstance(
+                            candidate_title,
+                            str,
+                        )
+                        and candidate_title.strip()
+                    ):
+                        title = (
+                            candidate_title
+                            .strip()
+                        )
 
-                        "title":
-                            title,
-                    }
+                        yield {
+                            "type":
+                                "title",
 
-                continue
+                            "title":
+                                title,
+                        }
 
-            if (
-                item.get(
-                    "type"
+                    continue
+
+                if (
+                    item.get(
+                        "type"
+                    )
+                    != "section"
+                ):
+                    continue
+
+                raw_section = (
+                    item.get(
+                        "section"
+                    )
                 )
-                != "section"
-            ):
-                continue
 
-            raw_section = (
-                item.get(
-                    "section"
-                )
-            )
-
-            if not isinstance(
-                raw_section,
-                dict,
-            ):
-                continue
-
-            section = (
-                normalize_section(
+                if not isinstance(
                     raw_section,
-                    used_asset_ids,
-                    mode,
+                    dict,
+                ):
+                    continue
+
+                section = (
+                    normalize_section(
+                        raw_section,
+                        used_asset_ids,
+                        mode,
+                    )
                 )
-            )
 
-            if section is None:
-                continue
+                if section is None:
+                    continue
 
-            sections.append(
-                section
-            )
+                sections.append(
+                    section
+                )
 
-            yield {
-                "type":
-                    "section",
+                yield {
+                    "type":
+                        "section",
 
-                "section":
-                    section,
-            }
+                    "section":
+                        section,
+                }
+    finally:
+        response.close()
 
     remaining = (
         buffer.strip()
@@ -3248,57 +3347,44 @@ def generate_summary_content(
 
 
 def generate_summary_for_record(
-    db: Session,
-    document: Document,
-    summary,
-    mode: SummaryMode = "summary",
+    db: Session, document: Document, summary=None, mode: SummaryMode = "summary",
+    *, chat_id=None,
 ):
-    # Capture identifiers before rollback can expire ORM attributes.
     document_id = document.id
-    chat_id = summary.chat_id
-    summary_id = summary.id
-    try:
-        if summary.chat_id is None:
-            raise ValueError(
-                "Summary chat context is missing"
-            )
-
-        mark_summary_generating(
-            db=db,
-            summary=summary,
-        )
-
-        content = (
-            generate_summary_content(
-                db=db,
-                document=document,
-                chat_id=summary.chat_id,
-                mode=mode,
-            )
-        )
-
-        return (
-            mark_summary_completed(
-                db=db,
-                summary=summary,
-                content=content,
-            )
-        )
-
-    except Exception as error:
+    summary_id = summary.id if summary is not None else None
+    chat_id = summary.chat_id if summary is not None else chat_id
+    mode = summary.mode if summary is not None else mode
+    document = snapshot_document(document)
+    db.rollback()
+    if chat_id is None and summary is not None:
         public_error = log_generation_failure(
-            error,
-            "summary",
-            document_id=document_id,
-            chat_id=chat_id,
-            summary_id=summary_id,
+            ValueError("Summary chat context is missing"), "summary",
+            document_id=document_id, chat_id=chat_id, summary_id=summary_id,
         )
-        db.rollback()
-
-        return (
-            mark_summary_failed(
-                db=db,
-                summary=summary,
-                error=public_error,
+        return mark_summary_failed(db, summary, public_error)
+    # The session claim spans allocation, every provider call and final writes.
+    # A duplicate receives an existing-compatible HTTP 409 before allocation.
+    with start_summary_generation(chat_id, document_id, mode, summary_id) as (
+        generation_db, summary, owns_lifecycle,
+    ):
+        if not owns_lifecycle:
+            if summary is None:
+                raise HTTPException(404, "Summary not found")
+            return summary
+        try:
+            content = generate_summary_content(
+                db=generation_db, document=document, chat_id=chat_id, mode=mode,
             )
-        )
+            result = mark_summary_completed(generation_db, summary, content)
+        except SummaryGenerationStopped:
+            return current_generation_result(generation_db, summary.id)
+        except Exception as error:
+            public_error = log_generation_failure(
+                error, "summary", document_id=document_id,
+                chat_id=chat_id, summary_id=summary.id,
+            )
+            generation_db.rollback()
+            result = mark_summary_failed(generation_db, summary, public_error)
+        if result is None:
+            raise HTTPException(404, "Summary not found")
+        return result

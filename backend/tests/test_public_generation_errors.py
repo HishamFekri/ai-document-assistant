@@ -12,7 +12,7 @@ import os
 import subprocess
 import sys
 import unittest
-from contextlib import ExitStack, redirect_stdout
+from contextlib import contextmanager, ExitStack, redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -80,7 +80,7 @@ class PublicGenerationErrorTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        self.document = SimpleNamespace(id=7, processing_status="ready")
+        self.document = SimpleNamespace(id=7, processing_status="ready", filename="synthetic.txt", file_type="txt", pages_count=1)
         self.summary = SimpleNamespace(
             id=11, document_id=7, chat_id=5, mode="summary", version=1,
             status="pending", error=None, content=None, is_selected=False,
@@ -92,7 +92,37 @@ class PublicGenerationErrorTests(unittest.TestCase):
             created_at=datetime(2026, 1, 1),
         )
         self.db = MagicMock()
-        self.db.get.return_value = self.message
+        self.db.get.side_effect = lambda model, *a, **k: (
+            self.summary if model.__name__ == "DocumentSummary" else self.message
+        )
+        self.db.info = {"summary_context": (5, 7, "summary")}
+        self.db.scalar.return_value = None
+        self.db.query.return_value.filter.return_value.first.return_value = self.summary
+        # Model the conditional SQL persistence boundary. SQL predicates and
+        # actual stale-session behavior have separate SQLite/PostgreSQL tests.
+        from sqlalchemy.sql.dml import Update
+        def execute(statement, *args, **kwargs):
+            if isinstance(statement, Update):
+                params = statement.compile().params
+                expected = params.get("status_1")
+                if expected is not None:
+                    expected = expected if isinstance(expected, list) else [expected]
+                    if self.summary.status not in expected:
+                        return SimpleNamespace(rowcount=0)
+                for name in ("status", "error", "content", "is_selected"):
+                    if name in params:
+                        setattr(self.summary, name, params[name])
+            return SimpleNamespace(rowcount=1)
+        self.db.execute.side_effect = execute
+        @contextmanager
+        def claimed_session(*args):
+            yield self.db
+        self.stack.enter_context(patch.object(
+            self.generation, "summary_generation_session", side_effect=claimed_session,
+        ))
+        self.stack.enter_context(patch.object(
+            self.generation, "create_summary_record", return_value=self.summary,
+        ))
         self.persisted = []
         self.db.commit.side_effect = lambda: self.persisted.append({
             "summary": copy.deepcopy(vars(self.summary)),
@@ -102,7 +132,6 @@ class PublicGenerationErrorTests(unittest.TestCase):
         self.answer = self.stack.enter_context(patch.object(self.queue, "answer_question"))
         self.claim = self.stack.enter_context(patch.object(self.queue, "claim_waiting_message", return_value=True))
         self.stack.enter_context(patch.object(self.summary_routes, "get_chat_document", return_value=(None, self.document)))
-        self.stack.enter_context(patch.object(self.summary_routes, "create_summary_record", return_value=self.summary))
         self.stack.enter_context(patch.object(self.chat_routes, "get_owned_chat"))
         self.app.dependency_overrides[self.database.get_db] = lambda: self.db
         self.app.dependency_overrides[self.auth.get_current_user] = lambda: SimpleNamespace(id=1)
@@ -114,6 +143,9 @@ class PublicGenerationErrorTests(unittest.TestCase):
             self.assertNotIn(marker, str(value))
 
     def fail_summary(self, error):
+        # Each error case represents a fresh generation lifecycle.
+        self.summary.status = "pending"
+        self.summary.error = None
         self.generate.side_effect = error
         with self.assertLogs(self.errors.logger, level="ERROR") as captured:
             result = self.generation.generate_summary_for_record(self.db, self.document, self.summary)
@@ -137,7 +169,7 @@ class PublicGenerationErrorTests(unittest.TestCase):
         response = self.summary_schema.DocumentSummaryResponse.model_validate(result).model_dump(mode="json")
         self.assertEqual(response["error"], result.error)
         self.assert_no_sensitive_data(response)
-        self.db.rollback.assert_called_once()
+        self.db.rollback.assert_called()
 
     def test_summary_generation_http_response_keeps_200_and_failed_status(self):
         self.generate.side_effect = RuntimeError(SENSITIVE)

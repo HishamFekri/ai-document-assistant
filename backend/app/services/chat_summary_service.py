@@ -12,10 +12,6 @@ from app.services.summaries.summary_generation_service import (
     generate_summary_for_record,
 )
 
-from app.services.summaries.summary_service import (
-    create_summary_record,
-)
-
 
 def save_summary_instruction(
     db: Session,
@@ -47,18 +43,6 @@ def generate_summary_from_chat(
         content=instruction,
     )
 
-    summary = (
-        create_summary_record(
-            db=db,
-            chat_id=chat_id,
-            document_id=document.id,
-        )
-    )
-
-    return (
-        generate_summary_for_record(
-            db=db,
-            document=document,
-            summary=summary,
-        )
+    return generate_summary_for_record(
+        db=db, document=document, chat_id=chat_id,
     )

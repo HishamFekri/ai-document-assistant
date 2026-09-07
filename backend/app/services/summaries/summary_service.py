@@ -1,10 +1,19 @@
 from typing import Literal
 
-from sqlalchemy import func
+from sqlalchemy import delete, func, or_, select, Text, update
 from sqlalchemy.orm import Session
 
 from app.database.summary_models import (
     DocumentSummary,
+)
+
+
+from app.services.error_service import public_generation_error
+from app.services.summaries.summary_claim import (
+    cleanup_is_safe,
+    lock_summary_context,
+    require_generation_owner,
+    SummaryGenerationBusy,
 )
 
 
@@ -154,384 +163,186 @@ def get_summary_by_id(
     )
 
 
-def get_next_summary_version(
-    db: Session,
-    chat_id: int,
-    document_id: int,
-    mode: SummaryMode,
-) -> int:
-    validated_mode = (
-        validate_summary_mode(
-            mode
-        )
+def _context(chat_id, document_id, mode):
+    return (
+        DocumentSummary.chat_id == chat_id,
+        DocumentSummary.document_id == document_id,
+        DocumentSummary.mode == validate_summary_mode(mode),
     )
 
-    current_max = (
-        db.query(
-            func.max(
-                DocumentSummary.version
-            )
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == chat_id,
-            DocumentSummary.document_id
-            == document_id,
-            DocumentSummary.mode
-            == validated_mode,
-        )
-        .scalar()
-    )
 
-    return int(
-        current_max or 0
-    ) + 1
+def _finish(db, summary_id):
+    """Return a current detached snapshot without leaving a refresh transaction."""
+    summary = db.get(DocumentSummary, summary_id, populate_existing=True)
+    if summary is not None:
+        db.expunge(summary)
+    db.commit()
+    return summary
 
 
-def cleanup_old_summaries(
-    db: Session,
-    chat_id: int,
-    document_id: int,
-    mode: SummaryMode,
-    keep_summary_id: int,
-) -> None:
-    validated_mode = (
-        validate_summary_mode(
-            mode
-        )
-    )
-
-    old_summaries = (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == chat_id,
-            DocumentSummary.document_id
-            == document_id,
-            DocumentSummary.mode
-            == validated_mode,
-            DocumentSummary.id
-            != keep_summary_id,
-        )
-        .all()
-    )
-
-    for old_summary in old_summaries:
-        db.delete(
-            old_summary
-        )
+def get_next_summary_version(db, chat_id, document_id, mode):
+    # The lock remains held until the INSERT commits. The existing unique
+    # constraint is an additional backstop; allocation never runs unlocked.
+    lock_summary_context(db, chat_id, document_id, mode)
+    current = db.scalar(select(func.max(DocumentSummary.version)).where(
+        *_context(chat_id, document_id, mode)
+    ))
+    return int(current or 0) + 1
 
 
-def create_summary_record(
-    db: Session,
-    chat_id: int,
-    document_id: int,
-    mode: SummaryMode = "summary",
-) -> DocumentSummary:
-    validated_mode = (
-        validate_summary_mode(
-            mode
-        )
-    )
+def cleanup_old_summaries(db, chat_id, document_id, mode, keep_summary_id):
+    lock_summary_context(db, chat_id, document_id, mode)
+    if not cleanup_is_safe(db, chat_id, document_id, mode):
+        return
+    keep = db.scalar(select(DocumentSummary).where(
+        DocumentSummary.id == keep_summary_id,
+        *_context(chat_id, document_id, mode),
+        DocumentSummary.status.in_(("completed", "cancelled")),
+    ).execution_options(populate_existing=True))
+    if keep is None:
+        return
+    db.execute(delete(DocumentSummary).where(
+        *_context(chat_id, document_id, mode),
+        DocumentSummary.version < keep.version,
+        DocumentSummary.status.in_(("completed", "failed", "cancelled")),
+        DocumentSummary.is_selected.is_(False),
+    ).execution_options(synchronize_session=False))
 
-    next_version = (
-        get_next_summary_version(
-            db=db,
-            chat_id=chat_id,
-            document_id=document_id,
-            mode=validated_mode,
-        )
-    )
 
+def create_summary_record(db, chat_id, document_id, mode="summary"):
+    require_generation_owner(db, chat_id, document_id, mode)
+    lock_summary_context(db, chat_id, document_id, mode)
+    active = db.scalar(select(DocumentSummary.id).where(
+        *_context(chat_id, document_id, mode),
+        DocumentSummary.status.in_(("pending", "generating")),
+    ).limit(1))
+    if active is not None:
+        # A crashed request is recovered by the existing cancel + regenerate
+        # flow. Never silently restart a provider request of uncertain outcome.
+        db.rollback()
+        raise SummaryGenerationBusy()
     summary = DocumentSummary(
-        chat_id=chat_id,
-        document_id=document_id,
-        mode=validated_mode,
-        version=next_version,
-        status="pending",
-        content=None,
-        is_selected=False,
-        error=None,
+        chat_id=chat_id, document_id=document_id, mode=mode,
+        version=get_next_summary_version(db, chat_id, document_id, mode),
+        status="pending", content=None, is_selected=False, error=None,
     )
+    db.add(summary)
+    db.flush()
+    return _finish(db, summary.id)
 
-    db.add(
-        summary
-    )
 
+def _lock_record_context(db, summary):
+    lock_summary_context(db, summary.chat_id, summary.document_id, summary.mode)
+    return _context(summary.chat_id, summary.document_id, summary.mode)
+
+
+def mark_summary_generating(db, summary):
+    require_generation_owner(db, summary.chat_id, summary.document_id, summary.mode)
+    context = _lock_record_context(db, summary)
+    changed = db.execute(update(DocumentSummary).where(
+        DocumentSummary.id == summary.id, *context,
+        DocumentSummary.status == "pending",
+    ).values(status="generating", error=None, is_selected=False)
+      .execution_options(synchronize_session=False)).rowcount
     db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+    return changed == 1
 
 
-def mark_summary_generating(
-    db: Session,
-    summary: DocumentSummary,
-) -> DocumentSummary:
-    summary.status = (
-        "generating"
-    )
-
-    summary.error = None
-
-    summary.is_selected = False
-
-    db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+def _select_only(db, summary):
+    db.execute(update(DocumentSummary).where(
+        *_context(summary.chat_id, summary.document_id, summary.mode),
+    ).values(is_selected=False).execution_options(synchronize_session=False))
+    db.execute(update(DocumentSummary).where(
+        DocumentSummary.id == summary.id,
+    ).values(is_selected=True).execution_options(synchronize_session=False))
 
 
-def mark_summary_completed(
-    db: Session,
-    summary: DocumentSummary,
-    content: dict,
-) -> DocumentSummary:
-    validated_mode = (
-        validate_summary_mode(
-            summary.mode
-        )
-    )
-
-    db.refresh(
-        summary
-    )
-
-    if (
-        summary.status
-        == "cancelled"
-    ):
-        return summary
-
-    summary.status = (
-        "completed"
-    )
-
-    summary.content = content
-
-    summary.error = None
-
-    summary.is_selected = True
-
-    (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == summary.chat_id,
-            DocumentSummary.document_id
-            == summary.document_id,
-            DocumentSummary.mode
-            == validated_mode,
-            DocumentSummary.id
-            != summary.id,
-        )
-        .update(
-            {
-                DocumentSummary
-                .is_selected:
-                    False
-            },
-            synchronize_session=False,
-        )
-    )
-
-    cleanup_old_summaries(
-        db=db,
-        chat_id=summary.chat_id,
-        document_id=(
-            summary.document_id
-        ),
-        mode=validated_mode,
-        keep_summary_id=summary.id,
-    )
-
-    db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+def mark_summary_completed(db, summary, content):
+    require_generation_owner(db, summary.chat_id, summary.document_id, summary.mode)
+    context = _lock_record_context(db, summary)
+    changed = db.execute(update(DocumentSummary).where(
+        DocumentSummary.id == summary.id, *context,
+        DocumentSummary.status == "generating",
+    ).values(status="completed", content=content, error=None)
+      .execution_options(synchronize_session=False)).rowcount
+    if changed == 1:
+        newer = db.scalar(select(DocumentSummary.id).where(
+            *context, DocumentSummary.version > summary.version,
+            DocumentSummary.status.in_(("completed", "cancelled")),
+        ).limit(1))
+        if newer is None:
+            _select_only(db, summary)
+            cleanup_old_summaries(
+                db, summary.chat_id, summary.document_id, summary.mode, summary.id,
+            )
+    return _finish(db, summary.id)
 
 
-def mark_summary_failed(
-    db: Session,
-    summary: DocumentSummary,
-    error: str,
-) -> DocumentSummary:
-    db.refresh(
-        summary
-    )
-
-    if (
-        summary.status
-        == "cancelled"
-    ):
-        return summary
-
-    summary.status = (
-        "failed"
-    )
-
-    summary.error = error
-
-    summary.is_selected = False
-
-    db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+def mark_summary_failed(db, summary, error):
+    context = _lock_record_context(db, summary)
+    db.execute(update(DocumentSummary).where(
+        DocumentSummary.id == summary.id, *context,
+        DocumentSummary.status.in_(("pending", "generating")),
+    ).values(status="failed", error=public_generation_error(error, "summary"),
+             is_selected=False).execution_options(synchronize_session=False))
+    return _finish(db, summary.id)
 
 
-def mark_summary_cancelled(
-    db: Session,
-    summary: DocumentSummary,
-    content: dict | None = None,
-) -> DocumentSummary:
-    validated_mode = (
-        validate_summary_mode(
-            summary.mode
-        )
-    )
-
-    summary.status = (
-        "cancelled"
-    )
-
+def mark_summary_cancelled(db, summary, content=None):
+    context = _lock_record_context(db, summary)
+    values = dict(status="cancelled", error=None, is_selected=False)
     if content is not None:
-        summary.content = content
-
-    summary.error = None
-
-    summary.is_selected = True
-
-    (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == summary.chat_id,
-            DocumentSummary.document_id
-            == summary.document_id,
-            DocumentSummary.mode
-            == validated_mode,
-            DocumentSummary.id
-            != summary.id,
-        )
-        .update(
-            {
-                DocumentSummary
-                .is_selected:
-                    False
-            },
-            synchronize_session=False,
-        )
-    )
-
-    db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+        values["content"] = content
+    changed = db.execute(update(DocumentSummary).where(
+        DocumentSummary.id == summary.id, *context,
+        DocumentSummary.status.in_(("pending", "generating")),
+    ).values(**values).execution_options(synchronize_session=False)).rowcount
+    if changed == 1:
+        newer = db.scalar(select(DocumentSummary.id).where(
+            *context, DocumentSummary.version > summary.version,
+            DocumentSummary.status.in_(("completed", "cancelled")),
+        ).limit(1))
+        if newer is None:
+            _select_only(db, summary)
+    elif content is not None:
+        # Only the still-owning stream may finish saving its cancelled partial.
+        # Never reselect it, replace an existing partial, or accept a final result.
+        require_generation_owner(db, summary.chat_id, summary.document_id, summary.mode)
+        db.execute(update(DocumentSummary).where(
+            DocumentSummary.id == summary.id, *context,
+            DocumentSummary.status == "cancelled",
+            or_(DocumentSummary.content.is_(None),
+                DocumentSummary.content.cast(Text) == "null"),
+        ).values(content=content).execution_options(synchronize_session=False))
+    return _finish(db, summary.id)
 
 
-def select_summary(
-    db: Session,
-    chat_id: int,
-    document_id: int,
-    summary_id: int,
-) -> DocumentSummary | None:
-    summary = (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.id
-            == summary_id,
-            DocumentSummary.chat_id
-            == chat_id,
-            DocumentSummary.document_id
-            == document_id,
-            DocumentSummary.status
-            == "completed",
-        )
-        .first()
-    )
-
+def select_summary(db, chat_id, document_id, summary_id):
+    summary = db.scalar(select(DocumentSummary).where(
+        DocumentSummary.id == summary_id,
+        DocumentSummary.chat_id == chat_id,
+        DocumentSummary.document_id == document_id,
+    ))
     if summary is None:
+        db.rollback()
         return None
-
-    validated_mode = (
-        validate_summary_mode(
-            summary.mode
-        )
-    )
-
-    (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == chat_id,
-            DocumentSummary.document_id
-            == document_id,
-            DocumentSummary.mode
-            == validated_mode,
-        )
-        .update(
-            {
-                DocumentSummary
-                .is_selected:
-                    False
-            },
-            synchronize_session=False,
-        )
-    )
-
-    summary.is_selected = True
-
-    cleanup_old_summaries(
-        db=db,
-        chat_id=chat_id,
-        document_id=document_id,
-        mode=validated_mode,
-        keep_summary_id=(
-            summary.id
-        ),
-    )
-
-    db.commit()
-
-    db.refresh(
-        summary
-    )
-
-    return summary
+    context = _lock_record_context(db, summary)
+    summary = db.scalar(select(DocumentSummary).where(
+        DocumentSummary.id == summary_id, *context,
+        DocumentSummary.status == "completed",
+    ).execution_options(populate_existing=True))
+    if summary is None:
+        db.rollback()
+        return None
+    _select_only(db, summary)
+    cleanup_old_summaries(db, chat_id, document_id, summary.mode, summary_id)
+    return _finish(db, summary_id)
 
 
-def delete_summary(
-    db: Session,
-    summary: DocumentSummary,
-) -> None:
-    db.delete(
-        summary
-    )
-
+def delete_summary(db, summary):
+    context = _lock_record_context(db, summary)
+    # Deletion is explicit user intent. A later worker update cannot recreate it.
+    db.execute(delete(DocumentSummary).where(
+        DocumentSummary.id == summary.id, *context,
+    ).execution_options(synchronize_session=False))
     db.commit()
