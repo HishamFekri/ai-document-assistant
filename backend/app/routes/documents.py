@@ -44,6 +44,7 @@ from app.services.task_queue import (
 from app.services.document_processing_claim import claim_document_processing
 from app.services.embedding_completeness_service import inspect_embeddings
 from app.services.error_service import log_generation_failure
+from app.services.upload_quota_service import upload_quota_session
 
 
 load_dotenv()
@@ -314,6 +315,8 @@ async def upload_document(
         get_current_user
     ),
 ):
+    owner_id = current_user.id
+    db.rollback()
     original_filename = Path(
         file.filename or "document"
     ).name
@@ -344,118 +347,119 @@ async def upload_document(
         file
     )
 
-    validate_file_content(
-        file,
-        extension,
-    )
+    with upload_quota_session(owner_id, incoming_bytes=get_file_size(file)) as quota_db:
+        validate_file_content(
+            file,
+            extension,
+        )
 
-    stored_filename = (
-        f"{uuid4().hex}"
-        f"{extension}"
-    )
+        stored_filename = (
+            f"{uuid4().hex}"
+            f"{extension}"
+        )
 
-    file_path = (
-        UPLOAD_DIR
-        / stored_filename
-    )
+        file_path = (
+            UPLOAD_DIR
+            / stored_filename
+        )
 
-    try:
-        bytes_written = 0
+        try:
+            bytes_written = 0
 
-        file.file.seek(0)
+            file.file.seek(0)
 
-        with open(
-            file_path,
-            "wb",
-        ) as buffer:
-            while True:
-                chunk = file.file.read(
-                    1024 * 1024
-                )
-
-                if not chunk:
-                    break
-
-                bytes_written += len(
-                    chunk
-                )
-
-                if (
-                    bytes_written
-                    > MAX_UPLOAD_SIZE_BYTES
-                ):
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            "File is too large. "
-                            "Maximum allowed size is "
-                            f"{MAX_UPLOAD_SIZE_MB} MB."
-                        ),
+            with open(
+                file_path,
+                "wb",
+            ) as buffer:
+                while True:
+                    chunk = file.file.read(
+                        1024 * 1024
                     )
 
-                buffer.write(
-                    chunk
-                )
+                    if not chunk:
+                        break
 
-    except Exception as error:
-        file_path.unlink(
-            missing_ok=True
+                    bytes_written += len(
+                        chunk
+                    )
+
+                    if (
+                        bytes_written
+                        > MAX_UPLOAD_SIZE_BYTES
+                    ):
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "File is too large. "
+                                "Maximum allowed size is "
+                                f"{MAX_UPLOAD_SIZE_MB} MB."
+                            ),
+                        )
+
+                    buffer.write(
+                        chunk
+                    )
+
+        except Exception as error:
+            file_path.unlink(
+                missing_ok=True
+            )
+
+            if isinstance(
+                error,
+                HTTPException,
+            ):
+                raise
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not save uploaded file"
+                ),
+            ) from error
+
+        document = Document(
+            user_id=owner_id,
+            filename=original_filename,
+            file_type=extension.lstrip("."),
+            file_path=str(file_path),
+            pages_count=None,
+
+            processing_status="processing",
+            processing_stage="uploaded",
+            processing_progress=5,
+            processing_error=None,
         )
 
-        if isinstance(
-            error,
-            HTTPException,
-        ):
-            raise
+        try:
+            quota_db.add(
+                document
+            )
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not save uploaded file"
-            ),
-        ) from error
+            quota_db.commit()
 
-    document = Document(
-        user_id=current_user.id,
-        filename=original_filename,
-        file_type=extension.lstrip("."),
-        file_path=str(file_path),
-        pages_count=None,
+            quota_db.refresh(
+                document
+            )
 
-        processing_status="processing",
-        processing_stage="uploaded",
-        processing_progress=5,
-        processing_error=None,
-    )
+        except Exception as error:
+            quota_db.rollback()
 
-    try:
-        db.add(
-            document
-        )
+            file_path.unlink(
+                missing_ok=True
+            )
 
-        db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail="Could not create document",
+            ) from error
 
-        db.refresh(
-            document
-        )
-
-    except Exception as error:
-        db.rollback()
-
-        file_path.unlink(
-            missing_ok=True
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not create document",
-        ) from error
-
-    # Copy the response before ending the refresh transaction. Dispatch must not
-    # retain a database transaction while waiting on the broker.
-    response = DocumentResponse.model_validate(document)
-    document_id = document.id
-    db.rollback()
+        # Copy the response before ending the refresh transaction. Dispatch must not
+        # retain a database transaction while waiting on the broker.
+        response = DocumentResponse.model_validate(document)
+        document_id = document.id
+        quota_db.rollback()
     return dispatch_uploaded_document(
         db=db,
         background_tasks=background_tasks,
@@ -505,22 +509,23 @@ def retry_document_processing(
     with claim_document_processing(document_id) as claim:
         if claim is None:
             raise HTTPException(status_code=409, detail="Document processing is already active")
-        with claim.session() as processing_db:
-            document = processing_db.get(Document, document_id, with_for_update=True)
-            if document is None or document.user_id != owner_id:
-                raise HTTPException(status_code=404, detail="Document not found")
-            if document.processing_status == "ready":
-                if inspect_embeddings(processing_db, [document_id])[0].complete:
-                    return DocumentResponse.model_validate(document)
-                raise HTTPException(status_code=409, detail="Document requires explicit embedding recovery")
-            if not document.file_path:
-                raise HTTPException(status_code=409, detail="Document source is unavailable")
-            document.processing_status = "processing"
-            document.processing_stage = "uploaded"
-            document.processing_progress = 5
-            document.processing_error = None
-            file_path = document.file_path
-            response = DocumentResponse.model_validate(document)
+        with upload_quota_session(owner_id, retry_document_id=document_id):
+            with claim.session() as processing_db:
+                document = processing_db.get(Document, document_id, with_for_update=True)
+                if document is None or document.user_id != owner_id:
+                    raise HTTPException(status_code=404, detail="Document not found")
+                if document.processing_status == "ready":
+                    if inspect_embeddings(processing_db, [document_id])[0].complete:
+                        return DocumentResponse.model_validate(document)
+                    raise HTTPException(status_code=409, detail="Document requires explicit embedding recovery")
+                if not document.file_path:
+                    raise HTTPException(status_code=409, detail="Document source is unavailable")
+                document.processing_status = "processing"
+                document.processing_stage = "uploaded"
+                document.processing_progress = 5
+                document.processing_error = None
+                file_path = document.file_path
+                response = DocumentResponse.model_validate(document)
     # Release the claim before submission so an immediately delivered task can run.
     return dispatch_uploaded_document(db, background_tasks, document_id, file_path, response)
 

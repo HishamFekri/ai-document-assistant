@@ -11,9 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.services.error_service import log_generation_failure
+from app.services.resource_admission import user_operation
 
 from app.database.models import (
     Document,
+    Chat,
     Message,
 )
 
@@ -80,27 +82,37 @@ def snapshot_document(document):
 
 
 @contextmanager
-def start_summary_generation(chat_id, document_id, mode="summary", summary_id=None):
+def start_summary_generation(chat_id, document_id, mode="summary", summary_id=None, *, admission=None):
     with summary_generation_session(chat_id, document_id, mode) as db:
-        if summary_id is None:
-            summary = create_summary_record(db, chat_id, document_id, mode)
-        else:
-            summary = get_summary_by_id(db, summary_id)
-            if summary is None or (summary.chat_id, summary.document_id, summary.mode) != (
-                chat_id, document_id, mode,
-            ):
-                raise ValueError("Summary not found")
-            db.expunge(summary)
-            db.rollback()
-        owns_lifecycle = mark_summary_generating(db, summary)
-        if owns_lifecycle:
-            db.info["summary_id"] = summary.id
-        if not owns_lifecycle:
-            summary = get_summary_by_id(db, summary.id)
-            if summary is not None:
+        owner_id = admission.user_id if admission is not None else summary_owner_id(db, chat_id)
+        db.rollback()
+        with user_operation(
+            owner_id, "summary", existing=admission, connection=db.get_bind(),
+        ):
+            if summary_id is None:
+                summary = create_summary_record(db, chat_id, document_id, mode)
+            else:
+                summary = get_summary_by_id(db, summary_id)
+                if summary is None or (summary.chat_id, summary.document_id, summary.mode) != (
+                    chat_id, document_id, mode,
+                ):
+                    raise ValueError("Summary not found")
                 db.expunge(summary)
-            db.rollback()
-        yield db, summary, owns_lifecycle
+                db.rollback()
+            owns_lifecycle = mark_summary_generating(db, summary)
+            if owns_lifecycle:
+                db.info["summary_id"] = summary.id
+            if not owns_lifecycle:
+                summary = get_summary_by_id(db, summary.id)
+                if summary is not None:
+                    db.expunge(summary)
+                db.rollback()
+            yield db, summary, owns_lifecycle
+
+
+def summary_owner_id(db, chat_id):
+    return db.scalar(select(Chat.user_id).where(Chat.id == chat_id))
+
 
 
 DEEPSEEK_API_KEY = os.getenv(
@@ -3348,7 +3360,7 @@ def generate_summary_content(
 
 def generate_summary_for_record(
     db: Session, document: Document, summary=None, mode: SummaryMode = "summary",
-    *, chat_id=None,
+    *, chat_id=None, admission=None,
 ):
     document_id = document.id
     summary_id = summary.id if summary is not None else None
@@ -3364,7 +3376,7 @@ def generate_summary_for_record(
         return mark_summary_failed(db, summary, public_error)
     # The session claim spans allocation, every provider call and final writes.
     # A duplicate receives an existing-compatible HTTP 409 before allocation.
-    with start_summary_generation(chat_id, document_id, mode, summary_id) as (
+    with start_summary_generation(chat_id, document_id, mode, summary_id, admission=admission) as (
         generation_db, summary, owns_lifecycle,
     ):
         if not owns_lifecycle:

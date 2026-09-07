@@ -76,6 +76,9 @@ class PublicGenerationErrorTests(unittest.TestCase):
         cls.app.include_router(cls.chat_routes.router)
         cls.database = database
         cls.TestClient = TestClient
+        from resource_test_helpers import install_resource_mocks
+        install_resource_mocks(cls.stack)
+        cls.stack.enter_context(patch.object(cls.generation, "summary_owner_id", return_value=1))
 
     def setUp(self):
         self.stack = ExitStack()

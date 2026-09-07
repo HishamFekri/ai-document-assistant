@@ -452,10 +452,10 @@ class SummaryConcurrencyTests(unittest.TestCase):
 
     def test_stream_generator_exit_persists_partial_and_releases_claim(self):
         self.http_client()
-        with patch.object(self.routes, "StreamingResponse", side_effect=lambda iterator, **kwargs: iterator), \
+        with patch.object(self.routes, "AdmittedStreamingResponse", side_effect=lambda iterator, permit, **kwargs: iterator), \
              patch.object(self.routes, "stream_summary_content", side_effect=self.stream_events):
             iterator = self.routes.stream_document_summary(
-                7, self.routes.SummaryGenerateRequest(chat_id=5), SimpleNamespace(id=1), MagicMock(),
+                7, self.routes.SummaryGenerateRequest(chat_id=5), SimpleNamespace(id=1), MagicMock(), MagicMock(user_id=1, category="summary"),
             )
             self.assertEqual(json.loads(next(iterator))["type"], "start")
             self.assertEqual(json.loads(next(iterator))["type"], "title")

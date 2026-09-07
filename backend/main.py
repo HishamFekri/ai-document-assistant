@@ -3,6 +3,7 @@ import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.services.resource_admission import ResourceRejected, resource_error_response
 
 from app.routes.documents import router as documents_router
 from app.routes.chats import router as chats_router
@@ -15,6 +16,8 @@ from app.routes.summary_assistant import router as summary_assistant_router
 app = FastAPI(
     title="AI Document Assistant"
 )
+
+app.add_exception_handler(ResourceRejected, resource_error_response)
 
 
 default_origins = [
@@ -56,6 +59,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After", "X-Resource-Error"],
 )
 
 

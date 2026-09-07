@@ -23,6 +23,7 @@ from app.services.embedding_recovery_service import RecoveryChunk, recovery_upda
 from app.services.embedding_service import create_passage_embeddings
 from app.services.error_service import log_generation_failure
 from app.services.file_service import extract_content
+from app.services.resource_admission import ResourceRejected, user_operation
 from app.services.queued_message_service import process_waiting_messages_for_document
 
 
@@ -59,6 +60,7 @@ def process_claimed_document(claim, document_id):
         if document.processing_status == "failed" and document.processing_stage in ("permanent_failure", "retry_exhausted"):
             logger.info("Processing permanent failure skipped document=%s", document_id)
             return "permanent_failure"
+        owner_id = document.user_id
         file_path = document.file_path
         file_type = document.file_type
         has_chunks = db.scalar(select(DocumentChunk.id).where(DocumentChunk.document_id == document_id).limit(1)) is not None
@@ -69,6 +71,14 @@ def process_claimed_document(claim, document_id):
         document.processing_progress = 10
         document.processing_error = None
 
+    try:
+        with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
+            return process_admitted_document(claim, document_id, file_path, file_type, has_chunks)
+    except ResourceRejected:
+        raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
+
+
+def process_admitted_document(claim, document_id, file_path, file_type, has_chunks):
     if not file_path:
         raise FileNotFoundError("Document source is unavailable")
     path = Path(file_path)

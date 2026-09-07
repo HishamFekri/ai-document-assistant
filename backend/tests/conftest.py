@@ -233,3 +233,14 @@ def clean_database(test_database, request):
         truncate_test_tables(test_database, request.config.stash[STATE_KEY].target)
     except Exception:
         pytest.fail("Isolated test database cleanup failed; no other database will be used.", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_application_rate_backend(test_database, monkeypatch):
+    # Application imports are lazy and use the already isolated database.
+    # Ordinary integration tests must never resolve application Redis URLs.
+    # Dedicated Redis tests construct their own explicitly validated test client.
+    from types import SimpleNamespace
+    from app.services import resource_admission
+    backend = SimpleNamespace(eval=lambda *args: (1, 0))
+    monkeypatch.setattr(resource_admission, "rate_backend", lambda: backend)

@@ -23,6 +23,7 @@ from test_embedding_recovery import vector
 
 class ProcessingState:
     def __init__(self, processing, completeness):
+        self.connection = MagicMock()
         self.processing = processing
         self.completeness = completeness
         self.document = SimpleNamespace(
@@ -127,6 +128,10 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         cls.temp = cls.stack.enter_context(tempfile.TemporaryDirectory(prefix="processing-tests-"))
         cls.stack.enter_context(patch("pathlib.Path.mkdir"))
         cls.routes = importlib.import_module("app.routes.documents")
+        @contextmanager
+        def quota(*args, **kwargs):
+            yield MagicMock()
+        cls.stack.enter_context(patch.object(cls.routes, "upload_quota_session", side_effect=quota))
         del sys.modules["app.services.assets.asset_extraction_service"]
         cls.assets_service = importlib.import_module("app.services.assets.asset_extraction_service")
 
@@ -401,7 +406,11 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
             return SimpleNamespace(rowcount=1)
         db.execute.side_effect = update_failure
         db.get.side_effect = lambda *args, **kwargs: saved[0]
+        @contextmanager
+        def quota(*args, **kwargs):
+            yield db
         with patch.object(self.routes, "UPLOAD_DIR", Path(self.temp)), \
+                patch.object(self.routes, "upload_quota_session", side_effect=quota), \
                 patch.object(self.routes, "enqueue_document_processing", side_effect=RuntimeError("secret broker URL")), \
                 patch.object(self.routes, "log_generation_failure"), patch.object(self.routes.logger, "warning"):
             # The route's awaits are synchronous validation coroutines. Drive it

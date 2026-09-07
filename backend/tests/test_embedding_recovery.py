@@ -129,6 +129,8 @@ class EmbeddingRecoveryTests(unittest.TestCase):
             sys.modules[module_name] = module
         cls.processing = importlib.import_module("app.services.document_processing_service")
         cls.parser_service = importlib.import_module("app.services.document_parser_service")
+        from resource_test_helpers import install_resource_mocks
+        install_resource_mocks(stack)
 
     def store(self, chunks=(), documents=None):
         return MemoryStore(self.recovery, self.completeness, chunks, documents)
@@ -451,7 +453,7 @@ class EmbeddingRecoveryTests(unittest.TestCase):
         for valid_count in (0, 1):
             with self.subTest(valid_count=valid_count), ExitStack() as stack:
                 db = MagicMock()
-                document = SimpleNamespace(id=1, file_type="txt", file_path="synthetic.txt",
+                document = SimpleNamespace(id=1, user_id=1, file_type="txt", file_path="synthetic.txt",
                                            processing_status="processing", processing_stage="uploaded")
                 db.get.return_value = document
                 db.scalar.return_value = None
@@ -459,7 +461,7 @@ class EmbeddingRecoveryTests(unittest.TestCase):
                 @contextmanager
                 def session():
                     yield db
-                claim = SimpleNamespace(session=session)
+                claim = SimpleNamespace(session=session, connection=MagicMock())
                 @contextmanager
                 def acquire(document_id):
                     yield claim

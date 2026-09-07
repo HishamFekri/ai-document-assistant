@@ -9,6 +9,7 @@ from fastapi import (
     HTTPException,
     Query,
     Response,
+    Request,
 )
 from fastapi.responses import RedirectResponse
 from fastapi.security import (
@@ -30,6 +31,15 @@ from app.services.auth_service import (
     get_or_create_user,
     verify_google_token,
 )
+
+from app.services.resource_admission import (
+    authentication_subject, consume_rate, consume_user_rate,
+)
+from app.services.resource_limits import request_policy
+
+
+def limit_authentication(request: Request):
+    consume_rate(authentication_subject(request), "auth")
 
 
 router = APIRouter(
@@ -59,6 +69,7 @@ COOKIE_SAMESITE = "lax"
 
 
 def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(
         security
     ),
@@ -100,6 +111,7 @@ def get_current_user(
             detail="Invalid access token",
         )
 
+    consume_user_rate(int(user_id), request_policy(request))
     user = db.get(User, int(user_id))
 
     if not user:
@@ -111,7 +123,7 @@ def get_current_user(
     return user
 
 
-@router.post("/google")
+@router.post("/google", dependencies=[Depends(limit_authentication)])
 def login_with_google(
     data: GoogleAuthRequest,
     response: Response,
@@ -153,7 +165,7 @@ def login_with_google(
         )
 
 
-@router.get("/google/start")
+@router.get("/google/start", dependencies=[Depends(limit_authentication)])
 def start_google_oauth():
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(
@@ -203,7 +215,7 @@ def start_google_oauth():
     return response
 
 
-@router.get("/google/callback")
+@router.get("/google/callback", dependencies=[Depends(limit_authentication)])
 def google_oauth_callback(
     code: str | None = Query(default=None),
     state: str | None = Query(default=None),
@@ -288,7 +300,7 @@ def get_me(
     return current_user
 
 
-@router.post("/logout")
+@router.post("/logout", dependencies=[Depends(limit_authentication)])
 def logout(
     response: Response,
 ):

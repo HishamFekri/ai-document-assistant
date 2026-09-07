@@ -1,3 +1,7 @@
+from app.services.admission_dependencies import admit_chat, admit_search
+from app.services.resource_admission import (
+    Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
+)
 import logging
 import os
 import time
@@ -662,6 +666,7 @@ def search_chat_documents(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_search, scope="request"),
 ):
     query = (
         data.query.strip()
@@ -728,6 +733,7 @@ def search_chat_documents(
         == current_user.id
     ]
 
+    admission.check()
     results = (
         search_similar_chunks(
             db=db,
@@ -793,6 +799,7 @@ def ask_chat(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     question = validate_question(
         data.question
@@ -834,6 +841,7 @@ def ask_chat(
                 ),
             )
 
+    admission.check()
     intent = {
         "action": "chat",
         "document_ids": [],
@@ -1069,6 +1077,15 @@ def ask_chat(
 
         return result
 
+    except ResourceRejected:
+        db.rollback()
+        stored = db.get(Message, user_message.id)
+        if stored:
+            stored.status = "failed"
+            stored.error = "Answer generation failed"
+            db.commit()
+        raise
+
     except ValueError as error:
         db.rollback()
 
@@ -1124,6 +1141,7 @@ def ask_chat_stream(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     question = validate_question(
         data.question
@@ -1222,6 +1240,7 @@ def ask_chat_stream(
             ),
         )
 
+    admission.check()
     intent = {
         "action": "chat",
         "document_ids": [],
@@ -1290,6 +1309,7 @@ def ask_chat_stream(
         title_event_sent = False
 
         def generate_chat_title():
+            admission.check()
             title_db = SessionLocal()
 
             try:
@@ -1362,11 +1382,16 @@ def ask_chat_stream(
             )
         )
 
-        title_future = (
-            title_executor.submit(
-                generate_chat_title
-            )
-        )
+        admission.retain()
+        try:
+            title_future = title_executor.submit(generate_chat_title)
+        except BaseException:
+            admission.release()
+            title_executor.shutdown(wait=False)
+            stream_db.close()
+            raise
+        title_future.add_done_callback(lambda completed: admission.release())
+
 
         try:
             if message_document_ids:
@@ -1952,6 +1977,15 @@ def ask_chat_stream(
                 + "\n"
             )
 
+        except ResourceRejected as error:
+            stream_db.rollback()
+            stored = stream_db.get(Message, user_message_id)
+            if stored:
+                stored.status = "failed"
+                stored.error = "Answer generation failed"
+                stream_db.commit()
+            yield json.dumps(stream_resource_error(error)) + "\n"
+
         except Exception:
             stream_db.rollback()
 
@@ -1998,8 +2032,8 @@ def ask_chat_stream(
 
             stream_db.close()
 
-    return StreamingResponse(
-        generate(),
+    return AdmittedStreamingResponse(
+        generate(), admission,
         media_type=(
             "application/x-ndjson"
         ),

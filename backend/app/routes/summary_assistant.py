@@ -1,3 +1,5 @@
+from app.services.admission_dependencies import admit_chat
+from app.services.resource_admission import Permit
 from fastapi import (
     APIRouter,
     Depends,
@@ -193,6 +195,7 @@ def create_summary_assistant_message(
     db: Session = Depends(
         get_db
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     _, document = get_chat_document(
         chat_id=data.chat_id,

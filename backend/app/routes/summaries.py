@@ -1,3 +1,7 @@
+from app.services.admission_dependencies import admit_summary
+from app.services.resource_admission import (
+    Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
+)
 import json
 from types import SimpleNamespace
 
@@ -344,6 +348,7 @@ def create_document_summary(
     db: Session = Depends(
         get_db
     ),
+    admission: Permit = Depends(admit_summary, scope="request"),
 ):
     _, document = get_chat_document(
         chat_id=data.chat_id,
@@ -365,7 +370,7 @@ def create_document_summary(
         )
 
     return generate_summary_for_record(
-        db=db, document=document, chat_id=data.chat_id, mode=data.mode,
+        db=db, document=document, chat_id=data.chat_id, mode=data.mode, admission=admission,
     )
 
 
@@ -378,6 +383,7 @@ def stream_document_summary(
     data: SummaryGenerateRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
+    admission: Permit = Depends(admit_summary, scope="request"),
 ):
     _, document = get_chat_document(data.chat_id, document_id, current_user, db)
     if document.processing_status != "ready":
@@ -399,7 +405,7 @@ def stream_document_summary(
                 if document.processing_status != "ready":
                     raise ValueError("Document is not ready for summary generation")
                 document = snapshot_document(document)
-            with start_summary_generation(chat_id, document_id, mode) as (
+            with start_summary_generation(chat_id, document_id, mode, admission=admission) as (
                 stream_db, summary, owns_lifecycle,
             ):
                 if not owns_lifecycle:
@@ -462,6 +468,8 @@ def stream_document_summary(
                 finally:
                     if generator is not None:
                         generator.close()
+        except ResourceRejected as error:
+            yield encode(stream_resource_error(error))
         except SummaryGenerationBusy as error:
             # Existing frontend understands this error event; never send a start
             # event that would let this duplicate cancel the original request.
@@ -473,8 +481,8 @@ def stream_document_summary(
             )
             yield encode({"type": "error", "message": public_error})
 
-    return StreamingResponse(
-        generate(), media_type="application/x-ndjson",
+    return AdmittedStreamingResponse(
+        generate(), admission, media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 

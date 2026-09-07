@@ -1,4 +1,6 @@
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.services.resource_admission import user_operation
 
 from app.services.error_service import log_generation_failure
 
@@ -94,34 +96,36 @@ def process_waiting_message(
     message_id = message.id
     chat_id = message.chat_id
     try:
-        result = answer_question(
-            db=db,
-            chat_id=message.chat_id,
-            question=message.content,
-        )
+        owner_id = db.scalar(select(Chat.user_id).where(Chat.id == chat_id))
+        with user_operation(owner_id, "chat"):
+            result = answer_question(
+                db=db,
+                chat_id=message.chat_id,
+                question=message.content,
+            )
 
-        assistant_message = Message(
-            chat_id=message.chat_id,
-            role="assistant",
-            content=result["answer"],
-            status="completed",
-            error=None,
-            sources=result["sources"],
-        )
+            assistant_message = Message(
+                chat_id=message.chat_id,
+                role="assistant",
+                content=result["answer"],
+                status="completed",
+                error=None,
+                sources=result["sources"],
+            )
 
-        db.add(
-            assistant_message
-        )
+            db.add(
+                assistant_message
+            )
 
-        message.status = "completed"
-        message.error = None
+            message.status = "completed"
+            message.error = None
 
-        db.commit()
+            db.commit()
 
-        print(
-            "[QUEUE] Message "
-            f"{message.id} completed"
-        )
+            print(
+                "[QUEUE] Message "
+                f"{message.id} completed"
+            )
 
     except Exception as error:
         public_error = log_generation_failure(
