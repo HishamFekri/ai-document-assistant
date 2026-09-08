@@ -4,6 +4,7 @@ import httpx
 import requests
 from billiard.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.exc import DBAPIError
+from app.services.document_resource_errors import DocumentResourceError
 
 
 class RetryableDocumentProcessingError(RuntimeError):
@@ -19,6 +20,8 @@ class DocumentDeletedDuringProcessing(Exception):
 
 
 def is_retryable_processing_error(error: Exception) -> bool:
+    if isinstance(error, DocumentResourceError):
+        return False
     seen = set()
     current = error
     while current is not None and id(current) not in seen and len(seen) < 8:

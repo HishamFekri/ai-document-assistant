@@ -5,6 +5,7 @@ from typing import Literal
 import httpx
 import requests
 from openai import APITimeoutError
+from app.services.document_resource_errors import DocumentResourceError, resource_messages
 
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,8 @@ TIMEOUT_TYPES = (TimeoutError, httpx.TimeoutException, requests.exceptions.Timeo
 def public_generation_error(value: str | None, operation: GenerationOperation) -> str | None:
     """Allow only known public messages at serialization time; no historical writes."""
     if value is None or value in SAFE_GENERATION_ERRORS[operation]:
+        return value
+    if operation == "document" and value in resource_messages().values():
         return value
     return GENERATION_FAILED[operation]
 
@@ -98,4 +101,6 @@ def log_generation_failure(
     # Include context in the message for the existing default formatter as well
     # as record fields for any configured structured formatter. No exc_info.
     logger.error("Generation failure: %s", context, extra=context)
+    if operation == "document" and isinstance(error, DocumentResourceError):
+        return resource_messages()[error.code]
     return GENERATION_TIMED_OUT[operation] if timed_out else GENERATION_FAILED[operation]

@@ -68,8 +68,9 @@ def test_upload_rejects_unsupported_file_type(
     assert response.json() == {
         "detail": (
             "Unsupported file type. "
-            "Allowed: PDF, DOCX, XLSX, TXT"
-        )
+            "Allowed: PDF, DOCX, XLSX, TXT."
+        ),
+        "code": "unsupported_file",
     }
 
 

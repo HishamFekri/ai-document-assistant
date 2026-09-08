@@ -1,4 +1,6 @@
 "use client";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -43,6 +45,7 @@ type Chat = {
 
 
 export default function DashboardPage() {
+  const uploadPolicy = useUploadPolicy();
   const router = useRouter();
 
   const [user, setUser] = useState<User | null>(
@@ -283,10 +286,7 @@ export default function DashboardPage() {
                 Upload documents
               </h2>
 
-              <p className="mt-1 text-sm text-neutral-500">
-                PDF, DOCX, XLSX, or TXT.
-                Maximum file size 50 MB.
-              </p>
+              <UploadGuidance {...uploadPolicy} className="mt-1 text-sm text-neutral-500" />
             </div>
 
             <button className="flex min-h-52 w-full flex-col items-center justify-center rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 transition hover:border-neutral-400 hover:bg-neutral-100">

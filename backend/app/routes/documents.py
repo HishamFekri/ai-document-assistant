@@ -1,6 +1,6 @@
 import os
-import zipfile
 import logging
+from starlette.concurrency import run_in_threadpool
 
 from pathlib import Path
 from uuid import uuid4
@@ -45,24 +45,20 @@ from app.services.document_processing_claim import claim_document_processing
 from app.services.embedding_completeness_service import inspect_embeddings
 from app.services.error_service import log_generation_failure
 from app.services.upload_quota_service import upload_quota_session
+from app.services.resource_limits import upload_limits
+from app.services.upload_validation import validate_document_source
+from app.services.upload_ingress import UploadRoute
+from app.services.document_resource_errors import DocumentResourceError
 
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-MAX_UPLOAD_SIZE_MB = int(
-    os.getenv(
-        "MAX_UPLOAD_SIZE_MB",
-        "50",
-    )
-)
+# Compatibility aliases; values come from the centralized upload policy.
+MAX_UPLOAD_SIZE_MB = upload_limits().file_bytes // 1024**2
+MAX_UPLOAD_SIZE_BYTES = upload_limits().file_bytes
 
-MAX_UPLOAD_SIZE_BYTES = (
-    MAX_UPLOAD_SIZE_MB
-    * 1024
-    * 1024
-)
 
 MAX_FILENAME_LENGTH = 255
 
@@ -70,6 +66,7 @@ MAX_FILENAME_LENGTH = 255
 router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
+    route_class=UploadRoute,
 )
 
 
@@ -130,177 +127,20 @@ async def validate_file_size(
     )
 
     if file_size <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Uploaded file is empty",
-        )
+        raise DocumentResourceError("empty_file", 400)
 
     if file_size > MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"File is too large. "
-                f"Maximum allowed size is "
-                f"{MAX_UPLOAD_SIZE_MB} MB."
-            ),
-        )
+        raise DocumentResourceError("file_size")
 
 
-def validate_pdf(
-    file: UploadFile,
-):
-    file.file.seek(0)
 
-    header = file.file.read(
-        5
-    )
-
-    file.file.seek(0)
-
-    if header != b"%PDF-":
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid PDF file",
-        )
+def validate_file_content(file: UploadFile, extension: str):
+    validate_document_source(file.file, extension)
 
 
-def validate_office_zip(
-    file: UploadFile,
-    extension: str,
-):
-    file.file.seek(0)
-
-    try:
-        if not zipfile.is_zipfile(
-            file.file
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid "
-                    f"{extension.upper().lstrip('.')} "
-                    f"file"
-                ),
-            )
-
-        file.file.seek(0)
-
-        with zipfile.ZipFile(
-            file.file
-        ) as archive:
-            names = (
-                archive.namelist()
-            )
-
-            if (
-                "[Content_Types].xml"
-                not in names
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Invalid Office document"
-                    ),
-                )
-
-            if extension == ".docx":
-                valid = any(
-                    name.startswith(
-                        "word/"
-                    )
-                    for name in names
-                )
-
-            elif extension == ".xlsx":
-                valid = any(
-                    name.startswith(
-                        "xl/"
-                    )
-                    for name in names
-                )
-
-            else:
-                valid = False
-
-            if not valid:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"File content does not "
-                        f"match {extension}"
-                    ),
-                )
-
-    except zipfile.BadZipFile as error:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Office document",
-        ) from error
-
-    finally:
-        file.file.seek(0)
-
-
-def validate_txt(
-    file: UploadFile,
-):
-    file.file.seek(0)
-
-    sample = file.file.read(
-        8192
-    )
-
-    file.file.seek(0)
-
-    if b"\x00" in sample:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid TXT file",
-        )
-
-    try:
-        sample.decode(
-            "utf-8-sig"
-        )
-
-    except UnicodeDecodeError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "TXT files must use "
-                "UTF-8 encoding"
-            ),
-        ) from error
-
-
-def validate_file_content(
-    file: UploadFile,
-    extension: str,
-):
-    if extension == ".pdf":
-        validate_pdf(
-            file
-        )
-
-    elif extension in {
-        ".docx",
-        ".xlsx",
-    }:
-        validate_office_zip(
-            file,
-            extension,
-        )
-
-    elif extension == ".txt":
-        validate_txt(
-            file
-        )
-
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type",
-        )
+@router.get("/upload-policy")
+def get_upload_policy(current_user: User = Depends(get_current_user)):
+    return upload_limits().public_policy()
 
 
 @router.post(
@@ -335,20 +175,15 @@ async def upload_document(
     ).suffix.lower()
 
     if extension not in SUPPORTED_FILE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported file type. "
-                "Allowed: PDF, DOCX, XLSX, TXT"
-            ),
-        )
+        raise DocumentResourceError("unsupported_file", 400)
 
     await validate_file_size(
         file
     )
 
     with upload_quota_session(owner_id, incoming_bytes=get_file_size(file)) as quota_db:
-        validate_file_content(
+        await run_in_threadpool(
+            validate_file_content,
             file,
             extension,
         )
@@ -388,14 +223,7 @@ async def upload_document(
                         bytes_written
                         > MAX_UPLOAD_SIZE_BYTES
                     ):
-                        raise HTTPException(
-                            status_code=413,
-                            detail=(
-                                "File is too large. "
-                                "Maximum allowed size is "
-                                f"{MAX_UPLOAD_SIZE_MB} MB."
-                            ),
-                        )
+                        raise DocumentResourceError("file_size")
 
                     buffer.write(
                         chunk

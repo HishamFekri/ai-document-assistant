@@ -4,6 +4,7 @@ import {
   Message,
   User,
 } from "@/types/chat";
+import { parseUploadPolicy, uploadError, validateUpload } from "@/lib/upload-policy";
 
 
 const API_URL =
@@ -464,10 +465,32 @@ export async function archiveChat(
 }
 
 
+export async function getUploadPolicy(token: string) {
+  try {
+    const response = await fetch(`${API_URL}/documents/upload-policy`, {
+      credentials: "include",
+      headers: buildAuthHeaders(token),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      if (response.status === 401 && typeof window !== "undefined") {
+        window.dispatchEvent(new Event("auth-expired"));
+      }
+      throw new Error("Policy unavailable");
+    }
+    return parseUploadPolicy(await response.json());
+  } catch {
+    throw new Error("Upload limits are unavailable. Please try again shortly.");
+  }
+}
+
 export async function uploadDocument(
   token: string,
   file: File
 ) {
+  const policy = await getUploadPolicy(token);
+  const validationError = validateUpload(file, policy);
+  if (validationError) throw new Error(validationError);
   const formData =
     new FormData();
 
@@ -497,10 +520,12 @@ export async function uploadDocument(
     );
 
 
-  await ensureOk(
-    response,
-    "Could not upload document"
-  );
+  if (!response.ok) {
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("auth-expired"));
+    }
+    throw new Error(await uploadError(response));
+  }
 
 
   return response.json();

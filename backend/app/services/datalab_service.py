@@ -2,6 +2,7 @@ import base64
 import binascii
 import hashlib
 import io
+import json
 import logging
 import os
 import time
@@ -12,6 +13,8 @@ import cloudinary.uploader
 import requests
 from dotenv import load_dotenv
 from app.services.document_processing_errors import RetryableDocumentProcessingError
+from app.services.document_resource_errors import DocumentResourceError
+from app.services.resource_limits import upload_limits
 
 
 load_dotenv()
@@ -94,6 +97,19 @@ if not DATALAB_API_KEY:
     )
 
 
+def read_bounded_json(response):
+    limit = upload_limits().datalab_response_bytes
+    data = bytearray()
+    try:
+        for part in response.iter_content(chunk_size=64 * 1024):
+            if len(data) + len(part) > limit:
+                raise DocumentResourceError("content_limit")
+            data.extend(part)
+        return json.loads(data)
+    finally:
+        response.close()
+
+
 def should_retry(
     status_code: int,
 ) -> bool:
@@ -128,6 +144,7 @@ def post_with_retry(
             ):
                 return response
 
+            response.close()
             last_error = RetryableDocumentProcessingError(
                 "Temporary Datalab upload error "
                 f"({response.status_code})"
@@ -175,6 +192,7 @@ def get_with_retry(
                 url,
                 headers=headers,
                 timeout=POLL_TIMEOUT_SECONDS,
+                stream=True,
             )
 
             if (
@@ -185,6 +203,7 @@ def get_with_retry(
             ):
                 return response
 
+            response.close()
             last_error = RetryableDocumentProcessingError(
                 "Temporary Datalab polling error "
                 f"({response.status_code})"
@@ -222,10 +241,14 @@ def convert_document_with_datalab(
     page_range: str | None = None,
     mode: str = "balanced",
     output_format: str = "json",
+    *, admission=None,
 ):
     path = Path(
         file_path
     )
+    if admission is None:
+        raise DocumentResourceError("advanced_pages")
+    admission.consume(path, page_range)
 
     if not path.exists():
         raise FileNotFoundError(
@@ -284,6 +307,7 @@ def convert_document_with_datalab(
                     )
                 },
                 data=data,
+                stream=True,
             )
 
     except OSError as error:
@@ -296,6 +320,7 @@ def convert_document_with_datalab(
         ) from error
 
     if not response.ok:
+        response.close()
         logger.error(
             "Datalab upload rejected with status %s",
             response.status_code,
@@ -306,7 +331,7 @@ def convert_document_with_datalab(
         )
 
     try:
-        submit_result = response.json()
+        submit_result = read_bounded_json(response)
 
     except ValueError as error:
         logger.error(
@@ -366,6 +391,7 @@ def convert_document_with_datalab(
         )
 
         if not result_response.ok:
+            result_response.close()
             logger.error(
                 "Datalab polling rejected with status %s",
                 result_response.status_code,
@@ -377,7 +403,7 @@ def convert_document_with_datalab(
 
         try:
             result = (
-                result_response.json()
+                read_bounded_json(result_response)
             )
 
         except ValueError as error:
@@ -457,12 +483,14 @@ def convert_document_with_datalab(
 def extract_content_with_datalab(
     file_path,
     page_range: str | None = None,
+    *, admission=None,
 ):
     result = convert_document_with_datalab(
         file_path=file_path,
         page_range=page_range,
         mode="balanced",
         output_format="json",
+        admission=admission,
     )
 
     document_json = result.get(

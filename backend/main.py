@@ -4,6 +4,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.services.resource_admission import ResourceRejected, resource_error_response
+from app.services.document_resource_errors import DocumentResourceError, resource_validation_response
+from app.services.upload_ingress import UploadBodyLimitMiddleware
 
 from app.routes.documents import router as documents_router
 from app.routes.chats import router as chats_router
@@ -18,6 +20,7 @@ app = FastAPI(
 )
 
 app.add_exception_handler(ResourceRejected, resource_error_response)
+app.add_exception_handler(DocumentResourceError, resource_validation_response)
 
 
 default_origins = [
@@ -53,6 +56,7 @@ print(
 )
 
 
+app.add_middleware(UploadBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,

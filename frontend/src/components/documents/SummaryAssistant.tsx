@@ -1,4 +1,6 @@
 "use client";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
   useRef,
@@ -79,6 +81,7 @@ export default function SummaryAssistant({
   onStopGeneration,
   onSummaryGenerated,
 }: Props) {
+  const uploadPolicy = useUploadPolicy();
   const {
     input,
     setInput,
@@ -270,7 +273,7 @@ export default function SummaryAssistant({
                 fileInputRef
               }
               type="file"
-              accept=".pdf,.docx,.xlsx,.txt"
+              accept={uploadPolicy.policy?.supported_extensions.join(",")}
               onChange={
                 onUpload
               }
@@ -300,6 +303,7 @@ export default function SummaryAssistant({
                 || regenerating
                 || !fileInputRef
                 || !onUpload
+                || !uploadPolicy.policy
               }
               title="Attach file"
               aria-label="Attach file"
@@ -494,6 +498,7 @@ export default function SummaryAssistant({
             )}
           </div>
         </form>
+        {onUpload && <UploadGuidance {...uploadPolicy} />}
       </div>
     </div>
   );

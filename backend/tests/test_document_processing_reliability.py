@@ -141,6 +141,9 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.state = ProcessingState(self.processing, self.completeness)
         self.patches.enter_context(patch.object(self.processing, "claim_document_processing", self.state.claim))
         self.patches.enter_context(patch.object(self.processing, "inspect_embeddings", self.state.inspect))
+        # This harness has synthetic paths and an in-memory checkpoint adapter.
+        # Batch 9 separately exercises the real resource checks before embeddings.
+        self.patches.enter_context(patch.object(self.processing, "validate_resumed_processing"))
         self.patches.enter_context(patch.object(self.processing.Path, "is_file", return_value=True))
         self.extract = self.patches.enter_context(patch.object(self.processing, "extract_content", side_effect=self.extract_content))
         self.embed = self.patches.enter_context(patch.object(self.processing, "create_passage_embeddings", side_effect=self.embeddings))
@@ -409,11 +412,14 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         @contextmanager
         def quota(*args, **kwargs):
             yield db
+        async def direct_preflight(function, *args):
+            return function(*args)
         with patch.object(self.routes, "UPLOAD_DIR", Path(self.temp)), \
+                patch.object(self.routes, "run_in_threadpool", side_effect=direct_preflight), \
                 patch.object(self.routes, "upload_quota_session", side_effect=quota), \
                 patch.object(self.routes, "enqueue_document_processing", side_effect=RuntimeError("secret broker URL")), \
                 patch.object(self.routes, "log_generation_failure"), patch.object(self.routes.logger, "warning"):
-            # The route's awaits are synchronous validation coroutines. Drive it
+            # Execute preflight directly in this fixture. Drive the route
             # without creating Windows asyncio's loopback socketpair; networking
             # remains completely blocked by the harness.
             coroutine = self.routes.upload_document(BackgroundTasks(), UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"), db, SimpleNamespace(id=7))

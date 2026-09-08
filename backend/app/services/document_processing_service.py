@@ -24,6 +24,9 @@ from app.services.embedding_service import create_passage_embeddings
 from app.services.error_service import log_generation_failure
 from app.services.file_service import extract_content
 from app.services.resource_admission import ResourceRejected, user_operation
+from app.services.resource_limits import upload_limits
+from app.services.document_resource_errors import DocumentResourceError
+from app.services.upload_validation import validate_document_source
 from app.services.queued_message_service import process_waiting_messages_for_document
 
 
@@ -78,12 +81,27 @@ def process_claimed_document(claim, document_id):
         raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
 
 
+def validate_resumed_processing(claim, document_id, path, file_type):
+    validate_document_source(path, "." + file_type)
+    limits = upload_limits()
+    with claim.session() as db:
+        count, characters, size = db.execute(select(
+            func.count(DocumentChunk.id),
+            func.coalesce(func.sum(func.length(DocumentChunk.content)), 0),
+            func.coalesce(func.sum(func.octet_length(DocumentChunk.content)), 0),
+        ).where(DocumentChunk.document_id == document_id)).one()
+    if count > limits.chunks or characters > limits.text_chars or size > limits.text_bytes:
+        raise DocumentResourceError("content_limit")
+
+
 def process_admitted_document(claim, document_id, file_path, file_type, has_chunks):
     if not file_path:
         raise FileNotFoundError("Document source is unavailable")
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError("Document source is unavailable")
+    if has_chunks:
+        validate_resumed_processing(claim, document_id, path, file_type)
 
     if not has_chunks:
         set_progress(claim, document_id, "analyzing_document", 20)

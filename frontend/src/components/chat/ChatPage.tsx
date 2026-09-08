@@ -1,4 +1,6 @@
 "use client";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
   useEffect,
@@ -53,6 +55,7 @@ export default function ChatPage({
 }: {
   draft?: boolean;
 }) {
+  const uploadPolicy = useUploadPolicy();
   const params =
     useParams();
 
@@ -1658,7 +1661,7 @@ export default function ChatPage({
                             fileInputRef
                           }
                           type="file"
-                          accept=".pdf,.docx,.xlsx,.txt"
+                          accept={uploadPolicy.policy?.supported_extensions.join(",")}
                           onChange={
                             handleUpload
                           }
@@ -1674,6 +1677,7 @@ export default function ChatPage({
                           }
                           disabled={
                             uploading
+                            || !uploadPolicy.policy
                             || Boolean(
                               attachment
                             )
@@ -1705,16 +1709,7 @@ export default function ChatPage({
                           }
                         </button>
 
-                        <p
-                          className="
-                            mt-3
-                            text-xs
-                            leading-5
-                            text-[var(--text-muted)]
-                          "
-                        >
-                          PDF, DOCX, XLSX, or TXT
-                        </p>
+                        <UploadGuidance {...uploadPolicy} />
                       </div>
 
                     ) : workspaceChat
