@@ -1,4 +1,5 @@
 "use client";
+import { logoutSession } from "@/lib/logout";
 
 import {
   ChangeEvent,
@@ -1384,23 +1385,16 @@ export function useChat(
   }
 
 
-  function logout() {
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/auth/logout`,
-      {
-        method: "POST",
-        credentials: "include",
-      }
-    ).catch((error) => {
-      console.error("[LOGOUT ERROR]", error);
-    });
-
-    appLoadedRef.current =
-      false;
-
-    router.replace(
-      "/"
-    );
+  async function logout() {
+    await logoutSession(() => {
+      appLoadedRef.current = false;
+      setUser(null);
+      setChat(null);
+      setChats([]);
+      setMessages([]);
+      setAttachment(null);
+      router.replace("/");
+    }, (message) => window.alert(message));
   }
 
 

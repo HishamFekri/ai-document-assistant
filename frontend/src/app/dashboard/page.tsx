@@ -1,4 +1,5 @@
 "use client";
+import { logoutSession } from "@/lib/logout";
 import UploadGuidance from "@/components/documents/UploadGuidance";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
@@ -167,18 +168,13 @@ export default function DashboardPage() {
   }, []);
 
 
-  function logout() {
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/auth/logout`,
-      {
-        method: "POST",
-        credentials: "include",
-      }
-    ).catch((error) => {
-      console.error("[LOGOUT ERROR]", error);
-    });
-
-    router.push("/");
+  async function logout() {
+    await logoutSession(() => {
+      setUser(null);
+      setDocuments([]);
+      setChats([]);
+      router.push("/");
+    }, (message) => window.alert(message));
   }
 
 

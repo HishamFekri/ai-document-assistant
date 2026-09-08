@@ -11,7 +11,7 @@ from fastapi import (
     Response,
     Request,
 )
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
@@ -36,6 +36,10 @@ from app.services.resource_admission import (
     authentication_subject, consume_rate, consume_user_rate,
 )
 from app.services.resource_limits import request_policy
+from app.services.auth_config import (
+    AUTH_COOKIE_NAME, GOOGLE_OAUTH_STATE_COOKIE, auth_settings,
+    set_auth_cookie, delete_auth_cookie, set_state_cookie, delete_state_cookie,
+)
 
 
 def limit_authentication(request: Request):
@@ -49,23 +53,9 @@ router = APIRouter(
 
 security = HTTPBearer(auto_error=False)
 
-AUTH_COOKIE_NAME = "access_token"
-GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state"
-
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL",
-    "http://localhost:3000",
-).rstrip("/")
-
-IS_PRODUCTION = (
-    os.getenv("ENVIRONMENT", "development").lower()
-    == "production"
-)
-
-COOKIE_SECURE = IS_PRODUCTION
-COOKIE_SAMESITE = "lax"
+GOOGLE_REDIRECT_URI = auth_settings().google_redirect_uri
+FRONTEND_URL = auth_settings().frontend_url
 
 
 def get_current_user(
@@ -94,11 +84,11 @@ def get_current_user(
     try:
         payload = decode_access_token(token)
 
-    except ValueError as error:
+    except ValueError:
         raise HTTPException(
             status_code=401,
-            detail=str(error),
-        )
+            detail="Invalid access token",
+        ) from None
 
     user_id = payload.get("sub")
 
@@ -117,7 +107,7 @@ def get_current_user(
     if not user:
         raise HTTPException(
             status_code=401,
-            detail="User not found",
+            detail="Invalid access token",
         )
 
     return user
@@ -141,15 +131,7 @@ def login_with_google(
 
         access_token = create_access_token(user)
 
-        response.set_cookie(
-            key=AUTH_COOKIE_NAME,
-            value=access_token,
-            httponly=True,
-            secure=COOKIE_SECURE,
-            samesite=COOKIE_SAMESITE,
-            max_age=60 * 60 * 24 * 7,
-            path="/",
-        )
+        set_auth_cookie(response, access_token)
 
         return {
             "user":
@@ -158,11 +140,11 @@ def login_with_google(
                 )
         }
 
-    except ValueError as error:
+    except ValueError:
         raise HTTPException(
             status_code=401,
-            detail=str(error),
-        )
+            detail="Could not authenticate with Google",
+        ) from None
 
 
 @router.get("/google/start", dependencies=[Depends(limit_authentication)])
@@ -170,13 +152,13 @@ def start_google_oauth():
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(
             status_code=500,
-            detail="Google Client ID is not configured",
+            detail="Google login is temporarily unavailable",
         )
 
     if not GOOGLE_REDIRECT_URI:
         raise HTTPException(
             status_code=500,
-            detail="Google redirect URI is not configured",
+            detail="Google login is temporarily unavailable",
         )
 
     state = secrets.token_urlsafe(32)
@@ -202,15 +184,7 @@ def start_google_oauth():
         status_code=302,
     )
 
-    response.set_cookie(
-        key=GOOGLE_OAUTH_STATE_COOKIE,
-        value=state,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite="lax",
-        max_age=600,
-        path="/",
-    )
+    set_state_cookie(response, state)
 
     return response
 
@@ -226,25 +200,24 @@ def google_oauth_callback(
     ),
     db: Session = Depends(get_db),
 ):
-    if error:
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}/?google_login=cancelled",
-            status_code=302,
-        )
-
     if (
-        not code
-        or not state
+        not state
         or not state_cookie
+        or not state.isascii()
+        or not state_cookie.isascii()
         or not secrets.compare_digest(
             state,
             state_cookie,
         )
     ):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Google OAuth state",
-        )
+        return oauth_failure(400, "Invalid Google OAuth state")
+
+    if error:
+        response = RedirectResponse(url=f"{FRONTEND_URL}/?google_login=cancelled", status_code=302)
+        delete_state_cookie(response)
+        return response
+    if not code:
+        return oauth_failure(400, "Invalid Google OAuth state")
 
     try:
         google_user = exchange_google_code(code)
@@ -256,35 +229,25 @@ def google_oauth_callback(
 
         access_token = create_access_token(user)
 
-    except ValueError as error:
-        raise HTTPException(
-            status_code=401,
-            detail=str(error),
-        )
+    except ValueError:
+        return oauth_failure(401, "Could not authenticate with Google")
+    except Exception:
+        return oauth_failure(500, "Google login is temporarily unavailable")
 
     response = RedirectResponse(
         url=f"{FRONTEND_URL}/chat",
         status_code=302,
     )
 
-    response.set_cookie(
-        key=AUTH_COOKIE_NAME,
-        value=access_token,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
-        max_age=60 * 60 * 24 * 7,
-        path="/",
-    )
+    set_auth_cookie(response, access_token)
+    delete_state_cookie(response)
 
-    response.delete_cookie(
-        key=GOOGLE_OAUTH_STATE_COOKIE,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite="lax",
-        path="/",
-    )
+    return response
 
+
+def oauth_failure(status, detail):
+    response = JSONResponse(status_code=status, content={"detail": detail})
+    delete_state_cookie(response)
     return response
 
 
@@ -304,13 +267,8 @@ def get_me(
 def logout(
     response: Response,
 ):
-    response.delete_cookie(
-        key=AUTH_COOKIE_NAME,
-        httponly=True,
-        secure=COOKIE_SECURE,
-        samesite=COOKIE_SAMESITE,
-        path="/",
-    )
+    delete_auth_cookie(response)
+    delete_state_cookie(response)
 
     return {
         "message":
