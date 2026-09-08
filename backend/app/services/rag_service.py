@@ -4,6 +4,7 @@ import re
 
 from sqlalchemy.orm import Session
 
+from app.services.retrieval_conventions import GENERIC_CONTENT_TYPES, source_location, canonical_content_type
 from app.database.models import (
     Chat,
     DocumentChunk,
@@ -90,9 +91,9 @@ ARABIC_DIGIT_TRANSLATION = str.maketrans(
 )
 
 PAGE_PATTERNS = [
-    r"\bpage\s*(?:number|no\.?|#)?\s*(\d+)\b",
-    r"\bp\.?\s*(\d+)\b",
-    r"(?:الصفحة|الصفحه|صفحة|صفحه)\s*(?:رقم)?\s*(\d+)",
+    r"\bpage\s*(?:number|no\.?|#)?\s*(-?\d+(?:\.\d+)?)\b",
+    r"\bp\.?\s*(-?\d+(?:\.\d+)?)\b",
+    r"(?:الصفحة|الصفحه|صفحة|صفحه)\s*(?:رقم)?\s*(-?\d+(?:\.\d+)?)",
 ]
 
 PAGE_COUNT_PATTERNS = [
@@ -207,10 +208,9 @@ def extract_page_number(
             TypeError,
             ValueError,
         ):
-            continue
+            return 0  # Explicit invalid page request; do not fall back to semantic search.
 
-        if page_number > 0:
-            return page_number
+        return page_number
 
     return None
 
@@ -372,8 +372,8 @@ def build_context(
             f"[{source_id}]",
             f"Document: {document.filename}",
             f"Document ID: {document.id}",
-            f"Type: {chunk.content_type}",
-            f"Location: {chunk.location}",
+            f"Type: {canonical_content_type(chunk.content_type)}",
+            f"Location: {source_location(chunk)}",
             f"Match type: {match_type}",
         ]
 
@@ -484,12 +484,8 @@ def build_sources(
             "source_id": f"S{index}",
             "document_id": document.id,
             "filename": document.filename,
-            "content_type": (
-                chunk.content_type
-            ),
-            "location": (
-                chunk.location
-            ),
+            "content_type": canonical_content_type(chunk.content_type),
+            "location": source_location(chunk),
             "chunk_id": chunk.id,
             "similarity": round(
                 similarity,
@@ -760,6 +756,8 @@ def validate_page_number(
     documents,
     page_number: int,
 ) -> bool:
+    if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number <= 0:
+        return False
     for document in documents:
         pages_count = (
             document.pages_count
@@ -1220,11 +1218,7 @@ def get_representative_document_chunks(
                 document_ids
             ),
             DocumentChunk.content_type.in_(
-                {
-                    "text",
-                    "table",
-                    "equation",
-                }
+                GENERIC_CONTENT_TYPES
             ),
             DocumentChunk.content.isnot(None),
         )
@@ -1453,6 +1447,7 @@ def get_related_visual_results(
     document_ids: list[int],
     question: str,
     limit: int | None = None,
+    query_embeddings: dict | None = None,
 ):
     """
     Return only useful images that are semantically related
@@ -1587,6 +1582,7 @@ def get_related_visual_results(
 
     visual_candidates = (
         search_visual_chunks(
+            query_embeddings=query_embeddings,
             db=db,
             query=question,
             document_ids=document_ids,
@@ -1850,6 +1846,7 @@ def prepare_answer_context(
     document_ids:
         list[int] | None = None,
 ):
+    query_embeddings = {}
     chat = db.get(
         Chat,
         chat_id,
@@ -2050,6 +2047,7 @@ def prepare_answer_context(
                         "image",
                         "table",
                         "equation",
+                        "formula",
                     }
                 )
             ]
@@ -2123,6 +2121,7 @@ def prepare_answer_context(
 
         visual_results = (
             search_visual_chunks(
+                query_embeddings=query_embeddings,
                 db=db,
                 query=question,
                 document_ids=(
@@ -2224,6 +2223,7 @@ def prepare_answer_context(
 
     search_results = (
         search_similar_chunks(
+            query_embeddings=query_embeddings,
             db=db,
             query=retrieval_query,
             document_ids=(
@@ -2278,6 +2278,7 @@ def prepare_answer_context(
 
         fallback_results = (
             search_similar_chunks(
+                query_embeddings=query_embeddings,
                 db=db,
                 query=retrieval_query,
                 document_ids=(
@@ -2367,6 +2368,7 @@ def prepare_answer_context(
 
     related_visual_results = (
         get_related_visual_results(
+            query_embeddings=query_embeddings,
             db=db,
             search_results=(
                 search_results

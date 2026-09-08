@@ -123,12 +123,22 @@ def post_with_retry(
     url: str,
     **kwargs,
 ):
+    streams = []
+    for value in (kwargs.get('files') or {}).values():
+        stream = value[1] if isinstance(value, tuple) else value
+        if hasattr(stream, 'read'):
+            if not stream.seekable():
+                raise ValueError('Datalab retry requires a seekable upload')
+            streams.append(stream)
     last_error: Exception | None = None
 
     for attempt in range(
         1,
         MAX_UPLOAD_RETRIES + 1,
     ):
+        # requests rebuilds multipart encoding from this rewound file per call.
+        for stream in streams:
+            stream.seek(0)
         try:
             response = requests.post(
                 url,

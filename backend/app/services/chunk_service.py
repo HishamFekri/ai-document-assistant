@@ -1,3 +1,4 @@
+from app.services.retrieval_conventions import canonical_content_type
 from app.services.content_budget import ContentBudget
 
 
@@ -112,6 +113,8 @@ def create_chunks_from_content(
             )
         )
 
+        block_type = canonical_content_type(block_type)
+
         content = (
             block.get(
                 "content",
@@ -141,7 +144,7 @@ def create_chunks_from_content(
                 content
             )
 
-        elif block_type == "formula":
+        elif block_type == "equation":
             chunks = chunk_formula(
                 content
             )
@@ -166,7 +169,7 @@ def create_chunks_from_content(
             )
 
         for chunk in chunks:
-            if block_type in {"table", "formula", "code", "image"}:
+            if block_type in {"table", "equation", "code", "image"}:
                 budget.chunk(chunk)
             result.append(
                 {

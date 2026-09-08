@@ -6,6 +6,7 @@ from collections import defaultdict
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
+from app.services.retrieval_conventions import GENERIC_CONTENT_TYPES, compatible_content_types, original_page
 from app.database.models import (
     DocumentChunk,
 )
@@ -14,6 +15,7 @@ from app.services.embedding_service import (
     create_query_embedding,
 )
 from app.services.embedding_completeness_service import (
+    embeddable_chunk,
     inspect_embeddings,
     usable_embedding,
 )
@@ -96,57 +98,10 @@ RAG_COMPANION_PAGE_RADIUS = int(
 )
 
 
-GENERIC_CONTENT_TYPES = [
-    "text",
-    "table",
-    "equation",
-]
 
 
-def get_chunk_page(
-    chunk: DocumentChunk,
-) -> int | None:
-    metadata = (
-        chunk.chunk_metadata
-        or {}
-    )
-
-    raw_page = metadata.get(
-        "page"
-    )
-
-    if raw_page is not None:
-        try:
-            page = int(
-                raw_page
-            )
-
-            if page > 0:
-                return page
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
-
-    location = (
-        chunk.location
-        or ""
-    )
-
-    match = re.search(
-        r"\bpage\s+(\d+)\b",
-        location,
-        flags=re.IGNORECASE,
-    )
-
-    if not match:
-        return None
-
-    return int(
-        match.group(1)
-    )
+def get_chunk_page(chunk: DocumentChunk) -> int | None:
+    return original_page(chunk.location, chunk.chunk_metadata)
 
 
 def normalize_chunk_text(
@@ -305,7 +260,7 @@ def search_chunks_by_page(
     if not document_ids:
         return []
 
-    if page_number <= 0:
+    if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number <= 0:
         return []
 
     if limit is None:
@@ -325,7 +280,7 @@ def search_chunks_by_page(
     if content_types:
         query = query.filter(
             DocumentChunk.content_type.in_(
-                content_types
+                compatible_content_types(content_types)
             )
         )
 
@@ -559,7 +514,7 @@ def get_companion_chunks(
                 if (
                     result["chunk"]
                     .content_type
-                    == "equation"
+                    in {"equation", "formula"}
                 )
                 else 2
             ),
@@ -595,6 +550,26 @@ def get_companion_chunks(
     return companions[:limit]
 
 
+def vector_candidates(db, query_embedding, document_ids, content_types, limit, *, exact=False):
+    """Same scoped cosine query for retrieval and isolated recall comparisons.
+
+    Exact ordering uses a distance expression, which cannot satisfy pgvector's
+    bare-distance-operator index ordering requirement. No transaction GUC changes.
+    Confirm the resulting plan on the deployed PostgreSQL version in staging.
+    """
+    if not document_ids or limit <= 0:
+        return []
+    types = compatible_content_types(content_types)
+    distance = DocumentChunk.embedding.cosine_distance(query_embedding)
+    query = (db.query(DocumentChunk, distance.label("distance"))
+             .filter(DocumentChunk.document_id.in_(document_ids))
+             .filter(DocumentChunk.embedding.isnot(None))
+             .filter(usable_embedding())
+             .filter(embeddable_chunk(types)))
+    order = distance + 0.0 if exact else distance
+    return query.order_by(order).limit(limit).all()
+
+
 def search_similar_chunks(
     db: Session,
     query: str,
@@ -604,6 +579,7 @@ def search_similar_chunks(
         float | None = None,
     content_types:
         list[str] | None = None,
+    query_embeddings: dict | None = None,
 ):
     if (
         not query
@@ -625,7 +601,7 @@ def search_similar_chunks(
         )
 
     effective_content_types = (
-        content_types
+        compatible_content_types(content_types)
         if content_types
         else GENERIC_CONTENT_TYPES
     )
@@ -647,55 +623,17 @@ def search_similar_chunks(
         * RAG_CANDIDATE_MULTIPLIER,
     )
 
-    query_embedding = (
-        create_query_embedding(
-            query
-        )
-    )
-
-    distance = (
-        DocumentChunk
-        .embedding
-        .cosine_distance(
-            query_embedding
-        )
-    )
-
-    db_query = (
-        db.query(
-            DocumentChunk,
-            distance.label(
-                "distance"
-            ),
-        )
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            )
-        )
-        .filter(
-            DocumentChunk.embedding.isnot(
-                None
-            )
-        )
-        .filter(usable_embedding())
-        .filter(
-            DocumentChunk.content_type.in_(
-                effective_content_types
-            )
-        )
-    )
-
-    rows = (
-        db_query
-        .order_by(
-            distance
-        )
-        .limit(
-            candidate_limit
-        )
-        .all()
-    )
+    if query_embeddings is None:
+        query_embeddings = {}
+    if query not in query_embeddings:
+        query_embeddings[query] = create_query_embedding(query)
+    query_embedding = query_embeddings[query]
+    rows = vector_candidates(db, query_embedding, document_ids,
+                             effective_content_types, candidate_limit)
+    expected_candidates = min(candidate_limit, sum(item.valid_chunks for item in completeness))
+    if len(rows) < expected_candidates:
+        logger.warning("Vector candidate shortage returned=%s expected=%s scope_valid=%s",
+                       len(rows), expected_candidates, sum(item.valid_chunks for item in completeness))
 
     candidates = []
 
@@ -962,6 +900,7 @@ def search_visual_chunks(
     limit: int | None = None,
     min_similarity:
         float | None = None,
+    query_embeddings: dict | None = None,
 ):
     if limit is None:
         limit = (
@@ -970,6 +909,7 @@ def search_visual_chunks(
 
     return search_similar_chunks(
         db=db,
+        query_embeddings=query_embeddings,
         query=query,
         document_ids=document_ids,
         limit=limit,

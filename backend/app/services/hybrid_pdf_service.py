@@ -1,9 +1,11 @@
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from pypdf import PdfReader
 
+from app.services.retrieval_conventions import integer_page
 from app.services.page_classifier_service import (
     is_complex_page,
 )
@@ -204,7 +206,7 @@ def normalize_block_type(
         or "equation" in raw_type
         or "math" in raw_type
     ):
-        return "formula"
+        return "equation"
 
     if (
         "picture" in raw_type
@@ -234,57 +236,30 @@ def get_datalab_page_number(
         metadata.get("page_id"),
     ]
 
-    for value in possible_values:
-        if value is not None:
-            return value
+    values = [value for value in possible_values if value is not None]
+    if not values:
+        return None
+    first = integer_page(values[0])
+    if any(integer_page(value) != first for value in values[1:]):
+        return "conflicting page metadata"
+    return values[0]
 
-    return None
 
-
-def resolve_original_page(
-    page_number,
-    complex_pages: list[int],
-):
+def resolve_original_page(page_number, complex_pages: list[int], convention: str = "unknown"):
+    """Map only an explicit contract; unverified provider values stay unknown."""
     if page_number is None:
+        return complex_pages[0] if len(complex_pages) == 1 else None
+    value = integer_page(page_number)
+    if value is None:
         return None
-
-    if isinstance(
-        page_number,
-        str,
-    ):
-        try:
-            page_number = int(
-                page_number
-            )
-
-        except ValueError:
-            return None
-
-    if not isinstance(
-        page_number,
-        int,
-    ):
-        return None
-
-    if (
-        0 <= page_number
-        < len(complex_pages)
-    ):
-        return complex_pages[
-            page_number
-        ]
-
-    if (
-        1 <= page_number
-        <= len(complex_pages)
-    ):
-        return complex_pages[
-            page_number - 1
-        ]
-
-    if page_number in complex_pages:
-        return page_number
-
+    if convention == "original_one_based":
+        return value if value in complex_pages else None
+    if convention == "original_zero_based":
+        return value + 1 if value + 1 in complex_pages else None
+    if convention == "batch_zero_based" and 0 <= value < len(complex_pages):
+        return complex_pages[value]
+    if convention == "batch_one_based" and 1 <= value <= len(complex_pages):
+        return complex_pages[value - 1]
     return None
 
 
@@ -454,53 +429,18 @@ def convert_datalab_child(
         )
     )
 
-    original_page = (
-        resolve_original_page(
-            page_number=page_number,
-            complex_pages=complex_pages,
-        )
-    )
-
-    if (
-        original_page is None
-        and len(complex_pages) == 1
-    ):
-        original_page = (
-            complex_pages[0]
-        )
-
-    metadata[
-        "parser"
-    ] = "datalab"
-
+    convention = os.getenv("DATALAB_PAGE_NUMBERING", "unknown")
+    original_page = resolve_original_page(page_number, complex_pages, convention)
+    metadata["provider_page"] = page_number
+    metadata["page_numbering"] = convention
+    metadata["page_mapping_status"] = "resolved" if original_page is not None else "unknown"
+    for key in ("page", "page_number", "page_id", "page_num", "location"):
+        metadata.pop(key, None)
+    metadata['parser'] = 'datalab'
+    location = 'Unknown location'
     if original_page is not None:
-        metadata[
-            "page"
-        ] = original_page
-
-        location = (
-            f"Page {original_page}"
-        )
-
-    else:
-        raw_location = (
-            child.get(
-                "location"
-            )
-            or metadata.get(
-                "location"
-            )
-        )
-
-        if raw_location:
-            location = str(
-                raw_location
-            )
-
-        else:
-            location = (
-                "Unknown location"
-            )
+        metadata['page'] = original_page
+        location = f'Page {original_page}'
 
     content = (
         get_block_content(
@@ -586,6 +526,7 @@ def convert_datalab_children(
     complex_pages: list[int],
     image_assets: list[dict],
     image_state: dict,
+    inherited_page=None,
 ):
     blocks = []
 
@@ -604,6 +545,14 @@ def convert_datalab_children(
             dict,
         ):
             continue
+
+        child = dict(child)
+        metadata = child.get('metadata')
+        reported_page = get_datalab_page_number(child, metadata if isinstance(metadata, dict) else {})
+        if reported_page is None:
+            reported_page = inherited_page
+            if reported_page is not None:
+                child['page'] = reported_page
 
         block = (
             convert_datalab_child(
@@ -636,6 +585,7 @@ def convert_datalab_children(
                     complex_pages=complex_pages,
                     image_assets=image_assets,
                     image_state=image_state,
+                    inherited_page=reported_page,
                 )
             )
 

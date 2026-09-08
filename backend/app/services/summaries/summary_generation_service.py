@@ -10,6 +10,7 @@ from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.services.document_prompt_boundary import DOCUMENT_DATA_RULE, document_data
 from app.services.error_service import log_generation_failure
 from app.services.resource_admission import user_operation
 
@@ -881,7 +882,7 @@ Every following line must be one text summary section:
 For SUMMARY mode, never emit image, table, or equation blocks.
 """.strip()
 
-    return f"""
+    return DOCUMENT_DATA_RULE + "\n\n" + f"""
 You are an expert document analyst.
 
 Generate output grounded only in the supplied document.
@@ -1035,10 +1036,10 @@ Do not include unrelated parts of the document.
 DOCUMENT INFORMATION
 
 Filename:
-{document.get("filename")}
+{document_data(document.get("filename"))}
 
 File type:
-{document.get("file_type")}
+{document_data(document.get("file_type"))}
 
 Pages:
 {document.get("pages_count")}
@@ -1072,12 +1073,12 @@ SUMMARY ASSISTANT PREFERENCES
 
 DOCUMENT TEXT
 
-{text_context}
+{document_data(text_context)}
 
 
 DOCUMENT ASSETS
 
-{asset_context}
+{document_data(asset_context)}
 
 
 Generate the requested {mode} now as NDJSON.
@@ -1232,7 +1233,7 @@ def build_transcription_page_system_prompt(
         else "the dominant language of the document"
     )
 
-    return f"""
+    return DOCUMENT_DATA_RULE + "\n\n" + f"""
 You are an expert document transcription and analysis assistant.
 
 You are processing exactly ONE document page at a time.
@@ -1607,10 +1608,10 @@ def build_transcription_page_user_prompt(
 DOCUMENT
 
 Filename:
-{document.filename}
+{document_data(document.filename)}
 
 File type:
-{document.file_type}
+{document_data(document.file_type)}
 
 INTERNAL PAGE NUMBER
 
@@ -1632,12 +1633,12 @@ SUMMARY ASSISTANT PREFERENCES
 
 PAGE TEXT
 
-{text_context}
+{document_data(text_context)}
 
 
 PAGE ASSETS
 
-{asset_context}
+{document_data(asset_context)}
 
 
 ALLOWED ASSET IDS
@@ -2093,7 +2094,7 @@ def generate_transcription_fallback_text(
                         "system",
 
                     "content":
-                        f"""
+                        DOCUMENT_DATA_RULE + "\n\n" + f"""
 Rewrite the supplied page into clean, understandable {language_text}.
 
 Rules:
@@ -2122,13 +2123,13 @@ Rules:
                     "content":
                         f"""
 DOCUMENT:
-{document.filename}
+{document_data(document.filename)}
 
 USER PREFERENCES:
 {instructions}
 
 PAGE TEXT:
-{page_text}
+{document_data(page_text)}
 """.strip(),
                 },
             ],
