@@ -1,3 +1,5 @@
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from fastapi import (
     APIRouter,
     Depends,
@@ -77,7 +79,10 @@ def get_owned_document(
     ],
 )
 def list_document_assets(
+    response: Response,
     document_id: int,
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    cursor: str | None = Query(None, max_length=2048),
     asset_type: str | None = Query(
         default=None
     ),
@@ -106,6 +111,7 @@ def list_document_assets(
 
     assets = get_document_assets(
         db=db,
+        response=response, limit=limit, cursor=cursor, owner=current_user.id,
         document_id=document_id,
         asset_type=asset_type,
     )

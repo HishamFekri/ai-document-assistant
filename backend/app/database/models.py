@@ -312,6 +312,7 @@ class DocumentChunk(Base):
     ] = mapped_column(
         Vector(512),
         nullable=True,
+        deferred=True,
     )
 
     created_at: Mapped[
@@ -481,3 +482,9 @@ from app.database.summary_models import (
 from app.database.document_asset_models import (
     DocumentAsset,
 )
+# Keep metadata aligned with the five approved Batch 11 migration indexes.
+Index("ix_documents_user_created_id", Document.user_id, Document.created_at.desc(), Document.id.desc())
+Index("ix_chats_user_archive_pin_created_id", Chat.user_id, Chat.is_archived.asc(), Chat.is_pinned.desc(), Chat.created_at.desc(), Chat.id.desc())
+Index("ix_messages_chat_created_id", Message.chat_id, Message.created_at.asc(), Message.id.asc())
+Index("ix_document_chunks_document_id_id", DocumentChunk.document_id, DocumentChunk.id)
+Index("ix_chat_documents_document_chat", chat_documents.c.document_id, chat_documents.c.chat_id)

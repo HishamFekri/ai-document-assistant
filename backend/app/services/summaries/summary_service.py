@@ -1,3 +1,5 @@
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, paginated
 from typing import Literal
 
 from sqlalchemy import delete, func, or_, select, Text, update
@@ -37,45 +39,13 @@ def validate_summary_mode(
     return mode
 
 
-def get_document_summaries(
-    db: Session,
-    chat_id: int,
-    document_id: int,
-    mode: SummaryMode | None = None,
-) -> list[DocumentSummary]:
-    query = (
-        db.query(
-            DocumentSummary
-        )
-        .filter(
-            DocumentSummary.chat_id
-            == chat_id,
-            DocumentSummary.document_id
-            == document_id,
-        )
-    )
-
+def get_document_summaries(db: Session, chat_id: int, document_id: int, mode: SummaryMode | None=None, *, response=None, limit=DEFAULT_PAGE_SIZE, cursor=None, owner=None) -> list[DocumentSummary]:
+    query = db.query(DocumentSummary).filter(DocumentSummary.chat_id == chat_id, DocumentSummary.document_id == document_id)
     if mode is not None:
-        validated_mode = (
-            validate_summary_mode(
-                mode
-            )
-        )
-
-        query = query.filter(
-            DocumentSummary.mode
-            == validated_mode
-        )
-
-    return (
-        query
-        .order_by(
-            DocumentSummary.is_selected.desc(),
-            DocumentSummary.created_at.desc(),
-            DocumentSummary.id.desc(),
-        )
-        .all()
-    )
+        validated_mode = validate_summary_mode(mode)
+        query = query.filter(DocumentSummary.mode == validated_mode)
+    return paginated(query, [(DocumentSummary.is_selected, True), (DocumentSummary.created_at, True), (DocumentSummary.id, True)], owner=owner, scope=f'summaries:{chat_id}:{document_id}:{mode}',
+                     response=response if response is not None else Response(), limit=limit, cursor=cursor)
 
 
 def get_selected_summary(

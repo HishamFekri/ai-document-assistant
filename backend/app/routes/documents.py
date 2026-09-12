@@ -1,3 +1,6 @@
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
+from fastapi import Query
 import os
 import logging
 from starlette.concurrency import run_in_threadpool
@@ -362,25 +365,12 @@ def retry_document_processing(
     "",
     response_model=list[DocumentResponse],
 )
-def get_documents(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    documents = (
-        db.query(Document)
-        .filter(
-            Document.user_id
-            == current_user.id
-        )
-        .order_by(
-            Document.created_at.desc()
-        )
-        .all()
-    )
-
-    return documents
+def get_documents(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                  cursor: str | None = Query(None, max_length=2048),
+                  db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Document).filter(Document.user_id == current_user.id)
+    return paginated(query, [(Document.created_at, True), (Document.id, True)],
+                     owner=current_user.id, scope='documents', response=response, limit=limit, cursor=cursor)
 
 
 @router.get(

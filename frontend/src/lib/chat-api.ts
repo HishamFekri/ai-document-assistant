@@ -1,5 +1,7 @@
+import { Page, readPage } from "@/lib/pagination";
 import {
   Chat,
+  Document,
   ChatListItem,
   Message,
   User,
@@ -250,12 +252,23 @@ export async function getChat(
 }
 
 
+export async function getDocuments(token: string, cursor?: string): Promise<Page<Document>> {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  const response = await fetch(`${API_URL}/documents?${params}`, {
+    credentials: "include", headers: buildAuthHeaders(token),
+  });
+  await ensureOk(response, "Could not load documents");
+  return readPage<Document>(response);
+}
+
 export async function getChats(
-  token: string
-): Promise<ChatListItem[]> {
+  token: string,
+  cursor?: string
+): Promise<Page<ChatListItem>> {
   const response =
     await fetch(
-      `${API_URL}/chats`,
+      `${API_URL}/chats` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
         headers:
@@ -272,17 +285,18 @@ export async function getChats(
   );
 
 
-  return response.json();
+  return readPage<ChatListItem>(response);
 }
 
 
 export async function getMessages(
   token: string,
-  chatId: number
-): Promise<Message[]> {
+  chatId: number,
+  cursor?: string
+): Promise<Page<Message>> {
   const response =
     await fetch(
-      `${API_URL}/chats/${chatId}/messages`,
+      `${API_URL}/chats/${chatId}/messages` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
         headers:
@@ -299,7 +313,7 @@ export async function getMessages(
   );
 
 
-  return response.json();
+  return readPage<Message>(response);
 }
 
 

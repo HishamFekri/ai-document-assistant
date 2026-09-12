@@ -1,4 +1,5 @@
 "use client";
+import { mergePageItems } from "@/lib/pagination";
 import { logoutSession } from "@/lib/logout";
 
 import {
@@ -145,6 +146,15 @@ export function useChat(
     && chatId > 0;
 
 
+  const [chatCursor, setChatCursor] = useState<string | null>(null);
+  const [messageCursor, setMessageCursor] = useState<string | null>(null);
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const olderMessagesLoaded = useRef(false);
+  const messageScope = useRef<number | null>(chatId);
+  const chatPageBusy = useRef(false);
+  const messagePageBusy = useRef(false);
+
   const getToken =
     useCallback(() => {
       return "__cookie__";
@@ -202,8 +212,9 @@ export function useChat(
             );
 
           setChats(
-            data
+            data.items
           );
+          setChatCursor(data.nextCursor);
 
         } catch (error) {
           console.error(
@@ -286,8 +297,9 @@ export function useChat(
             );
 
           setMessages(
-            data
+            (current) => mergePageItems(current, data.items)
           );
+          if (!olderMessagesLoaded.current) setMessageCursor(data.nextCursor);
 
         } catch (error) {
           console.error(
@@ -347,8 +359,9 @@ export function useChat(
           );
 
           setChats(
-            chatsData
+            chatsData.items
           );
+          setChatCursor(chatsData.nextCursor);
 
           appLoadedRef.current =
             true;
@@ -374,6 +387,9 @@ export function useChat(
   const loadActiveChat =
     useCallback(
       async () => {
+        messageScope.current = chatId;
+        olderMessagesLoaded.current = false;
+        setMessageCursor(null);
         if (
           !validChatId
           || chatId === null
@@ -421,8 +437,9 @@ export function useChat(
           );
 
           setMessages(
-            messagesData
+            messagesData.items
           );
+          setMessageCursor(messagesData.nextCursor);
 
         } catch (error) {
           console.error(
@@ -1385,6 +1402,41 @@ export function useChat(
   }
 
 
+  async function loadMoreChats() {
+    if (!chatCursor || chatPageBusy.current) return;
+    chatPageBusy.current = true;
+    setLoadingMoreChats(true);
+    try {
+      const page = await getChats(requireToken(), chatCursor);
+      setChats((current) => mergePageItems(current, page.items, "chats"));
+      setChatCursor(page.nextCursor);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not load more chats");
+    } finally {
+      chatPageBusy.current = false;
+      setLoadingMoreChats(false);
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (!messageCursor || chatId === null || messagePageBusy.current) return;
+    const targetChatId = chatId;
+    messagePageBusy.current = true;
+    setLoadingOlderMessages(true);
+    try {
+      const page = await getMessages(requireToken(), targetChatId, messageCursor);
+      if (messageScope.current !== targetChatId) return;
+      olderMessagesLoaded.current = true;
+      setMessages((current) => mergePageItems(current, page.items));
+      setMessageCursor(page.nextCursor);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not load older messages");
+    } finally {
+      messagePageBusy.current = false;
+      setLoadingOlderMessages(false);
+    }
+  }
+
   async function logout() {
     await logoutSession(() => {
       appLoadedRef.current = false;
@@ -1399,6 +1451,9 @@ export function useChat(
 
 
   return {
+    hasMoreChats: chatCursor !== null,
+    hasOlderMessages: messageCursor !== null,
+    loadingMoreChats, loadingOlderMessages, loadMoreChats, loadOlderMessages,
     user,
     chat,
     chats,

@@ -1,3 +1,6 @@
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from fastapi import Query
 from app.services.admission_dependencies import admit_summary
 from app.services.resource_admission import (
     Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
@@ -269,8 +272,11 @@ def build_cancelled_content(
     ],
 )
 def list_document_summaries(
+    response: Response,
     document_id: int,
     chat_id: int,
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    cursor: str | None = Query(None, max_length=2048),
     mode: SummaryMode = "summary",
     current_user: User = Depends(
         get_current_user
@@ -288,6 +294,7 @@ def list_document_summaries(
 
     return get_document_summaries(
         db=db,
+        response=response, limit=limit, cursor=cursor, owner=current_user.id,
         chat_id=chat_id,
         document_id=document_id,
         mode=mode,

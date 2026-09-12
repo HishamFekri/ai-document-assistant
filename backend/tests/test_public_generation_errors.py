@@ -189,7 +189,7 @@ class PublicGenerationErrorTests(unittest.TestCase):
         self.assertEqual(self.message.status, "failed")
         self.assertEqual(self.message.error, "Message generation failed. Please try again.")
         self.assert_no_sensitive_data(self.persisted)
-        self.db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [self.message]
+        self.db.query.return_value.options.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [self.message]
         response = self.client.get("/chats/5/messages")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()[0]["error"], self.message.error)
@@ -282,7 +282,7 @@ class PublicGenerationErrorTests(unittest.TestCase):
     def test_historical_message_read_masks_raw_value_without_db_writes(self):
         self.message.error = SENSITIVE
         self.message.status = "failed"
-        self.db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [self.message]
+        self.db.query.return_value.options.return_value.filter.return_value.order_by.return_value.offset.return_value.limit.return_value.all.return_value = [self.message]
         response = self.client.get("/chats/5/messages")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()[0]["error"], self.errors.GENERATION_FAILED["message"])

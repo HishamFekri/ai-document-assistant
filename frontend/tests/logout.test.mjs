@@ -33,6 +33,7 @@ function application(fetch) {
     const exports = {};
     modules.set(relative, exports);
     const dependency = (name) => {
+      if (name === "@/lib/pagination") return load("src/lib/pagination.ts");
       if (name === "@/lib/logout") return load("src/lib/logout.ts");
       if (name === "@/lib/chat-api") return {};
       if (name === "@/hooks/useUploadPolicy") return { useUploadPolicy: () => ({ policy: null }) };

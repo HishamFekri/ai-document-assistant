@@ -1,3 +1,4 @@
+from app.services.database_queries import iter_query, release_read_transaction
 import logging
 import os
 import re
@@ -1211,23 +1212,7 @@ def get_representative_document_chunks(
     if limit <= 0:
         return []
 
-    chunks = (
-        db.query(DocumentChunk)
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            ),
-            DocumentChunk.content_type.in_(
-                GENERIC_CONTENT_TYPES
-            ),
-            DocumentChunk.content.isnot(None),
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    chunks = list(iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids), DocumentChunk.content_type.in_(GENERIC_CONTENT_TYPES), DocumentChunk.content.isnot(None)).order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id]))
 
     chunks_by_document = {}
 
@@ -1506,21 +1491,7 @@ def get_related_visual_results(
     if not anchor_pages:
         return []
 
-    all_image_chunks = (
-        db.query(DocumentChunk)
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            ),
-            DocumentChunk.content_type
-            == "image",
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    all_image_chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids), DocumentChunk.content_type == 'image').order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id])
 
     signature_counts = {}
     asset_path_counts = {}
@@ -2473,6 +2444,7 @@ def answer_question(
                 ],
         }
 
+    release_read_transaction(db)
     answer = generate_answer(
         question=question,
         context=(

@@ -1,3 +1,4 @@
+from app.services.database_queries import release_read_transaction
 import os
 import re
 from functools import lru_cache
@@ -556,6 +557,8 @@ TARGET LANGUAGE:
 
 Generate the title now.
 """.strip()
+
+    release_read_transaction(db)
 
     try:
         response = (

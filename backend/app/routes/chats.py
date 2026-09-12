@@ -1,3 +1,8 @@
+from types import SimpleNamespace
+from app.services.database_queries import release_read_transaction
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
+from sqlalchemy.orm import selectinload
 from app.services.admission_dependencies import admit_chat, admit_search
 from app.services.resource_admission import (
     Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
@@ -282,38 +287,16 @@ def create_chat(
         ChatResponse
     ],
 )
-def get_chats(
-    limit: int | None = Query(default=None, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    query = (
-        db.query(Chat)
-        .filter(
-            Chat.user_id
-            == current_user.id,
-            db.query(Message.id)
-            .filter(
-                Message.chat_id
-                == Chat.id
-            )
-            .exists(),
-        )
-        .order_by(
-            Chat.is_archived.asc(),
-            Chat.is_pinned.desc(),
-            Chat.created_at.desc(),
-            Chat.id.desc(),
-        )
-    )
-
-    if limit is not None:
-        query = query.offset(offset).limit(limit)
-
-    return query.all()
+def get_chats(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+              cursor: str | None = Query(None, max_length=2048), offset: int = Query(0, ge=0),
+              db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Chat).options(selectinload(Chat.documents)).filter(
+        Chat.user_id == current_user.id,
+        db.query(Message.id).filter(Message.chat_id == Chat.id).exists())
+    return paginated(query, [(Chat.is_archived, False), (Chat.is_pinned, True),
+                             (Chat.created_at, True), (Chat.id, True)],
+                     owner=current_user.id, scope='chats', response=response,
+                     limit=limit, cursor=cursor, offset=offset)
 
 
 @router.get(
@@ -623,37 +606,15 @@ def create_message(
         MessageResponse
     ],
 )
-def get_chat_messages(
-    chat_id: int,
-    limit: int | None = Query(default=None, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    get_owned_chat(
-        db=db,
-        chat_id=chat_id,
-        current_user=current_user,
-    )
-
-    query = (
-        db.query(Message)
-        .filter(
-            Message.chat_id
-            == chat_id
-        )
-        .order_by(
-            Message.created_at,
-            Message.id,
-        )
-    )
-
-    if limit is not None:
-        query = query.offset(offset).limit(limit)
-
-    return query.all()
+def get_chat_messages(chat_id: int, response: Response,
+                      limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                      cursor: str | None = Query(None, max_length=2048), offset: int = Query(0, ge=0),
+                      db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    get_owned_chat(db=db, chat_id=chat_id, current_user=current_user)
+    query = db.query(Message).options(selectinload(Message.documents)).filter(Message.chat_id == chat_id)
+    return paginated(query, [(Message.created_at, True), (Message.id, True)],
+                     owner=current_user.id, scope=f'messages:{chat_id}', response=response,
+                     limit=limit, cursor=cursor, offset=offset, reverse=True)
 
 
 @router.post(
@@ -850,9 +811,11 @@ def ask_chat(
 
     if chat.documents:
         try:
+            intent_documents = [SimpleNamespace(id=d.id, filename=d.filename) for d in list(chat.documents)]
+            release_read_transaction(db)
             intent = detect_chat_intent(
                 question=question,
-                documents=list(chat.documents),
+                documents=intent_documents,
             )
         except Exception:
             logger.exception(
@@ -1249,10 +1212,12 @@ def ask_chat_stream(
 
     if request_documents:
         try:
+            intent_documents = [SimpleNamespace(id=d.id, filename=d.filename) for d in request_documents]
+            release_read_transaction(db)
             intent = detect_chat_intent(
                 question=question,
                 documents=(
-                    request_documents
+                    intent_documents
                 ),
             )
 
@@ -1296,6 +1261,8 @@ def ask_chat_stream(
     user_message_id = (
         user_message.id
     )
+
+    release_read_transaction(db)
 
     def generate():
         stream_db = (
@@ -1806,6 +1773,7 @@ def ask_chat_stream(
                     )
 
                 else:
+                    release_read_transaction(stream_db)
                     answer_stream = (
                         generate_answer_stream(
                             question=question,

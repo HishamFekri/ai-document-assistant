@@ -1,3 +1,5 @@
+from sqlalchemy import or_
+from app.services.database_queries import iter_query, release_read_transaction
 import logging
 import os
 import re
@@ -277,6 +279,9 @@ def search_chunks_by_page(
         )
     )
 
+    status = DocumentChunk.chunk_metadata['page_mapping_status'].astext
+    query = query.filter(or_(status.is_(None), status != 'unknown'))
+
     if content_types:
         query = query.filter(
             DocumentChunk.content_type.in_(
@@ -284,14 +289,7 @@ def search_chunks_by_page(
             )
         )
 
-    chunks = (
-        query
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    chunks = iter_query(query.order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id])
 
     results = []
     seen_signatures = set()
@@ -410,26 +408,7 @@ def get_companion_chunks(
                 )
             )
 
-    chunks = (
-        db.query(
-            DocumentChunk
-        )
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            )
-        )
-        .filter(
-            DocumentChunk.content_type.in_(
-                GENERIC_CONTENT_TYPES
-            )
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids)).filter(DocumentChunk.content_type.in_(GENERIC_CONTENT_TYPES)).order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id])
 
     companions = []
     seen_signatures = set()
@@ -626,6 +605,7 @@ def search_similar_chunks(
     if query_embeddings is None:
         query_embeddings = {}
     if query not in query_embeddings:
+        release_read_transaction(db)
         query_embeddings[query] = create_query_embedding(query)
     query_embedding = query_embeddings[query]
     rows = vector_candidates(db, query_embedding, document_ids,

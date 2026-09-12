@@ -20,6 +20,10 @@ import CollapsedSidebar from "@/components/chat/sidebar/CollapsedSidebar";
 
 
 type Props = {
+  hasMoreChats: boolean;
+  loadingMoreChats: boolean;
+  onLoadMoreChats: () => Promise<void>;
+
   user: User | null;
 
   chats: ChatListItem[];
@@ -60,6 +64,7 @@ type Props = {
 
 
 export default function ChatSidebar({
+  hasMoreChats, loadingMoreChats, onLoadMoreChats,
   user,
   chats,
   activeChatId,
@@ -743,6 +748,13 @@ export default function ChatSidebar({
 
       </div>
 
+
+      {hasMoreChats && (
+        <button type="button" disabled={loadingMoreChats} onClick={onLoadMoreChats}
+          className="mx-3 mb-3 rounded border px-3 py-2 text-sm disabled:opacity-50">
+          {loadingMoreChats ? "Loading chats..." : "Load more chats"}
+        </button>
+      )}
 
       <SidebarUser
         user={

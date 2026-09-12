@@ -1,3 +1,4 @@
+from app.services.database_queries import iter_query
 import re
 
 from sqlalchemy.orm import Session
@@ -623,19 +624,7 @@ def build_text_context(
     page_numbers:
         set[int] | None = None,
 ) -> str:
-    chunks = (
-        db.query(
-            DocumentChunk
-        )
-        .filter(
-            DocumentChunk.document_id
-            == document_id
-        )
-        .order_by(
-            DocumentChunk.id.asc()
-        )
-        .all()
-    )
+    chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).order_by(DocumentChunk.id.asc()), [DocumentChunk.id])
 
     if not chunks:
         return ""
@@ -707,19 +696,7 @@ def build_asset_context(
     page_numbers:
         set[int] | None = None,
 ) -> str:
-    assets = (
-        db.query(
-            DocumentAsset
-        )
-        .filter(
-            DocumentAsset.document_id
-            == document_id
-        )
-        .order_by(
-            DocumentAsset.id.asc()
-        )
-        .all()
-    )
+    assets = iter_query(db.query(DocumentAsset).filter(DocumentAsset.document_id == document_id).order_by(DocumentAsset.id.asc()), [DocumentAsset.id])
 
     if not assets:
         return ""
@@ -796,33 +773,9 @@ def build_transcription_pages(
     selected_page_numbers:
         set[int] | None = None,
 ) -> list[dict]:
-    chunks = (
-        db.query(
-            DocumentChunk
-        )
-        .filter(
-            DocumentChunk.document_id
-            == document.id
-        )
-        .order_by(
-            DocumentChunk.id.asc()
-        )
-        .all()
-    )
+    chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).order_by(DocumentChunk.id.asc()), [DocumentChunk.id])
 
-    assets = (
-        db.query(
-            DocumentAsset
-        )
-        .filter(
-            DocumentAsset.document_id
-            == document.id
-        )
-        .order_by(
-            DocumentAsset.id.asc()
-        )
-        .all()
-    )
+    assets = iter_query(db.query(DocumentAsset).filter(DocumentAsset.document_id == document.id).order_by(DocumentAsset.id.asc()), [DocumentAsset.id])
 
     chunks_by_page: dict[
         int,
