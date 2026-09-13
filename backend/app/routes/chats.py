@@ -1,3 +1,4 @@
+from app.services.observability import log_exception, submit_observed
 from types import SimpleNamespace
 from app.services.database_queries import release_read_transaction
 from fastapi import Response
@@ -818,9 +819,7 @@ def ask_chat(
                 documents=intent_documents,
             )
         except Exception:
-            logger.exception(
-                "Chat intent detection failed"
-            )
+            log_exception(logger, 'chat_intent_detection_failed')
 
     user_message = Message(
         chat_id=chat_id,
@@ -859,9 +858,7 @@ def ask_chat(
         )
 
     except Exception:
-        logger.exception(
-            "Chat title generation failed"
-        )
+        log_exception(logger, 'chat_title_generation_failed')
 
     try:
         action = intent.get(
@@ -1072,9 +1069,7 @@ def ask_chat(
     except Exception:
         db.rollback()
 
-        logger.exception(
-            "Chat answer generation failed"
-        )
+        log_exception(logger, 'chat_answer_generation_failed')
 
         stored_user_message = db.get(
             Message,
@@ -1222,9 +1217,7 @@ def ask_chat_stream(
             )
 
         except Exception:
-            logger.exception(
-                "Chat intent detection failed"
-            )
+            log_exception(logger, 'chat_intent_detection_failed')
 
     current_user_id = (
         current_user.id
@@ -1310,9 +1303,7 @@ def ask_chat_stream(
                 return title_future.result()
 
             except Exception:
-                logger.exception(
-                    "Background chat title generation failed"
-                )
+                log_exception(logger, 'background_chat_title_generation_failed')
 
                 return None
 
@@ -1351,7 +1342,7 @@ def ask_chat_stream(
 
         admission.retain()
         try:
-            title_future = title_executor.submit(generate_chat_title)
+            title_future = submit_observed(title_executor, generate_chat_title)
         except BaseException:
             admission.release()
             title_executor.shutdown(wait=False)
@@ -1957,9 +1948,7 @@ def ask_chat_stream(
         except Exception:
             stream_db.rollback()
 
-            logger.exception(
-                "Chat stream failed"
-            )
+            log_exception(logger, 'chat_stream_failed')
 
             stored_user_message = (
                 stream_db.get(

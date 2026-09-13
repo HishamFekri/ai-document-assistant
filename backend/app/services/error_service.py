@@ -6,6 +6,7 @@ import httpx
 import requests
 from openai import APITimeoutError
 from app.services.document_resource_errors import DocumentResourceError, resource_messages
+from app.services.observability import current_context, log_exception, safe_fields, summary_job_id, notify_error
 
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ def log_and_get_public_error(
     error: Exception,
     message: str,
 ) -> str:
-    logger.exception("%s: %s", message, error)
+    log_exception(logger, "request_failed", error)
     return message
 
 
@@ -65,7 +66,7 @@ def log_generation_failure(
     Provider and database exceptions can embed credentials or document contents
     in their messages, causes and attributes. logger.exception/str(error) would
     copy that data into logs. Preserve types and call locations instead, using
-    the existing Python logger without changing global logging configuration.
+    the existing Python logger through the structured allowlist boundary.
     """
     diagnostics = []
     seen = set()
@@ -90,6 +91,7 @@ def log_generation_failure(
         current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
 
     context = {
+        **current_context(),
         "operation": operation,
         "document_id": document_id,
         "chat_id": chat_id,
@@ -98,9 +100,14 @@ def log_generation_failure(
         "failure_category": "timeout" if timed_out else "generation_failed",
         "diagnostics": diagnostics,
     }
+    if summary_id is not None:
+        context["job_id"] = summary_job_id(summary_id)
     # Include context in the message for the existing default formatter as well
     # as record fields for any configured structured formatter. No exc_info.
-    logger.error("Generation failure: %s", context, extra=context)
+    logger.error("Generation failure: %s", context, extra={
+        **context, "safe_event": safe_fields({**context, "event": "generation_failed"}),
+    })
+    notify_error({**context, "event": "generation_failed", "exception_type": diagnostics[0]["exception_type"]})
     if operation == "document" and isinstance(error, DocumentResourceError):
         return resource_messages()[error.code]
     return GENERATION_TIMED_OUT[operation] if timed_out else GENERATION_FAILED[operation]

@@ -1,4 +1,6 @@
 import json
+import logging
+from app.services.observability import log_event, summary_job_id
 import os
 import re
 from typing import Literal
@@ -108,7 +110,18 @@ def start_summary_generation(chat_id, document_id, mode="summary", summary_id=No
                 if summary is not None:
                     db.expunge(summary)
                 db.rollback()
-            yield db, summary, owns_lifecycle
+            # ContextVar tokens cannot span sync-generator yields: Starlette may
+            # resume each next() in a different thread context. Bind IDs explicitly.
+            fields = dict(operation="summary_generation", document_id=document_id,
+                          chat_id=chat_id, summary_id=summary.id if summary else summary_id)
+            if fields["summary_id"] is not None:
+                fields["job_id"] = summary_job_id(fields["summary_id"])
+            log_event(logging.getLogger(__name__), logging.INFO, "summary_generation_acquired",
+                      outcome="owner" if owns_lifecycle else "skipped", **fields)
+            try:
+                yield db, summary, owns_lifecycle
+            finally:
+                log_event(logging.getLogger(__name__), logging.INFO, "summary_generation_released", **fields)
 
 
 def summary_owner_id(db, chat_id):

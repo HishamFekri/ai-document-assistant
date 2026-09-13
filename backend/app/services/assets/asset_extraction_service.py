@@ -1,3 +1,5 @@
+import logging
+from app.services.observability import log_event
 from pathlib import Path
 import json
 
@@ -380,11 +382,7 @@ def replace_document_assets(
 
     db.flush()
 
-    print(
-        f"[ASSETS] Document "
-        f"{document_id}: "
-        f"{len(assets)} assets found"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "document_assets_found", document_id=document_id, count=len(assets))
 
     image_count = sum(
         1
@@ -407,19 +405,10 @@ def replace_document_assets(
         == "equation"
     )
 
-    print(
-        f"[ASSETS] Images: "
-        f"{image_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_images", images=image_count)
 
-    print(
-        f"[ASSETS] Tables: "
-        f"{table_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_tables", tables=table_count)
 
-    print(
-        f"[ASSETS] Equations: "
-        f"{equation_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_equations", equations=equation_count)
 
     return assets

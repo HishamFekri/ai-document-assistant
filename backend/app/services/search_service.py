@@ -1,3 +1,4 @@
+from app.services.observability import log_event
 from sqlalchemy import or_
 from app.services.database_queries import iter_query, release_read_transaction
 import logging
@@ -638,20 +639,7 @@ def search_similar_chunks(
             + bonus
         )
 
-        logger.debug(
-            (
-                "Search candidate chunk=%s document=%s "
-                "type=%s location=%s similarity=%.4f "
-                "lexical_bonus=%.4f score=%.4f"
-            ),
-            chunk.id,
-            chunk.document_id,
-            chunk.content_type,
-            chunk.location,
-            similarity,
-            bonus,
-            ranking_score,
-        )
+        log_event(logger, logging.DEBUG, "search_candidate", document_id=chunk.document_id)
 
         if (
             similarity

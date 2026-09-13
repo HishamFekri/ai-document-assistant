@@ -37,6 +37,17 @@ class MemoryQuery:
     def order_by(self, *args):
         return self
 
+    def options(self, *args):
+        return self
+
+    def offset(self, value):
+        self.rows = self.rows[value:]
+        return self
+
+    def limit(self, value):
+        self.rows = self.rows[:value]
+        return self
+
     def first(self):
         return next(iter(self.rows), None)
 
@@ -84,6 +95,7 @@ class PrivateImageTests(unittest.TestCase):
         cls.stack.enter_context(patch("dotenv.load_dotenv", return_value=False))
         cls.stack.enter_context(patch("sqlalchemy.create_engine", side_effect=AssertionError("No database engines in this suite")))
         cls.stack.enter_context(patch("socket.create_connection", side_effect=AssertionError("No network in this suite")))
+        cls.stack.enter_context(patch("redis.Redis.from_url", side_effect=AssertionError("No Redis in this suite")))
         cls.stack.enter_context(patch("openai.OpenAI"))
 
         from sqlalchemy.orm import DeclarativeBase
@@ -116,6 +128,12 @@ class PrivateImageTests(unittest.TestCase):
         cls.app.include_router(cls.assets.router)
         cls.TestClient = TestClient
         cls.database = database
+        # Authentication now enforces Batch 8 shared admission. Keep this older
+        # storage/ownership harness offline using the same doubles as later suites.
+        from resource_test_helpers import install_resource_mocks
+        install_resource_mocks(cls.stack)
+        cls.stack.enter_context(patch.object(cls.auth, "consume_rate"))
+        cls.stack.enter_context(patch.object(cls.auth, "consume_user_rate"))
 
     def setUp(self):
         self.stack = ExitStack()

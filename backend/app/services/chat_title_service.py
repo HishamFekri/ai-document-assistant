@@ -1,3 +1,5 @@
+import logging
+from app.services.observability import log_exception
 from app.services.database_queries import release_read_transaction
 import os
 import re
@@ -600,10 +602,7 @@ Generate the title now.
         )
 
     except Exception as error:
-        print(
-            "[CHAT TITLE AI ERROR] "
-            f"{error}"
-        )
+        log_exception(logging.getLogger(__name__), "chat_title_generation", error)
 
         return None
 
@@ -679,9 +678,6 @@ def maybe_generate_chat_title(
     except Exception as error:
         db.rollback()
 
-        print(
-            "[CHAT TITLE SAVE ERROR] "
-            f"{error}"
-        )
+        log_exception(logging.getLogger(__name__), "chat_title_save", error)
 
         return None

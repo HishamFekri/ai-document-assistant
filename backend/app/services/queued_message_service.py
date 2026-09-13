@@ -1,3 +1,5 @@
+import logging
+from app.services.observability import log_event
 from app.services.database_queries import iter_query_batches
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -125,10 +127,7 @@ def process_waiting_message(
 
             db.commit()
 
-            print(
-                "[QUEUE] Message "
-                f"{message.id} completed"
-            )
+            log_event(logging.getLogger(__name__), logging.INFO, "queued_message_completed", message_id=message.id)
 
     except Exception as error:
         public_error = log_generation_failure(

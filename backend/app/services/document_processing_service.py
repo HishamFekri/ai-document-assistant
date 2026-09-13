@@ -1,6 +1,7 @@
 """Claimed processing with short transactions and durable chunk checkpoints."""
 
 import logging
+from app.services.observability import document_job, log_event
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -56,12 +57,12 @@ def process_claimed_document(claim, document_id):
         completeness = inspect_embeddings(db, [document_id])[0]
         if document.processing_status == "ready":
             if completeness.complete:
-                logger.info("Processing completed job skipped document=%s", document_id)
+                log_event(logger, logging.INFO, "processing_completed_job_skipped", document_id=document_id)
                 return "already_complete"
-            logger.warning("Processing requires explicit embedding recovery document=%s", document_id)
+            log_event(logger, logging.WARNING, "processing_requires_explicit_embedding_recovery", document_id=document_id)
             return "embedding_recovery_required"
         if document.processing_status == "failed" and document.processing_stage in ("permanent_failure", "retry_exhausted"):
-            logger.info("Processing permanent failure skipped document=%s", document_id)
+            log_event(logger, logging.INFO, "processing_permanent_failure_skipped", document_id=document_id)
             return "permanent_failure"
         owner_id = document.user_id
         file_path = document.file_path
@@ -125,7 +126,7 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
                 ))
             document.processing_stage = "chunks_saved"
             document.processing_progress = 72
-        logger.info("Processing checkpoint saved document=%s chunks=%s", document_id, len(chunks))
+        log_event(logger, logging.INFO, "processing_checkpoint_saved", document_id=document_id, chunks=len(chunks))
 
     set_progress(claim, document_id, "creating_embeddings", 78)
     while True:
@@ -154,7 +155,7 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
                 result = db.execute(recovery_update_statement(chunk, vector, statuses=("processing",)))
                 if result.rowcount != 1:
                     raise ValueError("Chunk changed during processing; explicit retry required")
-        logger.info("Processing embedding batch committed document=%s chunks=%s", document_id, len(pending))
+        log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
 
     # Read source metadata outside the final transaction.
     pages_count = len(PdfReader(path).pages) if file_type == "pdf" else None
@@ -170,23 +171,24 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
         document.processing_stage = "ready"
         document.processing_progress = 100
         document.processing_error = None
-    logger.info("Processing completed document=%s", document_id)
+    log_event(logger, logging.INFO, "processing_completed", document_id=document_id)
     return "completed"
 
 
+@document_job
 def process_document(document_id: int, file_path: str | None = None):
     # Keep the old task signature compatible; the stored source path is authoritative.
     outcome = None
     try:
         with claim_document_processing(document_id) as claim:
             if claim is None:
-                logger.info("Processing duplicate invocation skipped document=%s", document_id)
+                log_event(logger, logging.INFO, "processing_duplicate_invocation_skipped", document_id=document_id)
                 return "busy"
-            logger.info("Processing claim acquired document=%s", document_id)
+            log_event(logger, logging.INFO, "processing_claim_acquired", document_id=document_id)
             try:
                 outcome = process_claimed_document(claim, document_id)
             except DocumentDeletedDuringProcessing:
-                logger.info("Processing deleted document skipped document=%s", document_id)
+                log_event(logger, logging.INFO, "processing_deleted_document_skipped", document_id=document_id)
                 return "deleted"
             except Exception as error:
                 retryable = is_retryable_processing_error(error)
@@ -205,7 +207,7 @@ def process_document(document_id: int, file_path: str | None = None):
                     retryable = retryable or is_retryable_processing_error(state_error)
                 if retryable:
                     raise RetryableDocumentProcessingError("Document processing temporarily unavailable") from None
-                logger.warning("Processing permanent failure document=%s", document_id)
+                log_event(logger, logging.WARNING, "processing_permanent_failure", document_id=document_id)
                 outcome = "permanent_failure"
     except RetryableDocumentProcessingError:
         raise

@@ -3,6 +3,7 @@ import logging
 
 from fastapi import BackgroundTasks
 from app.services.error_service import log_generation_failure
+from app.services.observability import log_event
 
 
 TASK_QUEUE = os.getenv("TASK_QUEUE", "background").lower()
@@ -22,7 +23,7 @@ def enqueue_document_processing(
 
     if TASK_QUEUE != "background":
         raise ValueError("Unsupported task queue configuration")
-    logger.info("Processing scheduled using nondurable development fallback document=%s", document_id)
+    log_event(logger, logging.INFO, "document_development_dispatch", document_id=document_id)
     background_tasks.add_task(
         _run_document_processing,
         document_id,

@@ -1,3 +1,4 @@
+from app.services.observability import log_event
 from app.services.database_queries import iter_query, release_read_transaction
 import logging
 import os
@@ -1663,14 +1664,7 @@ def get_related_visual_results(
         if is_generic_visual_text(
             signature
         ):
-            logger.debug(
-                (
-                    "Skipping generic visual "
-                    "chunk=%s signature=%s"
-                ),
-                chunk.id,
-                signature[:120],
-            )
+            log_event(logger, logging.DEBUG, "rag_generic_visual_skipped")
             continue
 
         asset_key = (

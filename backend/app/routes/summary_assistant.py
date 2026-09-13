@@ -1,3 +1,5 @@
+import logging
+from app.services.observability import log_exception
 from app.services.admission_dependencies import admit_chat
 from app.services.resource_admission import Permit
 from fastapi import (
@@ -261,10 +263,7 @@ def create_summary_assistant_message(
         )
 
     except Exception as error:
-        print(
-            "[SUMMARY ASSISTANT ERROR]",
-            error,
-        )
+        log_exception(logging.getLogger(__name__), "summary_assistant", error, document_id=document_id)
 
         raise HTTPException(
             status_code=500,

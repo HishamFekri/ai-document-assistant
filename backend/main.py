@@ -1,4 +1,10 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from app.services.observability import configure_logging, RequestObservabilityMiddleware
+from app.services.runtime_config import validate_runtime
+from app.services.readiness import readiness_status
+
+configure_logging()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.services.resource_admission import ResourceRejected, resource_error_response
@@ -14,8 +20,20 @@ from app.routes.document_assets import router as document_assets_router
 from app.routes.summary_assistant import router as summary_assistant_router
 
 
-app = FastAPI(
-    title="AI Document Assistant"
+@asynccontextmanager
+async def lifespan(app):
+    validate_runtime()
+    yield
+
+
+class ObservedFastAPI(FastAPI):
+    def build_middleware_stack(self):
+        # Outside ServerErrorMiddleware so generated 500s also carry a request ID.
+        return RequestObservabilityMiddleware(super().build_middleware_stack())
+
+
+app = ObservedFastAPI(
+    title="AI Document Assistant", lifespan=lifespan,
 )
 
 app.add_exception_handler(ResourceRejected, resource_error_response)
@@ -32,7 +50,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["Retry-After", "X-Resource-Error", "X-Next-Cursor"],
+    expose_headers=["Retry-After", "X-Resource-Error", "X-Next-Cursor", "X-Request-ID"],
 )
 
 
@@ -76,3 +94,9 @@ def health_check():
     return {
         "status": "ok"
     }
+
+
+@app.get("/ready")
+def readiness_check():
+    body, status = readiness_status()
+    return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})

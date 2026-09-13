@@ -1,3 +1,5 @@
+import logging
+from app.services.observability import log_event
 import os
 import time
 
@@ -82,10 +84,7 @@ def _create_embeddings(
                     attempt + 1
                 )
 
-            print(
-                f"[VOYAGE] Rate limited. "
-                f"Retrying in {wait_seconds}s..."
-            )
+            log_event(logging.getLogger(__name__), logging.INFO, "embedding_retry", delay_seconds=wait_seconds)
 
             time.sleep(
                 wait_seconds
@@ -182,11 +181,7 @@ def create_passage_embeddings(
             - 1
         ) // batch_size
 
-        print(
-            f"[VOYAGE] Embedding batch "
-            f"{batch_number}/{total_batches} "
-            f"({len(batch)} chunks)"
-        )
+        log_event(logging.getLogger(__name__), logging.INFO, "embedding_batch", count=len(batch))
 
         batch_embeddings = (
             _create_embeddings(

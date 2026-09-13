@@ -1,3 +1,4 @@
+from app.services.observability import log_event, log_exception
 import base64
 import binascii
 import hashlib
@@ -288,16 +289,10 @@ def convert_document_with_datalab(
     if page_range:
         data["page_range"] = page_range
 
-    logger.info(
-        "Uploading document to Datalab: %s",
-        path.name,
-    )
+    log_event(logger, logging.INFO, "datalab_upload_started")
 
     if page_range:
-        logger.info(
-            "Datalab page range: %s",
-            page_range,
-        )
+        log_event(logger, logging.INFO, "datalab_page_range_selected")
 
     start_time = time.perf_counter()
 
@@ -321,9 +316,7 @@ def convert_document_with_datalab(
             )
 
     except OSError as error:
-        logger.exception(
-            "Could not read document for Datalab"
-        )
+        log_exception(logger, 'read_document_for_datalab')
 
         raise RuntimeError(
             "Could not read document for processing"
@@ -382,10 +375,7 @@ def convert_document_with_datalab(
     )
 
     if request_id:
-        logger.debug(
-            "Datalab request ID: %s",
-            request_id,
-        )
+        log_event(logger, logging.DEBUG, "datalab_request_accepted")
 
     for poll_number in range(
         1,
@@ -429,12 +419,7 @@ def convert_document_with_datalab(
             "status"
         )
 
-        logger.debug(
-            "Datalab poll %s/%s status=%s",
-            poll_number,
-            MAX_POLLS,
-            status,
-        )
+        log_event(logger, logging.DEBUG, "datalab_poll", count=poll_number)
 
         if status == "complete":
             total_time = (
@@ -447,26 +432,9 @@ def convert_document_with_datalab(
                 or {}
             )
 
-            logger.info(
-                (
-                    "Datalab conversion complete "
-                    "pages=%s quality=%s images=%s "
-                    "duration=%.2fs"
-                ),
-                result.get("page_count"),
-                result.get(
-                    "parse_quality_score"
-                ),
-                len(images),
-                total_time,
-            )
+            log_event(logger, logging.INFO, "datalab_conversion_completed", images=len(images), duration_ms=total_time * 1000)
 
-            logger.debug(
-                "Datalab cost breakdown: %s",
-                result.get(
-                    "cost_breakdown"
-                ),
-            )
+            log_event(logger, logging.DEBUG, "datalab_conversion_usage_received")
 
             return result
 
@@ -581,10 +549,7 @@ def save_datalab_images(
             binascii.Error,
             ValueError,
         ):
-            logger.warning(
-                "Could not decode Datalab image: %s",
-                safe_filename,
-            )
+            log_exception(logger, "datalab_image_decode")
 
             continue
 
@@ -619,11 +584,7 @@ def save_datalab_images(
             )
 
         except Exception:
-            logger.exception(
-                "Could not upload Datalab image "
-                "to Cloudinary: %s",
-                safe_filename,
-            )
+            log_exception(logger, "datalab_image_upload")
 
             continue
 
@@ -634,11 +595,7 @@ def save_datalab_images(
         )
 
         if not secure_url:
-            logger.warning(
-                "Cloudinary returned no secure URL "
-                "for image: %s",
-                safe_filename,
-            )
+            log_event(logger, logging.WARNING, "datalab_image_url_missing")
 
             continue
 

@@ -1,3 +1,4 @@
+from app.services.observability import log_event, log_exception
 from fastapi import Response
 from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
 from fastapi import Query
@@ -301,7 +302,7 @@ async def upload_document(
 
 
 def dispatch_uploaded_document(db, background_tasks, document_id, file_path, response):
-    logger.info("Processing dispatch attempted document=%s", document_id)
+    log_event(logger, logging.INFO, "document_dispatch_attempted", document_id=document_id)
     try:
         enqueue_document_processing(background_tasks, document_id, file_path)
     except Exception as error:
@@ -323,7 +324,7 @@ def dispatch_uploaded_document(db, background_tasks, document_id, file_path, res
             raise HTTPException(status_code=404, detail="Document not found") from None
         response = DocumentResponse.model_validate(document)
         db.rollback()
-        logger.warning("Processing dispatch failed document=%s", document_id)
+        log_event(logger, logging.WARNING, "document_dispatch_failed", document_id=document_id)
     return response
 
 
@@ -438,11 +439,7 @@ def delete_document(
             )
 
         except Exception as error:
-            print(
-                "[WARNING] Could not "
-                "delete physical file: "
-                f"{error}"
-            )
+            log_exception(logger, "delete_document_file", error, document_id=document_id)
 
     return {
         "message": (

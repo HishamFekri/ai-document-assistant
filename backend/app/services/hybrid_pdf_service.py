@@ -1,4 +1,5 @@
 import logging
+from app.services.observability import submit_observed
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -781,7 +782,7 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
     results = []
     # Submit only bounded batches; shared admission checks every paid entry point.
     with ThreadPoolExecutor(max_workers=min(limits.datalab_parallel_batches, len(page_batches))) as executor:
-        futures = [executor.submit(process_datalab_batch, path=path, batch_number=index,
+        futures = [submit_observed(executor, process_datalab_batch, path=path, batch_number=index,
                                    batch_pages=pages, total_batches=len(page_batches),
                                    asset_directory=asset_directory, admission=admission)
                    for index, pages in enumerate(page_batches, 1)]
