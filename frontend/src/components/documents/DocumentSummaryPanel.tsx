@@ -87,7 +87,12 @@ type Props = {
 };
 
 
-export default function DocumentSummaryPanel({
+export default function DocumentSummaryPanel(props: Props) {
+  if (!props.open) return null;
+  return <SummaryPanelContent key={JSON.stringify([props.chatId, props.documentId, props.mode, props.token])} {...props} />;
+}
+
+function SummaryPanelContent({
   open,
   chatId,
   documentId,
@@ -268,18 +273,6 @@ export default function DocumentSummaryPanel({
   }, []);
 
 
-  useEffect(() => {
-    setMenuOpen(false);
-
-    setDocumentsOpen(false);
-
-    setStoppedSnapshot(
-      null
-    );
-  }, [
-    documentId,
-    mode,
-  ]);
 
 
   if (

@@ -15,6 +15,8 @@ function application(fetch) {
   const router = { replace: (url) => events.push(["replace", url]), push: (url) => events.push(["push", url]) };
   const hooks = {
     useCallback: (callback) => callback,
+    useMemo: (create) => create(),
+    useLayoutEffect: () => {},
     useEffect: () => {}, // No background queries in this isolated handler test.
     useRef: (current) => ({ current }),
     useState: (initial) => {
@@ -33,6 +35,8 @@ function application(fetch) {
     const exports = {};
     modules.set(relative, exports);
     const dependency = (name) => {
+      if (name === "@/hooks/useRequestScope") return load("src/hooks/useRequestScope.ts");
+      if (name === "@/lib/request-scope") return load("src/lib/request-scope.ts");
       if (name === "@/lib/pagination") return load("src/lib/pagination.ts");
       if (name === "@/lib/logout") return load("src/lib/logout.ts");
       if (name === "@/lib/chat-api") return {};

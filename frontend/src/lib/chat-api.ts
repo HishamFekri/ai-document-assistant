@@ -200,13 +200,15 @@ async function ensureOk(
 
 
 export async function getCurrentUser(
-  token: string
+  token: string,
+  signal?: AbortSignal
 ): Promise<User> {
   const response =
     await fetch(
       `${API_URL}/auth/me`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -227,13 +229,15 @@ export async function getCurrentUser(
 
 export async function getChat(
   token: string,
-  chatId: number
+  chatId: number,
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
       `${API_URL}/chats/${chatId}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -264,13 +268,15 @@ export async function getDocuments(token: string, cursor?: string): Promise<Page
 
 export async function getChats(
   token: string,
-  cursor?: string
+  cursor?: string,
+  signal?: AbortSignal
 ): Promise<Page<ChatListItem>> {
   const response =
     await fetch(
       `${API_URL}/chats` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -292,13 +298,15 @@ export async function getChats(
 export async function getMessages(
   token: string,
   chatId: number,
-  cursor?: string
+  cursor?: string,
+  signal?: AbortSignal
 ): Promise<Page<Message>> {
   const response =
     await fetch(
       `${API_URL}/chats/${chatId}/messages` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -319,7 +327,8 @@ export async function getMessages(
 
 export async function createChat(
   token: string,
-  title = "New chat"
+  title = "New chat",
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
@@ -328,6 +337,7 @@ export async function createChat(
         method: "POST",
 
         credentials: "include",
+        signal,
 
         headers:
           buildJsonHeaders(
@@ -549,7 +559,8 @@ export async function uploadDocument(
 export async function attachDocument(
   token: string,
   chatId: number,
-  documentId: number
+  documentId: number,
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
@@ -558,6 +569,7 @@ export async function attachDocument(
         method: "POST",
 
         credentials: "include",
+        signal,
 
         headers:
           buildAuthHeaders(

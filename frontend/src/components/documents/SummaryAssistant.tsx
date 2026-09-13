@@ -89,6 +89,7 @@ export default function SummaryAssistant({
     sending,
     error,
     sendMessage,
+    cancelPending,
   } = useSummaryAssistant({
     token,
     chatId,
@@ -176,7 +177,8 @@ export default function SummaryAssistant({
     stopGuardRef.current =
       true;
 
-    onStopGeneration?.();
+    cancelPending();
+    if (regenerating) onStopGeneration?.();
 
     window.setTimeout(
       () => {
@@ -397,7 +399,7 @@ export default function SummaryAssistant({
             />
 
 
-            {regenerating ? (
+            {regenerating || sending ? (
               <button
                 type="button"
                 onMouseDown={(
@@ -410,7 +412,7 @@ export default function SummaryAssistant({
                   handleStopClick
                 }
                 disabled={
-                  !onStopGeneration
+                  !sending && !onStopGeneration
                 }
                 title={
                   mode

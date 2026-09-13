@@ -22,6 +22,12 @@ function app(fetch = () => { throw new Error("Unexpected network"); }) {
       if (!(key in slots)) slots[key] = { current: initial };
       return slots[key];
     },
+    useMemo(create) {
+      const key = index++;
+      if (!(key in slots)) slots[key] = create();
+      return slots[key];
+    },
+    useLayoutEffect: () => {},
     useCallback: (fn) => fn,
     useEffect: () => {},
   };
@@ -40,7 +46,7 @@ function app(fetch = () => { throw new Error("Unexpected network"); }) {
       throw new Error(dependency);
     };
     vm.runInNewContext(code, { exports, require, process: { env: {} }, fetch, Response,
-      URLSearchParams, console, window: { dispatchEvent() {}, alert(message) { throw new Error(message); } } });
+      URLSearchParams, AbortController, console, window: { dispatchEvent() {}, alert(message) { throw new Error(message); } } });
     return exports;
   }
   return { load, render(chatId = 1) { index = 0; return load("src/hooks/useChat.ts").useChat(chatId); } };

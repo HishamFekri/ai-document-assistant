@@ -50,7 +50,12 @@ type DocumentView =
   | "transcription";
 
 
-export default function ChatPage({
+export default function ChatPage(props: { draft?: boolean }) {
+  const params = useParams();
+  return <ChatWorkspace key={props.draft ? "draft" : String(params?.id)} {...props} />;
+}
+
+function ChatWorkspace({
   draft = false,
 }: {
   draft?: boolean;
@@ -533,10 +538,6 @@ export default function ChatPage({
     if (
       activeView !== "chat"
     ) {
-      setShowScrollToBottom(
-        false
-      );
-
       return;
     }
 
@@ -1457,7 +1458,7 @@ export default function ChatPage({
               </section>
 
 
-              {showScrollToBottom && (
+              {activeView === "chat" && showScrollToBottom && (
                 <button
                   type="button"
                   onClick={scrollToBottom}
