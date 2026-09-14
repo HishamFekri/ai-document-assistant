@@ -1,0 +1,9 @@
+private/
+results/
+.env
+.env.*
+!.env.example
+node_modules/
+*.log
+*.tar
+*.zip

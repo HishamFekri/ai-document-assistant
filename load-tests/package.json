@@ -1,0 +1,10 @@
+{
+  "name": "assistant-load-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "validate": "node run.mjs validate --example",
+    "inspect": "node run.mjs inspect --example"
+  }
+}
