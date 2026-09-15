@@ -1,4 +1,6 @@
 import os
+import logging
+from app.services.observability import log_exception
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -469,16 +471,25 @@ def generate_answer_stream(
         )
     )
 
-    for chunk in stream:
-        if not chunk.choices:
-            continue
+    try:
+        for chunk in stream:
+            if not chunk.choices:
+                continue
 
-        delta = (
-            chunk
-            .choices[0]
-            .delta
-            .content
-        )
+            delta = (
+                chunk
+                .choices[0]
+                .delta
+                .content
+            )
 
-        if delta:
-            yield delta
+            if delta:
+                yield delta
+    finally:
+        # Generator.close()/throw() and iteration failures all converge here.
+        # Repeated closure of the application generator cannot rerun this block.
+        try:
+            stream.close()
+        except Exception:
+            # Cleanup must not replace the original failure or expose SDK text.
+            log_exception(logging.getLogger(__name__), "answer_stream_cleanup")

@@ -3,6 +3,7 @@
 from dataclasses import dataclass, field
 from functools import lru_cache
 import os
+from app.services.environment import is_production_environment
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class ResourceLimits:
 
 @lru_cache(maxsize=1)
 def resource_limits():
-    production = os.getenv("ENVIRONMENT", "development").lower() == "production"
+    production = is_production_environment()
     return ResourceLimits(
         rates={name: RatePolicy(
             positive_setting(f"RESOURCE_{name.upper()}_LIMIT", limit),

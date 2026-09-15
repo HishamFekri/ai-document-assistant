@@ -70,10 +70,12 @@ class PublicGenerationErrorTests(unittest.TestCase):
         cls.assistant_schema = importlib.import_module("app.schemas.summary_assistant_schemas")
         cls.summary_routes = importlib.import_module("app.routes.summaries")
         cls.chat_routes = importlib.import_module("app.routes.chats")
+        cls.assistant_routes = importlib.import_module("app.routes.summary_assistant")
         cls.auth = importlib.import_module("app.routes.auth")
         cls.app = FastAPI()
         cls.app.include_router(cls.summary_routes.router)
         cls.app.include_router(cls.chat_routes.router)
+        cls.app.include_router(cls.assistant_routes.router)
         cls.database = database
         cls.TestClient = TestClient
         from resource_test_helpers import install_resource_mocks
@@ -353,6 +355,58 @@ class PublicGenerationErrorTests(unittest.TestCase):
         _, captured = self.fail_summary(first)
         self.assertEqual(len(captured.records[0].diagnostics), 2)
         self.assert_no_sensitive_data(captured.output)
+
+    def provider_value_errors(self):
+        class UnprintableValueError(ValueError):
+            def __str__(self):
+                raise AssertionError("Exception text must never be evaluated")
+        wrapped = ValueError(SENSITIVE)
+        wrapped.__cause__ = TimeoutError(SENSITIVE)
+        return ((ValueError(SENSITIVE), self.errors.GENERATION_FAILED["message"]),
+                (UnprintableValueError(SENSITIVE), self.errors.GENERATION_FAILED["message"]),
+                (wrapped, self.errors.GENERATION_TIMED_OUT["message"]))
+
+    def test_nonstreaming_chat_valueerrors_return_safe_http_errors_and_diagnostics(self):
+        self.db.refresh.side_effect = lambda row: setattr(row, "id", 13)
+        with patch.object(self.chat_routes, "get_owned_chat", return_value=SimpleNamespace(id=5, documents=[])), \
+             patch.object(self.chat_routes, "maybe_generate_chat_title", return_value=None), \
+             patch.object(self.chat_routes, "answer_question") as provider:
+            for error, expected in self.provider_value_errors():
+                with self.subTest(kind=type(error).__name__):
+                    provider.side_effect = error
+                    with self.assertLogs(self.errors.logger, level="ERROR") as captured:
+                        response = self.client.post("/chats/5/ask", json={
+                            "question": "Synthetic question", "allow_general_knowledge": True,
+                        })
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json()["detail"], expected)
+                    self.assertEqual((captured.records[0].chat_id, captured.records[0].message_id), (5, 13))
+                    self.assert_no_sensitive_data(response.text)
+                    self.assert_no_sensitive_data(captured.records[0].__dict__)
+                    self.assert_no_sensitive_data(self.persisted)
+
+    def test_summary_assistant_valueerrors_return_safe_http_errors_and_diagnostics(self):
+        with patch.object(self.assistant_routes, "get_chat_document", return_value=(None, self.document)), \
+             patch.object(self.assistant_routes, "send_summary_assistant_message") as provider:
+            for error, expected in self.provider_value_errors():
+                with self.subTest(kind=type(error).__name__):
+                    provider.side_effect = error
+                    with self.assertLogs(self.errors.logger, level="ERROR") as captured:
+                        response = self.client.post("/documents/7/summary-assistant/messages", json={
+                            "chat_id": 5, "content": "Synthetic instructions",
+                        })
+                    self.assertEqual(response.status_code, 400)
+                    self.assertEqual(response.json()["detail"], expected)
+                    self.assertEqual((captured.records[0].chat_id, captured.records[0].document_id), (5, 7))
+                    self.assert_no_sensitive_data(response.text)
+                    self.assert_no_sensitive_data(captured.records[0].__dict__)
+
+    def test_empty_chat_question_keeps_safe_validation_without_provider(self):
+        with patch.object(self.chat_routes, "answer_question") as provider:
+            response = self.client.post("/chats/5/ask", json={"question": " "})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["detail"], "Question cannot be empty")
+        provider.assert_not_called()
 
 
 def test_public_generation_errors_in_isolated_process():

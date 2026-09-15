@@ -310,6 +310,48 @@ class ObservabilityTests(unittest.TestCase):
             with patch.dict(os.environ, {"PORT": port}), self.assertRaises(ValueError):
                 self.runtime.server_arguments()
 
+    def test_normalized_environment_enforces_runtime_and_resource_security_consistently(self):
+        values = {"FRONTEND_URL": "https://frontend.example.test", "FRONTEND_URLS": "https://frontend.example.test",
+                  "GOOGLE_REDIRECT_URI": "https://frontend.example.test/auth/google/callback", "TASK_QUEUE": "celery",
+                  "DATABASE_URL": "postgresql+psycopg://test:synthetic@127.0.0.1/app",
+                  "CELERY_BROKER_URL": "redis://127.0.0.1/0", "CELERY_RESULT_BACKEND": "redis://127.0.0.1/1",
+                  "JWT_SECRET_KEY": "synthetic-long-deployment-secret-" * 2}
+        for environment in ("production", " production ", "PRODUCTION", "ProDuction", "staging", " StAgInG "):
+            with self.subTest(environment=environment), patch.dict(os.environ, {**values, "ENVIRONMENT": environment}):
+                self.config.auth_settings.cache_clear()
+                self.limits.resource_limits.cache_clear()
+                self.assertTrue(self.config.auth_settings().secure)
+                self.runtime.validate_runtime()
+                for name, value in (("TASK_QUEUE", "background"), ("JWT_SECRET_KEY", "short"),
+                                    ("DATABASE_URL", SECRET), ("CELERY_RESULT_BACKEND", "")):
+                    with patch.dict(os.environ, {name: value}), self.assertRaises(ValueError) as caught:
+                        self.runtime.validate_runtime()
+                    self.assertNotIn(SECRET, str(caught.exception))
+                with patch.dict(os.environ, {"RESOURCE_REDIS_URL": "", "CELERY_BROKER_URL": ""}):
+                    self.limits.resource_limits.cache_clear()
+                    self.assertIsNone(self.limits.resource_limits().redis_url)
+                    with self.assertRaises(ValueError):
+                        self.runtime.validate_runtime()
+        for environment in ("development", " DeVeLoPmEnT ", "test", " TEST "):
+            with self.subTest(environment=environment), patch.dict(os.environ, {
+                "ENVIRONMENT": environment, "TASK_QUEUE": "background", "RESOURCE_REDIS_URL": "", "CELERY_BROKER_URL": "",
+            }):
+                self.config.auth_settings.cache_clear()
+                self.limits.resource_limits.cache_clear()
+                self.runtime.validate_runtime()
+                self.assertFalse(self.config.auth_settings().secure)
+                self.assertEqual(self.limits.resource_limits().redis_url, "redis://127.0.0.1:6379/2")
+
+    def test_invalid_environment_fails_consistently_without_echoing_input(self):
+        for environment in ("", "  ", SECRET, "prod"):
+            with self.subTest(environment=environment), patch.dict(os.environ, {"ENVIRONMENT": environment}):
+                self.config.auth_settings.cache_clear()
+                self.limits.resource_limits.cache_clear()
+                for check in (self.config.auth_settings, self.limits.resource_limits, self.runtime.validate_runtime):
+                    with self.assertRaises(RuntimeError) as caught:
+                        check()
+                    self.assertNotIn(SECRET, str(caught.exception))
+
     def test_worker_configuration_failure_escapes_celery_signal_dispatch(self):
         from celery import signals
         with patch.object(self.worker, "validate_runtime", side_effect=ValueError(SECRET)):

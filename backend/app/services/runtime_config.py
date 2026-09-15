@@ -2,9 +2,11 @@
 
 import os
 from urllib.parse import urlsplit
+from app.services.environment import is_production_environment
 
 
 def validate_runtime():
+    production = is_production_environment()
     from app.services.auth_config import auth_settings
     from app.database.pool_config import pool_options
     from app.services.resource_limits import resource_limits, upload_limits
@@ -16,7 +18,7 @@ def validate_runtime():
     queue = os.getenv("TASK_QUEUE", "background").lower()
     if queue not in {"background", "celery"}:
         raise ValueError("Invalid TASK_QUEUE")
-    if os.getenv("ENVIRONMENT", "development").lower() not in {"production", "staging"}:
+    if not production:
         return
     if queue != "celery":
         raise ValueError("Production/staging requires TASK_QUEUE=celery")

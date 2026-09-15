@@ -6,6 +6,7 @@ import os
 from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
+from app.services.environment import is_production_environment
 
 load_dotenv()
 
@@ -49,10 +50,7 @@ class AuthSettings:
 
 @lru_cache(maxsize=1)
 def auth_settings():
-    environment = os.getenv("ENVIRONMENT", "development").strip().lower()
-    if environment not in {"development", "test", "staging", "production"}:
-        raise RuntimeError("ENVIRONMENT must be development, test, staging or production")
-    production = environment in {"production", "staging"}
+    production = is_production_environment()
     secure_setting = os.getenv("COOKIE_SECURE", "true" if production else "false").strip().lower()
     if secure_setting not in {"true", "false"}:
         raise RuntimeError("COOKIE_SECURE must be true or false")

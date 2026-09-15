@@ -1,4 +1,5 @@
 from app.services.observability import log_exception, submit_observed
+from app.services.error_service import log_generation_failure
 from types import SimpleNamespace
 from app.services.database_queries import release_read_transaction
 from fastapi import Response
@@ -1047,6 +1048,9 @@ def ask_chat(
         raise
 
     except ValueError as error:
+        public_error = log_generation_failure(
+            error, "message", chat_id=chat_id, message_id=user_message.id,
+        )
         db.rollback()
 
         stored_user_message = db.get(
@@ -1063,8 +1067,8 @@ def ask_chat(
 
         raise HTTPException(
             status_code=400,
-            detail=str(error),
-        )
+            detail=public_error,
+        ) from None
 
     except Exception:
         db.rollback()
@@ -1267,6 +1271,7 @@ def ask_chat_stream(
         title_executor = None
         title_future = None
         title_event_sent = False
+        answer_stream = None
 
         def generate_chat_title():
             admission.check()
@@ -1982,6 +1987,11 @@ def ask_chat_stream(
             )
 
         finally:
+            if answer_stream is not None:
+                try:
+                    answer_stream.close()
+                except Exception:
+                    log_exception(logger, "chat_stream_cleanup", chat_id=chat_id, message_id=user_message_id)
             if title_executor is not None:
                 title_executor.shutdown(
                     wait=False

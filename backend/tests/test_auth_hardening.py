@@ -153,12 +153,19 @@ class AuthHardeningTests(unittest.TestCase):
         self.assertEqual(cookie["domain"], "")
 
     def test_production_and_staging_secure_cookies(self):
-        for environment in ("production", "staging"):
+        for environment in ("production", " production ", "PRODUCTION", "ProDuction", "staging", " StAgInG "):
             self.configure(ENVIRONMENT=environment, FRONTEND_URL="https://app.example.test",
                            GOOGLE_REDIRECT_URI="https://api.example.test/auth/google/callback")
             cookie = self.cookie(self.login(self.client(base_url="https://testserver")))
             self.assertTrue(cookie["secure"])
             self.assertTrue(cookie["httponly"])
+
+    def test_normalized_development_and_test_keep_local_cookie_defaults(self):
+        for environment in ("development", " DeVeLoPmEnT ", "test", " TEST "):
+            with self.subTest(environment=environment):
+                policy = self.configure(ENVIRONMENT=environment)
+                self.assertFalse(policy.secure)
+                self.assertEqual(policy.samesite, "lax")
 
     def test_configurable_samesite_keeps_state_lax(self):
         for samesite in ("lax", "strict", "none"):
@@ -171,7 +178,8 @@ class AuthHardeningTests(unittest.TestCase):
             self.assertTrue(state["httponly"] and state["secure"])
 
     def test_invalid_configuration_fails_without_echoing_values(self):
-        cases = [dict(ENVIRONMENT="prod-typo-private"), dict(COOKIE_SECURE="private-value"),
+        cases = [dict(ENVIRONMENT="prod-typo-private"), dict(ENVIRONMENT=""), dict(ENVIRONMENT="  "),
+                 dict(COOKIE_SECURE="private-value"),
                  dict(COOKIE_SAMESITE="private-value"), dict(COOKIE_SAMESITE="none", COOKIE_SECURE="false"),
                  dict(ENVIRONMENT="production", COOKIE_SECURE="false"),
                  dict(ENVIRONMENT="production", FRONTEND_URL="http://app.example.test"),

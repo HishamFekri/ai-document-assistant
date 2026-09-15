@@ -1,11 +1,12 @@
 """Run with python -B tests/test_resource_admission.py. No network/providers/DB."""
 
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from contextlib import ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
 import importlib
+import json
 import math
 import os
 from pathlib import Path
@@ -548,6 +549,136 @@ class ResourceAdmissionTests(unittest.TestCase):
             intent.assert_not_called()
             title.assert_not_called()
             answer.assert_not_called()
+
+    def answer_generator(self, provider):
+        llm = importlib.import_module("app.services.llm_service")
+        client = MagicMock()
+        client.chat.completions.create.return_value = provider
+        self.stack.enter_context(patch.object(llm, "client", client))
+        return llm.generate_answer_stream("Synthetic question", "", [], True)
+
+    def provider_stream(self, failure=None):
+        def chunks():
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="first"))])
+            if failure:
+                raise failure
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="second"))])
+        provider = MagicMock()
+        provider.__iter__.side_effect = chunks
+        return provider
+
+    def test_answer_sdk_stream_closes_once_on_completion_close_throw_and_iteration_failure(self):
+        for mode in ("complete", "close", "throw", "provider_failure"):
+            with self.subTest(mode=mode):
+                error = ValueError("synthetic private provider marker")
+                provider = self.provider_stream(error if mode == "provider_failure" else None)
+                answer = self.answer_generator(provider)
+                self.assertEqual(next(answer), "first")
+                provider.close.assert_not_called()
+                if mode == "complete":
+                    self.assertEqual(list(answer), ["second"])
+                elif mode == "close":
+                    answer.close()
+                else:
+                    with self.assertRaises(ValueError) as caught:
+                        answer.throw(error) if mode == "throw" else next(answer)
+                    self.assertIs(caught.exception, error)
+                answer.close()
+                answer.close()
+                provider.close.assert_called_once_with()
+
+    def test_answer_sdk_cleanup_error_preserves_original_failure_and_logs_no_payload(self):
+        error = ValueError("synthetic private provider marker")
+        provider = self.provider_stream(error)
+        provider.close.side_effect = RuntimeError("private cleanup secret")
+        answer = self.answer_generator(provider)
+        next(answer)
+        with self.assertLogs("app.services.llm_service", level="ERROR") as captured:
+            with self.assertRaises(ValueError) as caught:
+                next(answer)
+        self.assertIs(caught.exception, error)
+        self.assertNotIn("private", str(captured.records[0].__dict__))
+        self.assertEqual(captured.records[0].operation, "answer_stream_cleanup")
+        answer.close()
+        provider.close.assert_called_once_with()
+
+    def test_answer_sdk_stream_closes_after_inflight_read_on_disconnect(self):
+        entered, finish = Event(), Event()
+        provider = self.provider_stream()
+        def chunks():
+            entered.set()
+            if not finish.wait(5):
+                raise AssertionError("Mock provider not released")
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="late"))])
+        provider.__iter__.side_effect = chunks
+        permit = self.admission.acquire_permit(1, "chat")
+        iterator = self.admission.OwnedIterator(self.answer_generator(provider), permit)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(next, iterator)
+            try:
+                self.assertTrue(entered.wait(5))
+                iterator.close()
+                permit.release()
+                self.assertEqual(len(self.permits.slots), 1)
+                provider.close.assert_not_called()
+            finally:
+                finish.set()
+            future.result(timeout=5)
+        iterator.close()
+        provider.close.assert_called_once_with()
+        self.assertEqual(self.permits.slots, {})
+
+    def test_actual_chat_response_closes_sdk_on_normal_disconnect_cancel_and_provider_failure(self):
+        from starlette.requests import ClientDisconnect
+        for mode in ("complete", "disconnect", "cancel", "provider_failure"):
+            with self.subTest(mode=mode):
+                error = ValueError("synthetic private provider marker")
+                provider = self.provider_stream(error if mode == "provider_failure" else None)
+                answer = self.answer_generator(provider)
+                db, stream_db = MagicMock(), MagicMock()
+                db.refresh.side_effect = lambda row: setattr(row, "id", 13)
+                future = Future()
+                future.set_result(None)
+                events = []
+                async def receive():
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                async def send(message):
+                    if message["type"] == "http.response.body" and message.get("body"):
+                        event = json.loads(message["body"])
+                        events.append(event)
+                        if event["type"] == "token":
+                            if mode == "disconnect":
+                                raise OSError("synthetic disconnect")
+                            if mode == "cancel":
+                                raise asyncio.CancelledError()
+                with patch.object(self.chats, "get_owned_chat", return_value=SimpleNamespace(id=1, documents=[])), \
+                     patch.object(self.chats, "SessionLocal", return_value=stream_db), \
+                     patch.object(self.chats, "ThreadPoolExecutor"), \
+                     patch.object(self.chats, "submit_observed", return_value=future), \
+                     patch.object(self.chats, "generate_answer_stream", return_value=answer), \
+                     patch.object(self.chats, "prepare_answer_context", return_value={
+                         "immediate_answer": None, "context": "", "conversation_history": [],
+                         "candidate_sources": [], "mode": "general",
+                     }), self.admission.user_operation(1, "chat", rate=False) as permit:
+                    response = self.chats.ask_chat_stream(1, self.chats.AskRequest(
+                        question="Synthetic question", allow_general_knowledge=True,
+                    ), db, SimpleNamespace(id=1), permit)
+                    scope = {"type": "http", "asgi": {"spec_version": "2.4"}}
+                    expected = {"disconnect": ClientDisconnect, "cancel": asyncio.CancelledError}.get(mode)
+                    if expected:
+                        with self.assertRaises(expected):
+                            asyncio.run(response(scope, receive, send))
+                    else:
+                        asyncio.run(response(scope, receive, send))
+                    response.owned_iterator.close()
+                    response.owned_iterator.close()
+                provider.close.assert_called_once_with()
+                stream_db.close.assert_called_once_with()
+                self.assertEqual(self.permits.slots, {})
+                self.assertEqual(any(e["type"] == "done" for e in events), mode == "complete")
+                self.assertNotIn("private provider", str(events))
+                if mode == "provider_failure":
+                    self.assertEqual(events[-1]["type"], "error")
 
     def test_http_retry_over_limit_stops_before_dispatch(self):
         client = self.http_client()
