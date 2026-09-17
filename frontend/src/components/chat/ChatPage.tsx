@@ -1,4 +1,6 @@
 "use client";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
   useEffect,
@@ -48,11 +50,17 @@ type DocumentView =
   | "transcription";
 
 
-export default function ChatPage({
+export default function ChatPage(props: { draft?: boolean }) {
+  const params = useParams();
+  return <ChatWorkspace key={props.draft ? "draft" : String(params?.id)} {...props} />;
+}
+
+function ChatWorkspace({
   draft = false,
 }: {
   draft?: boolean;
 }) {
+  const uploadPolicy = useUploadPolicy();
   const params =
     useParams();
 
@@ -173,6 +181,8 @@ export default function ChatPage({
 
 
   const {
+    hasMoreChats, hasOlderMessages, loadingMoreChats, loadingOlderMessages,
+    loadMoreChats, loadOlderMessages,
     user,
     chat,
     chats,
@@ -486,6 +496,8 @@ export default function ChatPage({
   });
 
 
+  const previousMessageView = useRef<{ chatId: number | null; firstId?: number; height: number; top: number } | null>(null);
+
   useEffect(() => {
     if (
       chatLoading
@@ -493,6 +505,18 @@ export default function ChatPage({
       !== "chat"
     ) {
       return;
+    }
+
+    const container = messagesContainerRef.current;
+    const previous = previousMessageView.current;
+    const firstId = messages[0]?.id;
+    if (container) {
+      const olderPage = previous?.chatId === chatId && firstId !== undefined
+        && previous.firstId !== undefined && firstId !== previous.firstId
+        && messages.some((message) => message.id === previous.firstId);
+      if (olderPage) container.scrollTop = previous.top + container.scrollHeight - previous.height;
+      previousMessageView.current = { chatId, firstId, height: container.scrollHeight, top: container.scrollTop };
+      if (olderPage) return;
     }
 
     messagesEndRef
@@ -504,6 +528,7 @@ export default function ChatPage({
 
   }, [
     messages,
+    chatId,
     chatLoading,
     activeView,
   ]);
@@ -513,10 +538,6 @@ export default function ChatPage({
     if (
       activeView !== "chat"
     ) {
-      setShowScrollToBottom(
-        false
-      );
-
       return;
     }
 
@@ -840,6 +861,9 @@ export default function ChatPage({
     >
       <div className="hidden md:block">
         <ChatSidebar
+          hasMoreChats={hasMoreChats}
+          loadingMoreChats={loadingMoreChats}
+          onLoadMoreChats={loadMoreChats}
         user={
           user
         }
@@ -930,6 +954,9 @@ export default function ChatPage({
             "
           >
           <ChatSidebar
+          hasMoreChats={hasMoreChats}
+          loadingMoreChats={loadingMoreChats}
+          onLoadMoreChats={loadMoreChats}
             mobile
             onMobileClose={() =>
               setMobileSidebarOpen(false)
@@ -1389,6 +1416,18 @@ export default function ChatPage({
                           pb-8
                         "
                       >
+                        {hasOlderMessages && (
+                          <button type="button" disabled={loadingOlderMessages} onClick={() => {
+                            const container = messagesContainerRef.current;
+                            if (container) previousMessageView.current = {
+                              chatId, firstId: messages[0]?.id, height: container.scrollHeight, top: container.scrollTop,
+                            };
+                            void loadOlderMessages();
+                          }}
+                            className="rounded border px-3 py-2 text-sm disabled:opacity-50">
+                            {loadingOlderMessages ? "Loading messages..." : "Load older messages"}
+                          </button>
+                        )}
                         {messages.map(
                           (
                             message
@@ -1419,7 +1458,7 @@ export default function ChatPage({
               </section>
 
 
-              {showScrollToBottom && (
+              {activeView === "chat" && showScrollToBottom && (
                 <button
                   type="button"
                   onClick={scrollToBottom}
@@ -1658,7 +1697,7 @@ export default function ChatPage({
                             fileInputRef
                           }
                           type="file"
-                          accept=".pdf,.docx,.xlsx,.txt"
+                          accept={uploadPolicy.policy?.supported_extensions.join(",")}
                           onChange={
                             handleUpload
                           }
@@ -1674,6 +1713,7 @@ export default function ChatPage({
                           }
                           disabled={
                             uploading
+                            || !uploadPolicy.policy
                             || Boolean(
                               attachment
                             )
@@ -1705,16 +1745,7 @@ export default function ChatPage({
                           }
                         </button>
 
-                        <p
-                          className="
-                            mt-3
-                            text-xs
-                            leading-5
-                            text-[var(--text-muted)]
-                          "
-                        >
-                          PDF, DOCX, XLSX, or TXT
-                        </p>
+                        <UploadGuidance {...uploadPolicy} />
                       </div>
 
                     ) : workspaceChat

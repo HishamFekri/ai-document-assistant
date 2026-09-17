@@ -1,8 +1,18 @@
+from app.services.observability import log_exception, submit_observed
+from app.services.error_service import log_generation_failure
+from types import SimpleNamespace
+from app.services.database_queries import release_read_transaction
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
+from sqlalchemy.orm import selectinload
+from app.services.admission_dependencies import admit_chat, admit_search
+from app.services.resource_admission import (
+    Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
+)
 import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 import json
 
 from fastapi import (
@@ -13,8 +23,6 @@ from fastapi import (
 )
 
 from fastapi.responses import (
-    FileResponse,
-    RedirectResponse,
     StreamingResponse,
 )
 
@@ -76,6 +84,14 @@ from app.services.chat_summary_service import (
 
 from app.services.chat_title_service import (
     maybe_generate_chat_title,
+)
+
+
+from app.services.assets.image_delivery import image_file_response
+from app.services.assets.image_references import (
+    chunk_image_url,
+    normalize_image_metadata,
+    safe_asset_filename,
 )
 
 
@@ -273,38 +289,16 @@ def create_chat(
         ChatResponse
     ],
 )
-def get_chats(
-    limit: int | None = Query(default=None, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    query = (
-        db.query(Chat)
-        .filter(
-            Chat.user_id
-            == current_user.id,
-            db.query(Message.id)
-            .filter(
-                Message.chat_id
-                == Chat.id
-            )
-            .exists(),
-        )
-        .order_by(
-            Chat.is_archived.asc(),
-            Chat.is_pinned.desc(),
-            Chat.created_at.desc(),
-            Chat.id.desc(),
-        )
-    )
-
-    if limit is not None:
-        query = query.offset(offset).limit(limit)
-
-    return query.all()
+def get_chats(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+              cursor: str | None = Query(None, max_length=2048), offset: int = Query(0, ge=0),
+              db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Chat).options(selectinload(Chat.documents)).filter(
+        Chat.user_id == current_user.id,
+        db.query(Message.id).filter(Message.chat_id == Chat.id).exists())
+    return paginated(query, [(Chat.is_archived, False), (Chat.is_pinned, True),
+                             (Chat.created_at, True), (Chat.id, True)],
+                     owner=current_user.id, scope='chats', response=response,
+                     limit=limit, cursor=cursor, offset=offset)
 
 
 @router.get(
@@ -614,37 +608,15 @@ def create_message(
         MessageResponse
     ],
 )
-def get_chat_messages(
-    chat_id: int,
-    limit: int | None = Query(default=None, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    get_owned_chat(
-        db=db,
-        chat_id=chat_id,
-        current_user=current_user,
-    )
-
-    query = (
-        db.query(Message)
-        .filter(
-            Message.chat_id
-            == chat_id
-        )
-        .order_by(
-            Message.created_at,
-            Message.id,
-        )
-    )
-
-    if limit is not None:
-        query = query.offset(offset).limit(limit)
-
-    return query.all()
+def get_chat_messages(chat_id: int, response: Response,
+                      limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                      cursor: str | None = Query(None, max_length=2048), offset: int = Query(0, ge=0),
+                      db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    get_owned_chat(db=db, chat_id=chat_id, current_user=current_user)
+    query = db.query(Message).options(selectinload(Message.documents)).filter(Message.chat_id == chat_id)
+    return paginated(query, [(Message.created_at, True), (Message.id, True)],
+                     owner=current_user.id, scope=f'messages:{chat_id}', response=response,
+                     limit=limit, cursor=cursor, offset=offset, reverse=True)
 
 
 @router.post(
@@ -657,6 +629,7 @@ def search_chat_documents(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_search, scope="request"),
 ):
     query = (
         data.query.strip()
@@ -723,6 +696,7 @@ def search_chat_documents(
         == current_user.id
     ]
 
+    admission.check()
     results = (
         search_similar_chunks(
             db=db,
@@ -754,10 +728,11 @@ def search_chat_documents(
                     "chunk"
                 ].location,
 
-            "metadata":
-                result[
-                    "chunk"
-                ].chunk_metadata,
+            "metadata": normalize_image_metadata(
+                result["chunk"].chunk_metadata,
+                chunk_image_url(result["chunk"].document_id, result["chunk"].id)
+                if result["chunk"].content_type == "image" else None,
+            ),
 
             "content":
                 result[
@@ -787,6 +762,7 @@ def ask_chat(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     question = validate_question(
         data.question
@@ -828,6 +804,7 @@ def ask_chat(
                 ),
             )
 
+    admission.check()
     intent = {
         "action": "chat",
         "document_ids": [],
@@ -836,14 +813,14 @@ def ask_chat(
 
     if chat.documents:
         try:
+            intent_documents = [SimpleNamespace(id=d.id, filename=d.filename) for d in list(chat.documents)]
+            release_read_transaction(db)
             intent = detect_chat_intent(
                 question=question,
-                documents=list(chat.documents),
+                documents=intent_documents,
             )
         except Exception:
-            logger.exception(
-                "Chat intent detection failed"
-            )
+            log_exception(logger, 'chat_intent_detection_failed')
 
     user_message = Message(
         chat_id=chat_id,
@@ -882,9 +859,7 @@ def ask_chat(
         )
 
     except Exception:
-        logger.exception(
-            "Chat title generation failed"
-        )
+        log_exception(logger, 'chat_title_generation_failed')
 
     try:
         action = intent.get(
@@ -1063,7 +1038,19 @@ def ask_chat(
 
         return result
 
+    except ResourceRejected:
+        db.rollback()
+        stored = db.get(Message, user_message.id)
+        if stored:
+            stored.status = "failed"
+            stored.error = "Answer generation failed"
+            db.commit()
+        raise
+
     except ValueError as error:
+        public_error = log_generation_failure(
+            error, "message", chat_id=chat_id, message_id=user_message.id,
+        )
         db.rollback()
 
         stored_user_message = db.get(
@@ -1080,15 +1067,13 @@ def ask_chat(
 
         raise HTTPException(
             status_code=400,
-            detail=str(error),
-        )
+            detail=public_error,
+        ) from None
 
     except Exception:
         db.rollback()
 
-        logger.exception(
-            "Chat answer generation failed"
-        )
+        log_exception(logger, 'chat_answer_generation_failed')
 
         stored_user_message = db.get(
             Message,
@@ -1118,6 +1103,7 @@ def ask_chat_stream(
     current_user: User = Depends(
         get_current_user
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     question = validate_question(
         data.question
@@ -1216,6 +1202,7 @@ def ask_chat_stream(
             ),
         )
 
+    admission.check()
     intent = {
         "action": "chat",
         "document_ids": [],
@@ -1224,17 +1211,17 @@ def ask_chat_stream(
 
     if request_documents:
         try:
+            intent_documents = [SimpleNamespace(id=d.id, filename=d.filename) for d in request_documents]
+            release_read_transaction(db)
             intent = detect_chat_intent(
                 question=question,
                 documents=(
-                    request_documents
+                    intent_documents
                 ),
             )
 
         except Exception:
-            logger.exception(
-                "Chat intent detection failed"
-            )
+            log_exception(logger, 'chat_intent_detection_failed')
 
     current_user_id = (
         current_user.id
@@ -1272,6 +1259,8 @@ def ask_chat_stream(
         user_message.id
     )
 
+    release_read_transaction(db)
+
     def generate():
         stream_db = (
             SessionLocal()
@@ -1282,8 +1271,10 @@ def ask_chat_stream(
         title_executor = None
         title_future = None
         title_event_sent = False
+        answer_stream = None
 
         def generate_chat_title():
+            admission.check()
             title_db = SessionLocal()
 
             try:
@@ -1317,9 +1308,7 @@ def ask_chat_stream(
                 return title_future.result()
 
             except Exception:
-                logger.exception(
-                    "Background chat title generation failed"
-                )
+                log_exception(logger, 'background_chat_title_generation_failed')
 
                 return None
 
@@ -1356,11 +1345,16 @@ def ask_chat_stream(
             )
         )
 
-        title_future = (
-            title_executor.submit(
-                generate_chat_title
-            )
-        )
+        admission.retain()
+        try:
+            title_future = submit_observed(title_executor, generate_chat_title)
+        except BaseException:
+            admission.release()
+            title_executor.shutdown(wait=False)
+            stream_db.close()
+            raise
+        title_future.add_done_callback(lambda completed: admission.release())
+
 
         try:
             if message_document_ids:
@@ -1775,6 +1769,7 @@ def ask_chat_stream(
                     )
 
                 else:
+                    release_read_transaction(stream_db)
                     answer_stream = (
                         generate_answer_stream(
                             question=question,
@@ -1946,12 +1941,19 @@ def ask_chat_stream(
                 + "\n"
             )
 
+        except ResourceRejected as error:
+            stream_db.rollback()
+            stored = stream_db.get(Message, user_message_id)
+            if stored:
+                stored.status = "failed"
+                stored.error = "Answer generation failed"
+                stream_db.commit()
+            yield json.dumps(stream_resource_error(error)) + "\n"
+
         except Exception:
             stream_db.rollback()
 
-            logger.exception(
-                "Chat stream failed"
-            )
+            log_exception(logger, 'chat_stream_failed')
 
             stored_user_message = (
                 stream_db.get(
@@ -1985,6 +1987,11 @@ def ask_chat_stream(
             )
 
         finally:
+            if answer_stream is not None:
+                try:
+                    answer_stream.close()
+                except Exception:
+                    log_exception(logger, "chat_stream_cleanup", chat_id=chat_id, message_id=user_message_id)
             if title_executor is not None:
                 title_executor.shutdown(
                     wait=False
@@ -1992,8 +1999,8 @@ def ask_chat_stream(
 
             stream_db.close()
 
-    return StreamingResponse(
-        generate(),
+    return AdmittedStreamingResponse(
+        generate(), admission,
         media_type=(
             "application/x-ndjson"
         ),
@@ -2025,22 +2032,9 @@ def get_document_asset(
         )
     )
 
-    safe_filename = (
-        Path(
-            asset_filename
-        ).name
-    )
-
-    if (
-        safe_filename
-        != asset_filename
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Invalid asset filename"
-            ),
-        )
+    if not safe_asset_filename(asset_filename):
+        raise HTTPException(status_code=400, detail="Invalid asset filename")
+    safe_filename = asset_filename
 
     assets = (
         db.query(
@@ -2150,32 +2144,13 @@ def get_document_asset(
             if not asset_path:
                 continue
 
-            asset_path = str(
-                asset_path
-            ).strip()
-
-            if asset_path.startswith(
-                (
-                    "https://",
-                    "http://",
-                )
-            ):
-                return RedirectResponse(
-                    url=asset_path,
-                    status_code=307,
-                )
-
-            path = Path(
-                asset_path
-            ).resolve()
-
-            if (
-                path.exists()
-                and path.is_file()
-            ):
-                return FileResponse(
-                    path=path
-                )
+            try:
+                return image_file_response(asset_path, document)
+            except HTTPException as error:
+                # Preserve the legacy search for another matching local file
+                # when an earlier chunk refers to a file that no longer exists.
+                if error.status_code != 404:
+                    raise
 
     if matched_asset is None:
         raise HTTPException(
@@ -2185,60 +2160,7 @@ def get_document_asset(
             ),
         )
 
-    asset_path = (
-        matched_asset.file_path
-    )
-
-    if not asset_path:
-        metadata = (
-            matched_asset.asset_metadata
-            or {}
-        )
-
-        asset_path = (
-            metadata.get(
-                "asset_path"
-            )
-        )
-
-    if not asset_path:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Image path not found"
-            ),
-        )
-
-    asset_path = str(
-        asset_path
-    ).strip()
-
-    if asset_path.startswith(
-        (
-            "https://",
-            "http://",
-        )
-    ):
-        return RedirectResponse(
-            url=asset_path,
-            status_code=307,
-        )
-
-    path = Path(
-        asset_path
-    ).resolve()
-
-    if (
-        not path.exists()
-        or not path.is_file()
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Image file not found"
-            ),
-        )
-
-    return FileResponse(
-        path=path
+    return image_file_response(
+        matched_asset.file_path or (matched_asset.asset_metadata or {}).get("asset_path"),
+        document,
     )

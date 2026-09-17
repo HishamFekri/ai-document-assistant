@@ -1,5 +1,10 @@
+from app.services.observability import log_event, log_exception
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
+from fastapi import Query
 import os
-import zipfile
+import logging
+from starlette.concurrency import run_in_threadpool
 
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +21,7 @@ from fastapi import (
 )
 
 from sqlalchemy.orm import Session
+from sqlalchemy import update
 
 from app.database.database import get_db
 
@@ -39,23 +45,24 @@ from app.services.file_service import (
 from app.services.task_queue import (
     enqueue_document_processing,
 )
+from app.services.document_processing_claim import claim_document_processing
+from app.services.embedding_completeness_service import inspect_embeddings
+from app.services.error_service import log_generation_failure
+from app.services.upload_quota_service import upload_quota_session
+from app.services.resource_limits import upload_limits
+from app.services.upload_validation import validate_document_source
+from app.services.upload_ingress import UploadRoute
+from app.services.document_resource_errors import DocumentResourceError
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
-MAX_UPLOAD_SIZE_MB = int(
-    os.getenv(
-        "MAX_UPLOAD_SIZE_MB",
-        "50",
-    )
-)
+# Compatibility aliases; values come from the centralized upload policy.
+MAX_UPLOAD_SIZE_MB = upload_limits().file_bytes // 1024**2
+MAX_UPLOAD_SIZE_BYTES = upload_limits().file_bytes
 
-MAX_UPLOAD_SIZE_BYTES = (
-    MAX_UPLOAD_SIZE_MB
-    * 1024
-    * 1024
-)
 
 MAX_FILENAME_LENGTH = 255
 
@@ -63,6 +70,7 @@ MAX_FILENAME_LENGTH = 255
 router = APIRouter(
     prefix="/documents",
     tags=["Documents"],
+    route_class=UploadRoute,
 )
 
 
@@ -123,177 +131,20 @@ async def validate_file_size(
     )
 
     if file_size <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Uploaded file is empty",
-        )
+        raise DocumentResourceError("empty_file", 400)
 
     if file_size > MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"File is too large. "
-                f"Maximum allowed size is "
-                f"{MAX_UPLOAD_SIZE_MB} MB."
-            ),
-        )
+        raise DocumentResourceError("file_size")
 
 
-def validate_pdf(
-    file: UploadFile,
-):
-    file.file.seek(0)
 
-    header = file.file.read(
-        5
-    )
-
-    file.file.seek(0)
-
-    if header != b"%PDF-":
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid PDF file",
-        )
+def validate_file_content(file: UploadFile, extension: str):
+    validate_document_source(file.file, extension)
 
 
-def validate_office_zip(
-    file: UploadFile,
-    extension: str,
-):
-    file.file.seek(0)
-
-    try:
-        if not zipfile.is_zipfile(
-            file.file
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid "
-                    f"{extension.upper().lstrip('.')} "
-                    f"file"
-                ),
-            )
-
-        file.file.seek(0)
-
-        with zipfile.ZipFile(
-            file.file
-        ) as archive:
-            names = (
-                archive.namelist()
-            )
-
-            if (
-                "[Content_Types].xml"
-                not in names
-            ):
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "Invalid Office document"
-                    ),
-                )
-
-            if extension == ".docx":
-                valid = any(
-                    name.startswith(
-                        "word/"
-                    )
-                    for name in names
-                )
-
-            elif extension == ".xlsx":
-                valid = any(
-                    name.startswith(
-                        "xl/"
-                    )
-                    for name in names
-                )
-
-            else:
-                valid = False
-
-            if not valid:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"File content does not "
-                        f"match {extension}"
-                    ),
-                )
-
-    except zipfile.BadZipFile as error:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Office document",
-        ) from error
-
-    finally:
-        file.file.seek(0)
-
-
-def validate_txt(
-    file: UploadFile,
-):
-    file.file.seek(0)
-
-    sample = file.file.read(
-        8192
-    )
-
-    file.file.seek(0)
-
-    if b"\x00" in sample:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid TXT file",
-        )
-
-    try:
-        sample.decode(
-            "utf-8-sig"
-        )
-
-    except UnicodeDecodeError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "TXT files must use "
-                "UTF-8 encoding"
-            ),
-        ) from error
-
-
-def validate_file_content(
-    file: UploadFile,
-    extension: str,
-):
-    if extension == ".pdf":
-        validate_pdf(
-            file
-        )
-
-    elif extension in {
-        ".docx",
-        ".xlsx",
-    }:
-        validate_office_zip(
-            file,
-            extension,
-        )
-
-    elif extension == ".txt":
-        validate_txt(
-            file
-        )
-
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported file type",
-        )
+@router.get("/upload-policy")
+def get_upload_policy(current_user: User = Depends(get_current_user)):
+    return upload_limits().public_policy()
 
 
 @router.post(
@@ -308,6 +159,8 @@ async def upload_document(
         get_current_user
     ),
 ):
+    owner_id = current_user.id
+    db.rollback()
     original_filename = Path(
         file.filename or "document"
     ).name
@@ -326,157 +179,199 @@ async def upload_document(
     ).suffix.lower()
 
     if extension not in SUPPORTED_FILE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Unsupported file type. "
-                "Allowed: PDF, DOCX, XLSX, TXT"
-            ),
-        )
+        raise DocumentResourceError("unsupported_file", 400)
 
     await validate_file_size(
         file
     )
 
-    validate_file_content(
-        file,
-        extension,
-    )
+    with upload_quota_session(owner_id, incoming_bytes=get_file_size(file)) as quota_db:
+        await run_in_threadpool(
+            validate_file_content,
+            file,
+            extension,
+        )
 
-    stored_filename = (
-        f"{uuid4().hex}"
-        f"{extension}"
-    )
+        stored_filename = (
+            f"{uuid4().hex}"
+            f"{extension}"
+        )
 
-    file_path = (
-        UPLOAD_DIR
-        / stored_filename
-    )
+        file_path = (
+            UPLOAD_DIR
+            / stored_filename
+        )
 
-    try:
-        bytes_written = 0
+        try:
+            bytes_written = 0
 
-        file.file.seek(0)
+            file.file.seek(0)
 
-        with open(
-            file_path,
-            "wb",
-        ) as buffer:
-            while True:
-                chunk = file.file.read(
-                    1024 * 1024
-                )
-
-                if not chunk:
-                    break
-
-                bytes_written += len(
-                    chunk
-                )
-
-                if (
-                    bytes_written
-                    > MAX_UPLOAD_SIZE_BYTES
-                ):
-                    raise HTTPException(
-                        status_code=413,
-                        detail=(
-                            "File is too large. "
-                            "Maximum allowed size is "
-                            f"{MAX_UPLOAD_SIZE_MB} MB."
-                        ),
+            with open(
+                file_path,
+                "wb",
+            ) as buffer:
+                while True:
+                    chunk = file.file.read(
+                        1024 * 1024
                     )
 
-                buffer.write(
-                    chunk
-                )
+                    if not chunk:
+                        break
 
-    except Exception as error:
-        file_path.unlink(
-            missing_ok=True
+                    bytes_written += len(
+                        chunk
+                    )
+
+                    if (
+                        bytes_written
+                        > MAX_UPLOAD_SIZE_BYTES
+                    ):
+                        raise DocumentResourceError("file_size")
+
+                    buffer.write(
+                        chunk
+                    )
+
+        except Exception as error:
+            file_path.unlink(
+                missing_ok=True
+            )
+
+            if isinstance(
+                error,
+                HTTPException,
+            ):
+                raise
+
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "Could not save uploaded file"
+                ),
+            ) from error
+
+        document = Document(
+            user_id=owner_id,
+            filename=original_filename,
+            file_type=extension.lstrip("."),
+            file_path=str(file_path),
+            pages_count=None,
+
+            processing_status="processing",
+            processing_stage="uploaded",
+            processing_progress=5,
+            processing_error=None,
         )
 
-        if isinstance(
-            error,
-            HTTPException,
-        ):
-            raise
+        try:
+            quota_db.add(
+                document
+            )
 
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Could not save uploaded file"
-            ),
-        ) from error
+            quota_db.commit()
 
-    document = Document(
-        user_id=current_user.id,
-        filename=original_filename,
-        file_type=extension.lstrip("."),
-        file_path=str(file_path),
-        pages_count=None,
+            quota_db.refresh(
+                document
+            )
 
-        processing_status="processing",
-        processing_stage="uploaded",
-        processing_progress=5,
-        processing_error=None,
-    )
+        except Exception as error:
+            quota_db.rollback()
 
-    try:
-        db.add(
-            document
-        )
+            file_path.unlink(
+                missing_ok=True
+            )
 
-        db.commit()
+            raise HTTPException(
+                status_code=500,
+                detail="Could not create document",
+            ) from error
 
-        db.refresh(
-            document
-        )
-
-    except Exception as error:
-        db.rollback()
-
-        file_path.unlink(
-            missing_ok=True
-        )
-
-        raise HTTPException(
-            status_code=500,
-            detail="Could not create document",
-        ) from error
-
-    enqueue_document_processing(
+        # Copy the response before ending the refresh transaction. Dispatch must not
+        # retain a database transaction while waiting on the broker.
+        response = DocumentResponse.model_validate(document)
+        document_id = document.id
+        quota_db.rollback()
+    return dispatch_uploaded_document(
+        db=db,
         background_tasks=background_tasks,
-        document_id=document.id,
+        document_id=document_id,
         file_path=str(file_path),
+        response=response,
     )
 
-    return document
+
+def dispatch_uploaded_document(db, background_tasks, document_id, file_path, response):
+    log_event(logger, logging.INFO, "document_dispatch_attempted", document_id=document_id)
+    try:
+        enqueue_document_processing(background_tasks, document_id, file_path)
+    except Exception as error:
+        log_generation_failure(error, "document", document_id=document_id)
+        # An ambiguous broker response may already have reached a worker. Never
+        # overwrite a worker's progress or successful completion.
+        db.execute(update(Document).where(
+            Document.id == document_id,
+            Document.processing_status == "processing",
+            Document.processing_stage == "uploaded",
+        ).values(
+            processing_status="failed", processing_stage="dispatch_failed",
+            processing_error="Document processing could not be scheduled. Please retry.",
+        ).execution_options(synchronize_session=False))
+        db.commit()
+        document = db.get(Document, document_id, populate_existing=True)
+        if document is None:
+            db.rollback()
+            raise HTTPException(status_code=404, detail="Document not found") from None
+        response = DocumentResponse.model_validate(document)
+        db.rollback()
+        log_event(logger, logging.WARNING, "document_dispatch_failed", document_id=document_id)
+    return response
+
+
+@router.post("/{document_id}/retry", response_model=DocumentResponse)
+def retry_document_processing(
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    owner_id = current_user.id
+    get_owned_document(db, document_id, current_user)
+    db.rollback()
+    with claim_document_processing(document_id) as claim:
+        if claim is None:
+            raise HTTPException(status_code=409, detail="Document processing is already active")
+        with upload_quota_session(owner_id, retry_document_id=document_id):
+            with claim.session() as processing_db:
+                document = processing_db.get(Document, document_id, with_for_update=True)
+                if document is None or document.user_id != owner_id:
+                    raise HTTPException(status_code=404, detail="Document not found")
+                if document.processing_status == "ready":
+                    if inspect_embeddings(processing_db, [document_id])[0].complete:
+                        return DocumentResponse.model_validate(document)
+                    raise HTTPException(status_code=409, detail="Document requires explicit embedding recovery")
+                if not document.file_path:
+                    raise HTTPException(status_code=409, detail="Document source is unavailable")
+                document.processing_status = "processing"
+                document.processing_stage = "uploaded"
+                document.processing_progress = 5
+                document.processing_error = None
+                file_path = document.file_path
+                response = DocumentResponse.model_validate(document)
+    # Release the claim before submission so an immediately delivered task can run.
+    return dispatch_uploaded_document(db, background_tasks, document_id, file_path, response)
 
 
 @router.get(
     "",
     response_model=list[DocumentResponse],
 )
-def get_documents(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(
-        get_current_user
-    ),
-):
-    documents = (
-        db.query(Document)
-        .filter(
-            Document.user_id
-            == current_user.id
-        )
-        .order_by(
-            Document.created_at.desc()
-        )
-        .all()
-    )
-
-    return documents
+def get_documents(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+                  cursor: str | None = Query(None, max_length=2048),
+                  db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    query = db.query(Document).filter(Document.user_id == current_user.id)
+    return paginated(query, [(Document.created_at, True), (Document.id, True)],
+                     owner=current_user.id, scope='documents', response=response, limit=limit, cursor=cursor)
 
 
 @router.get(
@@ -544,11 +439,7 @@ def delete_document(
             )
 
         except Exception as error:
-            print(
-                "[WARNING] Could not "
-                "delete physical file: "
-                f"{error}"
-            )
+            log_exception(logger, "delete_document_file", error, document_id=document_id)
 
     return {
         "message": (

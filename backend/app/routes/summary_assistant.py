@@ -1,3 +1,8 @@
+import logging
+from app.services.observability import log_exception
+from app.services.error_service import log_generation_failure
+from app.services.admission_dependencies import admit_chat
+from app.services.resource_admission import Permit
 from fastapi import (
     APIRouter,
     Depends,
@@ -193,6 +198,7 @@ def create_summary_assistant_message(
     db: Session = Depends(
         get_db
     ),
+    admission: Permit = Depends(admit_chat, scope="request"),
 ):
     _, document = get_chat_document(
         chat_id=data.chat_id,
@@ -252,16 +258,13 @@ def create_summary_assistant_message(
     except ValueError as error:
         raise HTTPException(
             status_code=400,
-            detail=str(
-                error
+            detail=log_generation_failure(
+                error, "message", chat_id=data.chat_id, document_id=document_id,
             ),
-        )
+        ) from None
 
     except Exception as error:
-        print(
-            "[SUMMARY ASSISTANT ERROR]",
-            error,
-        )
+        log_exception(logging.getLogger(__name__), "summary_assistant", error, document_id=document_id)
 
         raise HTTPException(
             status_code=500,

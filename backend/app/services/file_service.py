@@ -17,12 +17,10 @@ from app.services.text_service import (
 )
 
 
-SUPPORTED_FILE_TYPES = {
-    ".pdf",
-    ".docx",
-    ".xlsx",
-    ".txt",
-}
+from app.services.resource_limits import SUPPORTED_UPLOAD_TYPES
+
+SUPPORTED_FILE_TYPES = set(SUPPORTED_UPLOAD_TYPES)
+
 
 
 def extract_content(

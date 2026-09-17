@@ -175,7 +175,8 @@ async function parseError(
 export async function getSummaryAssistantMessages(
   token: string,
   chatId: number,
-  documentId: number
+  documentId: number,
+  signal?: AbortSignal
 ): Promise<SummaryAssistantMessage[]> {
   const response =
     await fetch(
@@ -190,6 +191,7 @@ export async function getSummaryAssistantMessages(
           "GET",
 
         credentials: "include",
+        signal,
 
         headers:
           buildAuthHeaders(
@@ -224,7 +226,8 @@ export async function sendSummaryAssistantMessage(
   token: string,
   chatId: number,
   documentId: number,
-  content: string
+  content: string,
+  signal?: AbortSignal
 ): Promise<SummaryAssistantReplyResponse> {
   const response =
     await fetch(
@@ -238,6 +241,7 @@ export async function sendSummaryAssistantMessage(
           "POST",
 
         credentials: "include",
+        signal,
 
         headers:
           buildJsonHeaders(
@@ -271,7 +275,8 @@ export async function sendSummaryAssistantMessage(
 export async function resetSummaryAssistant(
   token: string,
   chatId: number,
-  documentId: number
+  documentId: number,
+  signal?: AbortSignal
 ): Promise<{
   message: string;
 
@@ -290,6 +295,7 @@ export async function resetSummaryAssistant(
           "DELETE",
 
         credentials: "include",
+        signal,
 
         headers:
           buildAuthHeaders(

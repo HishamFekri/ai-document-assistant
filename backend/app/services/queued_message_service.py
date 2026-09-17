@@ -1,4 +1,11 @@
+import logging
+from app.services.observability import log_event
+from app.services.database_queries import iter_query_batches
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from app.services.resource_admission import user_operation
+
+from app.services.error_service import log_generation_failure
 
 from app.database.database import (
     SessionLocal,
@@ -6,7 +13,9 @@ from app.database.database import (
 
 from app.database.models import (
     Chat,
+    Document,
     Message,
+    chat_documents,
 )
 
 from app.services.rag_service import (
@@ -88,117 +97,85 @@ def process_waiting_message(
     if not message:
         return
 
+    # Keep context available even if rollback expires or deletes the record.
+    message_id = message.id
+    chat_id = message.chat_id
     try:
-        result = answer_question(
-            db=db,
-            chat_id=message.chat_id,
-            question=message.content,
-        )
+        owner_id = db.scalar(select(Chat.user_id).where(Chat.id == chat_id))
+        with user_operation(owner_id, "chat"):
+            result = answer_question(
+                db=db,
+                chat_id=message.chat_id,
+                question=message.content,
+            )
 
-        assistant_message = Message(
-            chat_id=message.chat_id,
-            role="assistant",
-            content=result["answer"],
-            status="completed",
-            error=None,
-            sources=result["sources"],
-        )
+            assistant_message = Message(
+                chat_id=message.chat_id,
+                role="assistant",
+                content=result["answer"],
+                status="completed",
+                error=None,
+                sources=result["sources"],
+            )
 
-        db.add(
-            assistant_message
-        )
+            db.add(
+                assistant_message
+            )
 
-        message.status = "completed"
-        message.error = None
+            message.status = "completed"
+            message.error = None
 
-        db.commit()
+            db.commit()
 
-        print(
-            "[QUEUE] Message "
-            f"{message.id} completed"
-        )
+            log_event(logging.getLogger(__name__), logging.INFO, "queued_message_completed", message_id=message.id)
 
     except Exception as error:
+        public_error = log_generation_failure(
+            error,
+            "message",
+            chat_id=chat_id,
+            message_id=message_id,
+        )
         db.rollback()
 
         message = db.get(
             Message,
-            message.id,
+            message_id,
         )
 
         if message:
             message.status = "failed"
-            message.error = str(
-                error
-            )
+            message.error = public_error
 
             db.commit()
 
-        print(
-            "[QUEUE] Message "
-            f"{message.id if message else 'unknown'} "
-            f"failed: {error}"
-        )
 
-
-def process_waiting_messages_for_document(
-    document_id: int,
-):
+def process_waiting_messages_for_document(document_id: int):
     db = SessionLocal()
-
     try:
-        chats = (
-            db.query(Chat)
-            .filter(
-                Chat.documents.any(
-                    id=document_id
-                )
-            )
-            .all()
-        )
-
-        for chat in chats:
-            waiting_messages = (
-                db.query(Message)
-                .filter(
-                    Message.chat_id == chat.id,
-                    Message.role == "user",
-                    Message.status == "waiting",
-                )
-                .order_by(
-                    Message.created_at
-                )
-                .all()
-            )
-
-            if not waiting_messages:
-                continue
-
-            if chat_has_failed_documents(
-                chat
-            ):
-                for message in waiting_messages:
-                    mark_message_failed(
-                        db=db,
-                        message=message,
-                        error=(
-                            "One or more documents "
-                            "failed to process."
-                        ),
-                    )
-
-                continue
-
-            if not chat_documents_are_ready(
-                chat
-            ):
-                continue
-
-            for message in waiting_messages:
-                process_waiting_message(
-                    db=db,
-                    message=message,
-                )
-
+        query = (db.query(Message.id, Message.chat_id, Message.created_at)
+                 .join(Chat, Chat.id == Message.chat_id)
+                 .filter(Chat.documents.any(id=document_id), Message.role == 'user', Message.status == 'waiting'))
+        for batch in iter_query_batches(query, [Message.chat_id, Message.created_at, Message.id]):
+            # Project readiness once per batch. Plain values survive processing
+            # commits without reloading expired ORM attachment relationships.
+            readiness = {}
+            statuses = (db.query(chat_documents.c.chat_id, Document.processing_status)
+                        .join(Document, Document.id == chat_documents.c.document_id)
+                        .filter(chat_documents.c.chat_id.in_({row.chat_id for row in batch})).all())
+            for chat_id, status in statuses:
+                failed, ready = readiness.get(chat_id, (False, True))
+                readiness[chat_id] = (failed or status == 'failed', ready and status == 'ready')
+            for row in batch:
+                failed, ready = readiness.get(row.chat_id, (False, False))
+                if not failed and not ready:
+                    continue
+                message = db.get(Message, row.id)
+                if message is None or message.status != 'waiting':
+                    continue
+                if failed:
+                    mark_message_failed(db=db, message=message, error='One or more documents failed to process.')
+                elif ready:
+                    process_waiting_message(db=db, message=message)
     finally:
         db.close()

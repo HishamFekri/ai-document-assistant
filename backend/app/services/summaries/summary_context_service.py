@@ -1,7 +1,9 @@
+from app.services.database_queries import iter_query
 import re
 
 from sqlalchemy.orm import Session
 
+from app.services.retrieval_conventions import original_page, normalized_location, source_location
 from app.database.models import (
     Document,
     DocumentChunk,
@@ -50,80 +52,8 @@ def trim_text(
     )
 
 
-def extract_page_number(
-    location: str | None,
-    metadata: dict | None = None,
-) -> int | None:
-    metadata = (
-        metadata
-        if isinstance(
-            metadata,
-            dict,
-        )
-        else {}
-    )
-
-    metadata_page = (
-        metadata.get("page")
-        or metadata.get("page_number")
-        or metadata.get("page_num")
-    )
-
-    if metadata_page is not None:
-        try:
-            page_number = int(
-                metadata_page
-            )
-
-            if page_number > 0:
-                return page_number
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            pass
-
-    normalized_location = (
-        normalize_text(
-            location
-        )
-    )
-
-    if not normalized_location:
-        return None
-
-    patterns = [
-        r"\bpage\s*[:#\-]?\s*(\d+)\b",
-        r"\bpage\s+(\d+)\b",
-        r"صفحة\s*[:#\-]?\s*(\d+)",
-    ]
-
-    for pattern in patterns:
-        match = re.search(
-            pattern,
-            normalized_location,
-            flags=re.IGNORECASE,
-        )
-
-        if not match:
-            continue
-
-        try:
-            page_number = int(
-                match.group(1)
-            )
-
-        except (
-            TypeError,
-            ValueError,
-        ):
-            continue
-
-        if page_number > 0:
-            return page_number
-
-    return None
+def extract_page_number(location: str | None, metadata: dict | None = None) -> int | None:
+    return original_page(location, metadata)
 
 
 def get_chunk_page_number(
@@ -153,9 +83,7 @@ def get_asset_page_number(
 def format_chunk(
     chunk: DocumentChunk,
 ) -> str:
-    location = normalize_text(
-        chunk.location
-    )
+    location = normalize_text(source_location(chunk))
 
     content_type = normalize_text(
         chunk.content_type
@@ -190,9 +118,7 @@ def format_chunk(
 def format_image_asset(
     asset: DocumentAsset,
 ) -> str:
-    location = normalize_text(
-        asset.location
-    )
+    location = normalize_text(normalized_location(asset.location, asset.asset_metadata))
 
     title = normalize_text(
         asset.title
@@ -233,9 +159,7 @@ def format_image_asset(
 def format_table_asset(
     asset: DocumentAsset,
 ) -> str:
-    location = normalize_text(
-        asset.location
-    )
+    location = normalize_text(normalized_location(asset.location, asset.asset_metadata))
 
     title = normalize_text(
         asset.title
@@ -285,9 +209,7 @@ def format_table_asset(
 def format_equation_asset(
     asset: DocumentAsset,
 ) -> str:
-    location = normalize_text(
-        asset.location
-    )
+    location = normalize_text(normalized_location(asset.location, asset.asset_metadata))
 
     title = normalize_text(
         asset.title
@@ -702,19 +624,7 @@ def build_text_context(
     page_numbers:
         set[int] | None = None,
 ) -> str:
-    chunks = (
-        db.query(
-            DocumentChunk
-        )
-        .filter(
-            DocumentChunk.document_id
-            == document_id
-        )
-        .order_by(
-            DocumentChunk.id.asc()
-        )
-        .all()
-    )
+    chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id == document_id).order_by(DocumentChunk.id.asc()), [DocumentChunk.id])
 
     if not chunks:
         return ""
@@ -786,19 +696,7 @@ def build_asset_context(
     page_numbers:
         set[int] | None = None,
 ) -> str:
-    assets = (
-        db.query(
-            DocumentAsset
-        )
-        .filter(
-            DocumentAsset.document_id
-            == document_id
-        )
-        .order_by(
-            DocumentAsset.id.asc()
-        )
-        .all()
-    )
+    assets = iter_query(db.query(DocumentAsset).filter(DocumentAsset.document_id == document_id).order_by(DocumentAsset.id.asc()), [DocumentAsset.id])
 
     if not assets:
         return ""
@@ -875,33 +773,9 @@ def build_transcription_pages(
     selected_page_numbers:
         set[int] | None = None,
 ) -> list[dict]:
-    chunks = (
-        db.query(
-            DocumentChunk
-        )
-        .filter(
-            DocumentChunk.document_id
-            == document.id
-        )
-        .order_by(
-            DocumentChunk.id.asc()
-        )
-        .all()
-    )
+    chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id == document.id).order_by(DocumentChunk.id.asc()), [DocumentChunk.id])
 
-    assets = (
-        db.query(
-            DocumentAsset
-        )
-        .filter(
-            DocumentAsset.document_id
-            == document.id
-        )
-        .order_by(
-            DocumentAsset.id.asc()
-        )
-        .all()
-    )
+    assets = iter_query(db.query(DocumentAsset).filter(DocumentAsset.document_id == document.id).order_by(DocumentAsset.id.asc()), [DocumentAsset.id])
 
     chunks_by_page: dict[
         int,
@@ -1043,7 +917,7 @@ def build_transcription_pages(
                         asset.asset_type,
 
                     "location":
-                        asset.location,
+                        normalized_location(asset.location, asset.asset_metadata),
 
                     "title":
                         asset.title,
@@ -1097,6 +971,9 @@ def build_transcription_pages(
 
     if (
         not pages
+        and str(document.file_type).lower().lstrip('.') != 'pdf'
+        and not pages_count and not discovered_pages
+        and (selected_page_numbers is None or 1 in selected_page_numbers)
         and (
             unassigned_chunks
             or unassigned_assets
@@ -1127,7 +1004,7 @@ def build_transcription_pages(
                     asset.asset_type,
 
                 "location":
-                    asset.location,
+                    normalized_location(asset.location, asset.asset_metadata),
 
                 "title":
                     asset.title,

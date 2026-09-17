@@ -1,9 +1,12 @@
+from app.services.observability import log_event
+from app.services.database_queries import iter_query, release_read_transaction
 import logging
 import os
 import re
 
 from sqlalchemy.orm import Session
 
+from app.services.retrieval_conventions import GENERIC_CONTENT_TYPES, source_location, canonical_content_type
 from app.database.models import (
     Chat,
     DocumentChunk,
@@ -20,6 +23,9 @@ from app.services.search_service import (
 from app.services.llm_service import (
     generate_answer,
 )
+
+
+from app.services.assets.image_references import normalize_image_source
 
 
 logger = logging.getLogger(__name__)
@@ -87,9 +93,9 @@ ARABIC_DIGIT_TRANSLATION = str.maketrans(
 )
 
 PAGE_PATTERNS = [
-    r"\bpage\s*(?:number|no\.?|#)?\s*(\d+)\b",
-    r"\bp\.?\s*(\d+)\b",
-    r"(?:الصفحة|الصفحه|صفحة|صفحه)\s*(?:رقم)?\s*(\d+)",
+    r"\bpage\s*(?:number|no\.?|#)?\s*(-?\d+(?:\.\d+)?)\b",
+    r"\bp\.?\s*(-?\d+(?:\.\d+)?)\b",
+    r"(?:الصفحة|الصفحه|صفحة|صفحه)\s*(?:رقم)?\s*(-?\d+(?:\.\d+)?)",
 ]
 
 PAGE_COUNT_PATTERNS = [
@@ -204,10 +210,9 @@ def extract_page_number(
             TypeError,
             ValueError,
         ):
-            continue
+            return 0  # Explicit invalid page request; do not fall back to semantic search.
 
-        if page_number > 0:
-            return page_number
+        return page_number
 
     return None
 
@@ -369,8 +374,8 @@ def build_context(
             f"[{source_id}]",
             f"Document: {document.filename}",
             f"Document ID: {document.id}",
-            f"Type: {chunk.content_type}",
-            f"Location: {chunk.location}",
+            f"Type: {canonical_content_type(chunk.content_type)}",
+            f"Location: {source_location(chunk)}",
             f"Match type: {match_type}",
         ]
 
@@ -481,12 +486,8 @@ def build_sources(
             "source_id": f"S{index}",
             "document_id": document.id,
             "filename": document.filename,
-            "content_type": (
-                chunk.content_type
-            ),
-            "location": (
-                chunk.location
-            ),
+            "content_type": canonical_content_type(chunk.content_type),
+            "location": source_location(chunk),
             "chunk_id": chunk.id,
             "similarity": round(
                 similarity,
@@ -521,48 +522,10 @@ def build_sources(
             )
         )
 
-        asset_path = (
-            metadata.get(
-                "asset_path"
-            )
-        )
-
-        if (
-            chunk.content_type
-            == "image"
-            and asset_filename
-        ):
-            source[
-                "asset_filename"
-            ] = asset_filename
-
-            if (
-                isinstance(
-                    asset_path,
-                    str,
-                )
-                and (
-                    asset_path.startswith(
-                        "https://"
-                    )
-                    or asset_path.startswith(
-                        "http://"
-                    )
-                )
-            ):
-                source[
-                    "asset_url"
-                ] = asset_path
-
-            else:
-                source[
-                    "asset_url"
-                ] = (
-                    f"/documents/"
-                    f"{document.id}"
-                    f"/assets/"
-                    f"{asset_filename}"
-                )
+        if chunk.content_type == "image" and (asset_filename or metadata.get("asset_path")):
+            if asset_filename:
+                source["asset_filename"] = asset_filename
+            source = normalize_image_source(source)
 
         sources.append(
             source
@@ -795,6 +758,8 @@ def validate_page_number(
     documents,
     page_number: int,
 ) -> bool:
+    if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number <= 0:
+        return False
     for document in documents:
         pages_count = (
             document.pages_count
@@ -1248,27 +1213,7 @@ def get_representative_document_chunks(
     if limit <= 0:
         return []
 
-    chunks = (
-        db.query(DocumentChunk)
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            ),
-            DocumentChunk.content_type.in_(
-                {
-                    "text",
-                    "table",
-                    "equation",
-                }
-            ),
-            DocumentChunk.content.isnot(None),
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    chunks = list(iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids), DocumentChunk.content_type.in_(GENERIC_CONTENT_TYPES), DocumentChunk.content.isnot(None)).order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id]))
 
     chunks_by_document = {}
 
@@ -1488,6 +1433,7 @@ def get_related_visual_results(
     document_ids: list[int],
     question: str,
     limit: int | None = None,
+    query_embeddings: dict | None = None,
 ):
     """
     Return only useful images that are semantically related
@@ -1546,21 +1492,7 @@ def get_related_visual_results(
     if not anchor_pages:
         return []
 
-    all_image_chunks = (
-        db.query(DocumentChunk)
-        .filter(
-            DocumentChunk.document_id.in_(
-                document_ids
-            ),
-            DocumentChunk.content_type
-            == "image",
-        )
-        .order_by(
-            DocumentChunk.document_id,
-            DocumentChunk.id,
-        )
-        .all()
-    )
+    all_image_chunks = iter_query(db.query(DocumentChunk).filter(DocumentChunk.document_id.in_(document_ids), DocumentChunk.content_type == 'image').order_by(DocumentChunk.document_id, DocumentChunk.id), [DocumentChunk.document_id, DocumentChunk.id])
 
     signature_counts = {}
     asset_path_counts = {}
@@ -1622,6 +1554,7 @@ def get_related_visual_results(
 
     visual_candidates = (
         search_visual_chunks(
+            query_embeddings=query_embeddings,
             db=db,
             query=question,
             document_ids=document_ids,
@@ -1731,14 +1664,7 @@ def get_related_visual_results(
         if is_generic_visual_text(
             signature
         ):
-            logger.debug(
-                (
-                    "Skipping generic visual "
-                    "chunk=%s signature=%s"
-                ),
-                chunk.id,
-                signature[:120],
-            )
+            log_event(logger, logging.DEBUG, "rag_generic_visual_skipped")
             continue
 
         asset_key = (
@@ -1885,6 +1811,7 @@ def prepare_answer_context(
     document_ids:
         list[int] | None = None,
 ):
+    query_embeddings = {}
     chat = db.get(
         Chat,
         chat_id,
@@ -2085,6 +2012,7 @@ def prepare_answer_context(
                         "image",
                         "table",
                         "equation",
+                        "formula",
                     }
                 )
             ]
@@ -2158,6 +2086,7 @@ def prepare_answer_context(
 
         visual_results = (
             search_visual_chunks(
+                query_embeddings=query_embeddings,
                 db=db,
                 query=question,
                 document_ids=(
@@ -2259,6 +2188,7 @@ def prepare_answer_context(
 
     search_results = (
         search_similar_chunks(
+            query_embeddings=query_embeddings,
             db=db,
             query=retrieval_query,
             document_ids=(
@@ -2313,6 +2243,7 @@ def prepare_answer_context(
 
         fallback_results = (
             search_similar_chunks(
+                query_embeddings=query_embeddings,
                 db=db,
                 query=retrieval_query,
                 document_ids=(
@@ -2402,6 +2333,7 @@ def prepare_answer_context(
 
     related_visual_results = (
         get_related_visual_results(
+            query_embeddings=query_embeddings,
             db=db,
             search_results=(
                 search_results
@@ -2506,6 +2438,7 @@ def answer_question(
                 ],
         }
 
+    release_read_transaction(db)
     answer = generate_answer(
         question=question,
         context=(

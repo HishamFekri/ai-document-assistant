@@ -1,4 +1,6 @@
 "use client";
+import { readNDJSON } from "@/lib/ndjson";
+import { useRequestScope } from "@/hooks/useRequestScope";
 
 import {
   FormEvent,
@@ -47,18 +49,19 @@ type Params = {
   >;
 
   refreshMessages:
-    () => Promise<void>;
+    (replaceTemporaryIds?: number[]) => Promise<void>;
 
   getToken:
     () => string | null;
 
   createPersistedChat?: (
-    () => Promise<Chat>
+    (signal?: AbortSignal) => Promise<Chat>
   );
 
   attachDocumentToChat?: (
     chatId: number,
-    documentId: number
+    documentId: number,
+    signal?: AbortSignal
   ) => Promise<Chat>;
 
   attachment:
@@ -148,16 +151,6 @@ function buildOptimisticDocument(
 }
 
 
-function isAbortError(
-  error: unknown
-) {
-  return (
-    error instanceof DOMException
-    && error.name === "AbortError"
-  );
-}
-
-
 export function useChatStream({
   chatId,
   chat,
@@ -172,6 +165,9 @@ export function useChatStream({
   onSummaryGenerated,
   onChatTitleGenerated,
 }: Params) {
+  const scope = useRequestScope(String(chatId));
+  const stopRunRef = useRef<(() => void) | null>(null);
+  const temporaryIdRef = useRef(-1);
   const router =
     useRouter();
 
@@ -211,10 +207,6 @@ export function useChatStream({
       AbortController | null
     >(null);
 
-  const stopRequestedRef =
-    useRef(false);
-
-
   useEffect(() => {
     attachmentRef.current =
       attachment;
@@ -224,53 +216,16 @@ export function useChatStream({
 
 
   useEffect(() => {
-    setComposerError(null);
-
-    return () => {
-      stopRequestedRef.current =
-        true;
-
-      abortControllerRef.current
-        ?.abort();
-
-      abortControllerRef.current =
-        null;
-
-      sendingRef.current =
-        false;
-    };
-  }, [
-    chatId,
-  ]);
-
-
-  useEffect(() => {
-    /*
-      Clear an old composer error only when the user actually
-      changes to a usable input state.
-
-      Do NOT clear errors merely because the chat has documents.
-      A failed document is still present in chat.documents, and
-      clearing here would make processing errors disappear instantly.
-    */
-    if (
-      allowGeneralKnowledge
-      || (
-        attachment
-        && attachment.status
-        !== "failed"
-      )
-    ) {
-      setComposerError(null);
-    }
-  }, [
-    allowGeneralKnowledge,
-    attachment?.localId,
-  ]);
-
+    sendingRef.current = false;
+    const timer = window.setTimeout(() => {
+      if (!sendingRef.current) { setComposerError(null); setSending(false); }
+    }, 0);
+    return () => { window.clearTimeout(timer); };
+  }, [scope]);
 
   async function waitForDocumentId(
     localId: string,
+    signal: AbortSignal,
   ): Promise<number> {
     const started =
       Date.now();
@@ -281,7 +236,7 @@ export function useChatStream({
       < 120000
     ) {
       if (
-        stopRequestedRef.current
+        signal.aborted
       ) {
         throw new DOMException(
           "Generation stopped",
@@ -345,7 +300,7 @@ export function useChatStream({
     allowGeneralKnowledgeOverride,
   }: RunQuestionOptions) {
     if (
-      sendingRef.current
+      sendingRef.current || !scope.isActive()
     ) {
       return;
     }
@@ -402,14 +357,11 @@ export function useChatStream({
     sendingRef.current =
       true;
 
-    stopRequestedRef.current =
-      false;
-
     setSending(true);
     setComposerError(null);
 
-    const temporaryUserId =
-      -Date.now();
+    const temporaryUserId = temporaryIdRef.current;
+    temporaryIdRef.current -= 3;
 
     const temporaryAssistantId =
       temporaryUserId - 1;
@@ -506,10 +458,15 @@ export function useChatStream({
     const controller =
       new AbortController();
 
-    abortControllerRef.current =
-      controller;
+    const request = scope.begin("stream");
+    request.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    const checkCurrent = () => {
+      if (!request.current()) throw new DOMException("Request cancelled", "AbortError");
+    };
+    abortControllerRef.current = controller;
 
     let fullAnswer = "";
+    let terminalReceived = false;
 
     let activeChatId =
       chatId;
@@ -519,6 +476,19 @@ export function useChatStream({
 
     let streamRequestStarted =
       false;
+    let streamResponseAccepted = false;
+
+    stopRunRef.current = () => {
+      if (!request.current()) return;
+      if (!terminalReceived) setMessages(current => current.map(message => message.id === temporaryUserId
+        ? { ...message, status: "completed", error: null }
+        : message.id === temporaryAssistantId
+          ? { ...message, content: fullAnswer || "Generation stopped.", status: "stopped", error: null }
+          : message));
+      setSending(false); setComposerError(null); sendingRef.current = false;
+      abortControllerRef.current = null;
+      scope.cancel("stream");
+    };
 
     try {
       let resolvedDocumentIds = [
@@ -532,8 +502,9 @@ export function useChatStream({
           outgoingAttachment
             .documentId
           ?? await waitForDocumentId(
-            outgoingAttachment.localId
+            outgoingAttachment.localId, controller.signal
           );
+        checkCurrent();
 
         resolvedDocumentIds = [
           documentId,
@@ -596,7 +567,8 @@ export function useChatStream({
         || activeChatId <= 0
       ) {
         const newChat =
-          await createPersistedChat!();
+          await createPersistedChat!(controller.signal);
+        checkCurrent();
 
         activeChatId =
           newChat.id;
@@ -638,13 +610,15 @@ export function useChatStream({
           ) {
             await attachDocumentToChat(
               activeChatId,
-              documentId
+              documentId, controller.signal
             );
+            checkCurrent();
           }
         }
       }
 
 
+      checkCurrent();
       streamRequestStarted =
         true;
 
@@ -692,6 +666,10 @@ export function useChatStream({
         );
 
 
+      if (!request.current()) {
+        await response.body?.cancel().catch(() => {});
+        return;
+      }
       if (!response.ok) {
         let errorMessage =
           "Could not generate answer";
@@ -722,6 +700,7 @@ export function useChatStream({
         );
       }
 
+      streamResponseAccepted = true;
       /*
         Only remove the attachment from the composer after the
         backend has accepted the request and a stream is available.
@@ -734,73 +713,8 @@ export function useChatStream({
       }
 
 
-      const reader =
-        response.body
-          .getReader();
-
-      const decoder =
-        new TextDecoder(
-          "utf-8"
-        );
-
-      let buffer = "";
-
-
-      while (true) {
-        const {
-          done,
-          value,
-        } = await reader.read();
-
-        if (value) {
-          buffer +=
-            decoder.decode(
-              value,
-              {
-                stream:
-                  !done,
-              }
-            );
-        }
-
-        const lines =
-          buffer.split(
-            "\n"
-          );
-
-        buffer =
-          lines.pop()
-          ?? "";
-
-
-        for (
-          const rawLine
-          of lines
-        ) {
-          const line =
-            rawLine.trim();
-
-          if (!line) {
-            continue;
-          }
-
-          let streamEvent:
-            Record<
-              string,
-              unknown
-            >;
-
-          try {
-            streamEvent =
-              JSON.parse(
-                line
-              );
-
-          } catch {
-            continue;
-          }
-
-
+      await readNDJSON(response.body, async (streamEvent) => {
+        checkCurrent();
           if (
             streamEvent.type
             === "chat_title"
@@ -820,7 +734,7 @@ export function useChatStream({
               });
             }
 
-            continue;
+            return;
           }
 
 
@@ -900,7 +814,7 @@ export function useChatStream({
                 )
             );
 
-            continue;
+            return;
           }
 
 
@@ -933,7 +847,7 @@ export function useChatStream({
                 )
             );
 
-            continue;
+            return;
           }
 
 
@@ -977,7 +891,7 @@ export function useChatStream({
               });
             }
 
-            continue;
+            return;
           }
 
 
@@ -985,6 +899,8 @@ export function useChatStream({
             streamEvent.type
             === "done"
           ) {
+            if (!Array.isArray(streamEvent.sources)) throw new Error("Invalid chat completion");
+            terminalReceived = true;
             const sources:
               Source[] =
                 Array.isArray(
@@ -997,7 +913,9 @@ export function useChatStream({
               (current) =>
                 current.map(
                   (message) =>
-                    message.id
+                    message.id === temporaryUserId
+                      ? { ...message, status: "completed", error: null }
+                      : message.id
                     === temporaryAssistantId
                       ? {
                           ...message,
@@ -1014,7 +932,7 @@ export function useChatStream({
                 )
             );
 
-            continue;
+            return;
           }
 
 
@@ -1032,13 +950,8 @@ export function useChatStream({
               errorMessage
             );
           }
-        }
-
-        if (done) {
-          break;
-        }
-      }
-
+      }, controller.signal);
+      checkCurrent();
 
       if (
         createdChatId !== null
@@ -1047,76 +960,14 @@ export function useChatStream({
           `/chat/${createdChatId}`
         );
       } else {
-        await refreshMessages();
+        await refreshMessages([temporaryUserId, temporaryAssistantId]);
+        checkCurrent();
       }
 
       setComposerError(null);
 
     } catch (error) {
-      const wasStopped =
-        stopRequestedRef.current
-        || isAbortError(
-          error
-        );
-
-      if (wasStopped) {
-        setMessages(
-          (current) =>
-            current.map(
-              (message) => {
-                if (
-                  message.id
-                  === temporaryUserId
-                ) {
-                  return {
-                    ...message,
-
-                    status:
-                      "completed",
-
-                    error:
-                      null,
-                  };
-                }
-
-                if (
-                  message.id
-                  === temporaryAssistantId
-                ) {
-                  return {
-                    ...message,
-
-                    content:
-                      fullAnswer
-                      || "Generation stopped.",
-
-                    status:
-                      "stopped",
-
-                    error:
-                      null,
-                  };
-                }
-
-                return message;
-              }
-            )
-        );
-
-        setComposerError(null);
-
-        if (
-          createdChatId !== null
-          && streamRequestStarted
-        ) {
-          router.replace(
-            `/chat/${createdChatId}`
-          );
-        }
-
-        return;
-      }
-
+      if (!request.current()) return;
       console.error(
         "[CHAT STREAM ERROR]",
         error
@@ -1182,7 +1033,8 @@ export function useChatStream({
       } else if (
         createdChatId === null
       ) {
-        await refreshMessages();
+        await refreshMessages(streamResponseAccepted ? [temporaryUserId, temporaryAssistantId] : []);
+        if (!request.current()) return;
       }
 
       setComposerError(
@@ -1198,15 +1050,12 @@ export function useChatStream({
           null;
       }
 
-      sendingRef.current =
-        false;
-
-      stopRequestedRef.current =
-        false;
-
-      setSending(
-        false
-      );
+      if (request.current()) {
+        sendingRef.current = false;
+        setSending(false);
+        stopRunRef.current = null;
+        request.finish();
+      }
     }
   }
 
@@ -1316,20 +1165,7 @@ export function useChatStream({
   }
 
 
-  function stopGeneration() {
-    if (
-      !sendingRef.current
-      || !abortControllerRef.current
-    ) {
-      return;
-    }
-
-    stopRequestedRef.current =
-      true;
-
-    abortControllerRef.current
-      .abort();
-  }
+  function stopGeneration() { stopRunRef.current?.(); }
 
 
   return {

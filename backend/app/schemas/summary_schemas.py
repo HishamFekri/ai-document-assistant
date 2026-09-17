@@ -5,7 +5,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    field_serializer,
 )
+
+from app.services.error_service import public_generation_error
 
 
 SummaryBlockType = Literal[
@@ -68,6 +71,10 @@ class DocumentSummaryResponse(BaseModel):
     is_selected: bool
 
     error: str | None
+
+    @field_serializer("error")
+    def serialize_error(self, error):
+        return public_generation_error(error, "summary")
 
     created_at: datetime
 

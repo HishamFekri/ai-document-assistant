@@ -1,9 +1,12 @@
+import { Page, readPage } from "@/lib/pagination";
 import {
   Chat,
+  Document,
   ChatListItem,
   Message,
   User,
 } from "@/types/chat";
+import { parseUploadPolicy, uploadError, validateUpload } from "@/lib/upload-policy";
 
 
 const API_URL =
@@ -197,13 +200,15 @@ async function ensureOk(
 
 
 export async function getCurrentUser(
-  token: string
+  token: string,
+  signal?: AbortSignal
 ): Promise<User> {
   const response =
     await fetch(
       `${API_URL}/auth/me`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -224,13 +229,15 @@ export async function getCurrentUser(
 
 export async function getChat(
   token: string,
-  chatId: number
+  chatId: number,
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
       `${API_URL}/chats/${chatId}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -249,14 +256,27 @@ export async function getChat(
 }
 
 
+export async function getDocuments(token: string, cursor?: string): Promise<Page<Document>> {
+  const params = new URLSearchParams({ limit: "50" });
+  if (cursor) params.set("cursor", cursor);
+  const response = await fetch(`${API_URL}/documents?${params}`, {
+    credentials: "include", headers: buildAuthHeaders(token),
+  });
+  await ensureOk(response, "Could not load documents");
+  return readPage<Document>(response);
+}
+
 export async function getChats(
-  token: string
-): Promise<ChatListItem[]> {
+  token: string,
+  cursor?: string,
+  signal?: AbortSignal
+): Promise<Page<ChatListItem>> {
   const response =
     await fetch(
-      `${API_URL}/chats`,
+      `${API_URL}/chats` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -271,19 +291,22 @@ export async function getChats(
   );
 
 
-  return response.json();
+  return readPage<ChatListItem>(response);
 }
 
 
 export async function getMessages(
   token: string,
-  chatId: number
-): Promise<Message[]> {
+  chatId: number,
+  cursor?: string,
+  signal?: AbortSignal
+): Promise<Page<Message>> {
   const response =
     await fetch(
-      `${API_URL}/chats/${chatId}/messages`,
+      `${API_URL}/chats/${chatId}/messages` + `?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
       {
         credentials: "include",
+        signal,
         headers:
           buildAuthHeaders(
             token
@@ -298,13 +321,14 @@ export async function getMessages(
   );
 
 
-  return response.json();
+  return readPage<Message>(response);
 }
 
 
 export async function createChat(
   token: string,
-  title = "New chat"
+  title = "New chat",
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
@@ -313,6 +337,7 @@ export async function createChat(
         method: "POST",
 
         credentials: "include",
+        signal,
 
         headers:
           buildJsonHeaders(
@@ -464,10 +489,32 @@ export async function archiveChat(
 }
 
 
+export async function getUploadPolicy(token: string) {
+  try {
+    const response = await fetch(`${API_URL}/documents/upload-policy`, {
+      credentials: "include",
+      headers: buildAuthHeaders(token),
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      if (response.status === 401 && typeof window !== "undefined") {
+        window.dispatchEvent(new Event("auth-expired"));
+      }
+      throw new Error("Policy unavailable");
+    }
+    return parseUploadPolicy(await response.json());
+  } catch {
+    throw new Error("Upload limits are unavailable. Please try again shortly.");
+  }
+}
+
 export async function uploadDocument(
   token: string,
   file: File
 ) {
+  const policy = await getUploadPolicy(token);
+  const validationError = validateUpload(file, policy);
+  if (validationError) throw new Error(validationError);
   const formData =
     new FormData();
 
@@ -497,10 +544,12 @@ export async function uploadDocument(
     );
 
 
-  await ensureOk(
-    response,
-    "Could not upload document"
-  );
+  if (!response.ok) {
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("auth-expired"));
+    }
+    throw new Error(await uploadError(response));
+  }
 
 
   return response.json();
@@ -510,7 +559,8 @@ export async function uploadDocument(
 export async function attachDocument(
   token: string,
   chatId: number,
-  documentId: number
+  documentId: number,
+  signal?: AbortSignal
 ): Promise<Chat> {
   const response =
     await fetch(
@@ -519,6 +569,7 @@ export async function attachDocument(
         method: "POST",
 
         credentials: "include",
+        signal,
 
         headers:
           buildAuthHeaders(

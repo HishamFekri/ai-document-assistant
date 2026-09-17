@@ -1,23 +1,23 @@
+import logging
+from app.services.observability import log_event
 import os
 import time
 
 import requests
 
+from app.services.embedding_contract import (
+    EMBEDDING_DIMENSION,
+    VOYAGE_MODEL,
+    validate_provider_response,
+)
 
 VOYAGE_API_KEY = os.getenv(
     "VOYAGE_API_KEY"
 )
 
-VOYAGE_MODEL = os.getenv(
-    "VOYAGE_MODEL",
-    "voyage-4-lite",
-)
-
 VOYAGE_API_URL = (
     "https://api.voyageai.com/v1/embeddings"
 )
-
-EMBEDDING_DIMENSION = 512
 
 VOYAGE_BATCH_SIZE = int(
     os.getenv(
@@ -84,10 +84,7 @@ def _create_embeddings(
                     attempt + 1
                 )
 
-            print(
-                f"[VOYAGE] Rate limited. "
-                f"Retrying in {wait_seconds}s..."
-            )
+            log_event(logging.getLogger(__name__), logging.INFO, "embedding_retry", delay_seconds=wait_seconds)
 
             time.sleep(
                 wait_seconds
@@ -99,10 +96,7 @@ def _create_embeddings(
 
         data = response.json()
 
-        return [
-            item["embedding"]
-            for item in data["data"]
-        ]
+        return validate_provider_response(data, len(texts))
 
     raise RuntimeError(
         "Voyage embedding request failed"
@@ -143,9 +137,15 @@ def create_query_embedding(
 
 def create_passage_embeddings(
     texts: list[str],
+    *,
+    batch_size: int | None = None,
 ) -> list[list[float]]:
     if not texts:
         return []
+
+    batch_size = VOYAGE_BATCH_SIZE if batch_size is None else batch_size
+    if not 1 <= batch_size <= 1000:
+        raise ValueError("Embedding batch size must be between 1 and 1000")
 
     cleaned_texts = []
 
@@ -164,28 +164,24 @@ def create_passage_embeddings(
     for start in range(
         0,
         len(cleaned_texts),
-        VOYAGE_BATCH_SIZE,
+        batch_size,
     ):
         batch = cleaned_texts[
             start:
-            start + VOYAGE_BATCH_SIZE
+            start + batch_size
         ]
 
         batch_number = (
-            start // VOYAGE_BATCH_SIZE
+            start // batch_size
         ) + 1
 
         total_batches = (
             len(cleaned_texts)
-            + VOYAGE_BATCH_SIZE
+            + batch_size
             - 1
-        ) // VOYAGE_BATCH_SIZE
+        ) // batch_size
 
-        print(
-            f"[VOYAGE] Embedding batch "
-            f"{batch_number}/{total_batches} "
-            f"({len(batch)} chunks)"
-        )
+        log_event(logging.getLogger(__name__), logging.INFO, "embedding_batch", count=len(batch))
 
         batch_embeddings = (
             _create_embeddings(

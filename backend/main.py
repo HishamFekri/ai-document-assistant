@@ -1,8 +1,16 @@
-import os
-
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
+from app.services.observability import configure_logging, RequestObservabilityMiddleware
+from app.services.runtime_config import validate_runtime
+from app.services.readiness import readiness_status
+
+configure_logging()
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from app.services.resource_admission import ResourceRejected, resource_error_response
+from app.services.document_resource_errors import DocumentResourceError, resource_validation_response
+from app.services.upload_ingress import UploadBodyLimitMiddleware
+from app.services.auth_config import auth_settings
 
 from app.routes.documents import router as documents_router
 from app.routes.chats import router as chats_router
@@ -12,50 +20,37 @@ from app.routes.document_assets import router as document_assets_router
 from app.routes.summary_assistant import router as summary_assistant_router
 
 
-app = FastAPI(
-    title="AI Document Assistant"
+@asynccontextmanager
+async def lifespan(app):
+    validate_runtime()
+    yield
+
+
+class ObservedFastAPI(FastAPI):
+    def build_middleware_stack(self):
+        # Outside ServerErrorMiddleware so generated 500s also carry a request ID.
+        return RequestObservabilityMiddleware(super().build_middleware_stack())
+
+
+app = ObservedFastAPI(
+    title="AI Document Assistant", lifespan=lifespan,
 )
 
-
-default_origins = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
+app.add_exception_handler(ResourceRejected, resource_error_response)
+app.add_exception_handler(DocumentResourceError, resource_validation_response)
 
 
-configured_origins = os.getenv(
-    "FRONTEND_URLS",
-    ",".join(default_origins),
-)
+allowed_origins = list(auth_settings().allowed_origins)
 
 
-allowed_origins = [
-    origin.strip()
-    for origin in configured_origins.split(",")
-    if origin.strip()
-]
-
-
-# TEMPORARY DEBUG
-print(
-    "FRONTEND_URLS RAW:",
-    repr(configured_origins),
-)
-
-print(
-    "ALLOWED ORIGINS:",
-    allowed_origins,
-)
-
-
+app.add_middleware(UploadBodyLimitMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Retry-After", "X-Resource-Error", "X-Next-Cursor", "X-Request-ID"],
 )
 
 
@@ -99,3 +94,9 @@ def health_check():
     return {
         "status": "ok"
     }
+
+
+@app.get("/ready")
+def readiness_check():
+    body, status = readiness_status()
+    return JSONResponse(body, status_code=status, headers={"Cache-Control": "no-store"})

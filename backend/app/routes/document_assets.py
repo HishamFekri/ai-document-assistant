@@ -1,17 +1,10 @@
-from pathlib import Path
-
-import requests
-
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from fastapi import (
     APIRouter,
     Depends,
     HTTPException,
     Query,
-)
-
-from fastapi.responses import (
-    FileResponse,
-    Response,
 )
 
 from sqlalchemy.orm import Session
@@ -20,6 +13,7 @@ from app.database.database import get_db
 
 from app.database.models import (
     Document,
+    DocumentChunk,
     User,
 )
 
@@ -35,6 +29,9 @@ from app.services.assets.document_asset_service import (
     get_document_asset,
     get_document_assets,
 )
+
+
+from app.services.assets.image_delivery import image_file_response
 
 
 router = APIRouter(
@@ -82,7 +79,10 @@ def get_owned_document(
     ],
 )
 def list_document_assets(
+    response: Response,
     document_id: int,
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    cursor: str | None = Query(None, max_length=2048),
     asset_type: str | None = Query(
         default=None
     ),
@@ -111,6 +111,7 @@ def list_document_assets(
 
     assets = get_document_assets(
         db=db,
+        response=response, limit=limit, cursor=cursor, owner=current_user.id,
         document_id=document_id,
         asset_type=asset_type,
     )
@@ -169,7 +170,7 @@ def read_document_asset_file(
         get_db
     ),
 ):
-    get_owned_document(
+    document = get_owned_document(
         document_id=document_id,
         current_user=current_user,
         db=db,
@@ -199,107 +200,29 @@ def read_document_asset_file(
             ),
         )
 
-    asset_path = (
-        asset.file_path
+    return image_file_response(
+        asset.file_path or (asset.asset_metadata or {}).get("asset_path"),
+        document,
     )
 
-    if not asset_path:
-        metadata = (
-            asset.asset_metadata
-            or {}
+
+@router.get("/{document_id}/image-chunks/{chunk_id}/file")
+def read_document_chunk_image(
+    document_id: int,
+    chunk_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    document = get_owned_document(document_id, current_user, db)
+    chunk = (
+        db.query(DocumentChunk)
+        .filter(
+            DocumentChunk.id == chunk_id,
+            DocumentChunk.document_id == document_id,
+            DocumentChunk.content_type == "image",
         )
-
-        asset_path = (
-            metadata.get(
-                "asset_path"
-            )
-        )
-
-    if not asset_path:
-        raise HTTPException(
-            status_code=404,
-            detail=(
-                "Image file path not found"
-            ),
-        )
-
-    asset_path = str(
-        asset_path
-    ).strip()
-
-    # Cloudinary / remote image:
-    #
-    # IMPORTANT:
-    # Do NOT redirect the browser to Cloudinary here.
-    # The frontend requests this endpoint with
-    # credentials: "include". A cross-origin redirect
-    # to Cloudinary then fails CORS because Cloudinary
-    # returns Access-Control-Allow-Origin: * while the
-    # redirected request is credentialed.
-    #
-    # Instead, the backend downloads the image and
-    # returns its bytes to the frontend from the same
-    # API endpoint.
-    if asset_path.startswith(
-        (
-            "https://",
-            "http://",
-        )
-    ):
-        try:
-            remote_response = (
-                requests.get(
-                    asset_path,
-                    timeout=30,
-                )
-            )
-
-            remote_response.raise_for_status()
-
-        except requests.RequestException as error:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Could not load remote image"
-                ),
-            ) from error
-
-        content_type = (
-            remote_response.headers.get(
-                "Content-Type"
-            )
-            or "image/jpeg"
-        )
-
-        return Response(
-            content=(
-                remote_response.content
-            ),
-            media_type=content_type,
-            headers={
-                "Cache-Control":
-                    "public, max-age=86400",
-            },
-        )
-
-    # Backwards compatibility for local images.
-    path = Path(
-        asset_path
-    ).resolve()
-
-    if (
-        not path.exists()
-        or not path.is_file()
-    ):
-        raise HTTPException(
-            status_code=404,
-            detail="Image file not found",
-        )
-
-    return FileResponse(
-        path=path,
-        headers={
-            "Cache-Control":
-                "public, max-age=86400",
-        },
+        .first()
     )
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Image asset not found")
+    return image_file_response((chunk.chunk_metadata or {}).get("asset_path"), document)

@@ -1,417 +1,238 @@
+"""Claimed processing with short transactions and durable chunk checkpoints."""
+
+import logging
+from app.services.observability import document_job, log_event
 from pathlib import Path
-from time import perf_counter
 
 from pypdf import PdfReader
+from sqlalchemy import func, select
 
-from app.database.database import (
-    SessionLocal,
+from app.database.models import Document, DocumentChunk
+from app.services.assets.asset_extraction_service import ensure_document_assets
+from app.services.chunk_service import create_chunks_from_content
+from app.services.document_processing_claim import claim_document_processing
+from app.services.document_processing_errors import (
+    DocumentDeletedDuringProcessing,
+    RetryableDocumentProcessingError,
+    is_retryable_processing_error,
 )
-
-from app.database.models import (
-    Document,
-    DocumentChunk,
+from app.services.embedding_completeness_service import (
+    embeddable_chunk, inspect_embeddings, needs_embedding,
 )
-
-from app.services.file_service import (
-    extract_content,
-)
-
-from app.services.chunk_service import (
-    create_chunks_from_content,
-)
-
-from app.services.embedding_service import (
-    create_passage_embeddings,
-)
-
-from app.services.queued_message_service import (
-    process_waiting_messages_for_document,
-)
-
-from app.services.error_service import (
-    log_and_get_public_error,
-)
-
-from app.services.assets.asset_extraction_service import (
-    replace_document_assets,
-)
+from app.services.embedding_contract import validate_embeddings
+from app.services.embedding_recovery_service import RecoveryChunk, recovery_update_statement
+from app.services.embedding_service import create_passage_embeddings
+from app.services.error_service import log_generation_failure
+from app.services.file_service import extract_content
+from app.services.resource_admission import ResourceRejected, user_operation
+from app.services.resource_limits import upload_limits
+from app.services.document_resource_errors import DocumentResourceError
+from app.services.upload_validation import validate_document_source
+from app.services.queued_message_service import process_waiting_messages_for_document
 
 
-def update_progress(
-    db,
-    document: Document,
-    stage: str,
-    progress: int,
-):
-    document.processing_stage = stage
-
-    document.processing_progress = max(
-        0,
-        min(
-            progress,
-            100,
-        ),
-    )
-
-    db.commit()
-
-    print(
-        f"[PROGRESS] Document "
-        f"{document.id}: "
-        f"{stage} "
-        f"({document.processing_progress}%)"
-    )
+logger = logging.getLogger(__name__)
+PROCESSING_EMBEDDING_BATCH_SIZE = 32
 
 
-def process_document(
-    document_id: int,
-    file_path: str,
-):
-    db = SessionLocal()
-    processing_error = None
+def processing_document(db, document_id):
+    document = db.get(Document, document_id, with_for_update=True)
+    if document is None:
+        raise DocumentDeletedDuringProcessing()
+    return document
 
-    total_start = perf_counter()
 
-    try:
-        document = db.get(
-            Document,
-            document_id,
-        )
-
-        if not document:
-            return
-
-        print(
-            f"\n[PROCESSING] Document "
-            f"{document_id} started"
-        )
-
-        document.processing_status = (
-            "processing"
-        )
-
+def set_progress(claim, document_id, stage, progress):
+    with claim.session() as db:
+        document = processing_document(db, document_id)
+        document.processing_status = "processing"
+        document.processing_stage = stage
+        document.processing_progress = progress
         document.processing_error = None
 
-        update_progress(
-            db=db,
-            document=document,
-            stage="starting",
-            progress=10,
-        )
 
-        path = Path(
-            file_path
-        )
+def process_claimed_document(claim, document_id):
+    with claim.session() as db:
+        document = processing_document(db, document_id)
+        completeness = inspect_embeddings(db, [document_id])[0]
+        if document.processing_status == "ready":
+            if completeness.complete:
+                log_event(logger, logging.INFO, "processing_completed_job_skipped", document_id=document_id)
+                return "already_complete"
+            log_event(logger, logging.WARNING, "processing_requires_explicit_embedding_recovery", document_id=document_id)
+            return "embedding_recovery_required"
+        if document.processing_status == "failed" and document.processing_stage in ("permanent_failure", "retry_exhausted"):
+            log_event(logger, logging.INFO, "processing_permanent_failure_skipped", document_id=document_id)
+            return "permanent_failure"
+        owner_id = document.user_id
+        file_path = document.file_path
+        file_type = document.file_type
+        has_chunks = db.scalar(select(DocumentChunk.id).where(DocumentChunk.document_id == document_id).limit(1)) is not None
+        # Dispatch-failure handling may only change the pre-execution uploaded
+        # stage. Publish this transition before leaving the first transaction.
+        document.processing_status = "processing"
+        document.processing_stage = "starting"
+        document.processing_progress = 10
+        document.processing_error = None
 
-        if not path.exists():
-            raise FileNotFoundError(
-                f"File not found: {path}"
-            )
+    try:
+        with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
+            return process_admitted_document(claim, document_id, file_path, file_type, has_chunks)
+    except ResourceRejected:
+        raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
 
-        # ===============================
-        # Document extraction
-        # ===============================
 
-        update_progress(
-            db=db,
-            document=document,
-            stage="analyzing_document",
-            progress=20,
-        )
+def validate_resumed_processing(claim, document_id, path, file_type):
+    validate_document_source(path, "." + file_type)
+    limits = upload_limits()
+    with claim.session() as db:
+        count, characters, size = db.execute(select(
+            func.count(DocumentChunk.id),
+            func.coalesce(func.sum(func.length(DocumentChunk.content)), 0),
+            func.coalesce(func.sum(func.octet_length(DocumentChunk.content)), 0),
+        ).where(DocumentChunk.document_id == document_id)).one()
+    if count > limits.chunks or characters > limits.text_chars or size > limits.text_bytes:
+        raise DocumentResourceError("content_limit")
 
-        extraction_start = (
-            perf_counter()
-        )
 
-        content = extract_content(
-            file_path=path,
-            document_id=document_id,
-        )
+def process_admitted_document(claim, document_id, file_path, file_type, has_chunks):
+    if not file_path:
+        raise FileNotFoundError("Document source is unavailable")
+    path = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError("Document source is unavailable")
+    if has_chunks:
+        validate_resumed_processing(claim, document_id, path, file_type)
 
-        extraction_time = (
-            perf_counter()
-            - extraction_start
-        )
-
-        print(
-            f"[TIMING] Extraction: "
-            f"{extraction_time:.2f}s"
-        )
-
+    if not has_chunks:
+        set_progress(claim, document_id, "analyzing_document", 20)
+        # No ORM session or transaction spans extraction / Datalab / Cloudinary.
+        content = extract_content(file_path=path, document_id=document_id)
         if not content:
-            raise ValueError(
-                "No readable content found in file"
-            )
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="document_analyzed",
-            progress=45,
-        )
-
-        # ===============================
-        # Document assets
-        # ===============================
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="extracting_assets",
-            progress=50,
-        )
-
-        asset_start = (
-            perf_counter()
-        )
-
-        assets = (
-            replace_document_assets(
-                db=db,
-                document_id=document.id,
-                content=content,
-            )
-        )
-
-        asset_time = (
-            perf_counter()
-            - asset_start
-        )
-
-        print(
-            f"[TIMING] Asset processing: "
-            f"{asset_time:.2f}s"
-        )
-
-        print(
-            f"[INFO] Assets created: "
-            f"{len(assets)}"
-        )
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="assets_ready",
-            progress=58,
-        )
-
-        # ===============================
-        # Chunking
-        # ===============================
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="creating_chunks",
-            progress=65,
-        )
-
-        chunks = (
-            create_chunks_from_content(
-                content
-            )
-        )
-
+            raise ValueError("No readable content found in file")
+        chunks = create_chunks_from_content(content)
         if not chunks:
-            raise ValueError(
-                "Could not create chunks from file"
-            )
+            raise ValueError("Could not create chunks from file")
+        with claim.session() as db:
+            document = processing_document(db, document_id)
+            # All assets and chunks form one checkpoint. Never delete prior work.
+            ensure_document_assets(db, document_id, content)
+            for chunk in chunks:
+                db.add(DocumentChunk(
+                    document_id=document_id,
+                    content=chunk["content"], content_type=chunk["content_type"],
+                    location=chunk["location"], chunk_metadata=chunk["metadata"],
+                    embedding=None,
+                ))
+            document.processing_stage = "chunks_saved"
+            document.processing_progress = 72
+        log_event(logger, logging.INFO, "processing_checkpoint_saved", document_id=document_id, chunks=len(chunks))
 
-        print(
-            f"[INFO] Chunks created: "
-            f"{len(chunks)}"
+    set_progress(claim, document_id, "creating_embeddings", 78)
+    while True:
+        with claim.session() as db:
+            processing_document(db, document_id)
+            rows = db.execute(
+                select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.content,
+                       func.jsonb_typeof(DocumentChunk.chunk_metadata).label("metadata_type"))
+                .where(DocumentChunk.document_id == document_id, embeddable_chunk(), needs_embedding())
+                .order_by(DocumentChunk.id).limit(PROCESSING_EMBEDDING_BATCH_SIZE)
+            ).mappings()
+            pending = [RecoveryChunk(**row) for row in rows]
+        if not pending:
+            break
+        if any(chunk.metadata_type not in (None, "null", "object") for chunk in pending):
+            raise ValueError("Chunk metadata requires explicit repair")
+        vectors = validate_embeddings(
+            create_passage_embeddings([chunk.content for chunk in pending], batch_size=PROCESSING_EMBEDDING_BATCH_SIZE),
+            len(pending),
         )
+        with claim.session() as db:
+            processing_document(db, document_id)
+            for chunk, vector in zip(pending, vectors):
+                # Maintenance keeps its original eligible statuses; this claimed
+                # worker uses the same conditional update while processing.
+                result = db.execute(recovery_update_statement(chunk, vector, statuses=("processing",)))
+                if result.rowcount != 1:
+                    raise ValueError("Chunk changed during processing; explicit retry required")
+        log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
 
-        update_progress(
-            db=db,
-            document=document,
-            stage="chunks_ready",
-            progress=72,
-        )
-
-        # ===============================
-        # Embeddings
-        # ===============================
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="creating_embeddings",
-            progress=78,
-        )
-
-        chunk_texts = [
-            chunk[
-                "content"
-            ]
-            for chunk in chunks
-        ]
-
-        embeddings = (
-            create_passage_embeddings(
-                chunk_texts
-            )
-        )
-
-        if len(
-            embeddings
-        ) != len(
-            chunks
-        ):
-            raise ValueError(
-                "Embedding count does not "
-                "match chunk count"
-            )
-
-        update_progress(
-            db=db,
-            document=document,
-            stage="saving_document",
-            progress=92,
-        )
-
-        # ===============================
-        # Replace chunks
-        # ===============================
-
-        existing_chunks = (
-            db.query(
-                DocumentChunk
-            )
-            .filter(
-                DocumentChunk.document_id
-                == document.id
-            )
-            .all()
-        )
-
-        for existing_chunk in (
-            existing_chunks
-        ):
-            db.delete(
-                existing_chunk
-            )
-
-        for chunk, embedding in zip(
-            chunks,
-            embeddings,
-        ):
-            db.add(
-                DocumentChunk(
-                    document_id=document.id,
-                    content=chunk[
-                        "content"
-                    ],
-                    content_type=chunk[
-                        "content_type"
-                    ],
-                    location=chunk[
-                        "location"
-                    ],
-                    chunk_metadata=chunk[
-                        "metadata"
-                    ],
-                    embedding=embedding,
-                )
-            )
-
-        # ===============================
-        # Document metadata
-        # ===============================
-
-        if (
-            document.file_type
-            == "pdf"
-        ):
-            reader = PdfReader(
-                path
-            )
-
-            document.pages_count = len(
-                reader.pages
-            )
-
-        # ===============================
-        # Ready
-        # ===============================
-
-        document.processing_status = (
-            "ready"
-        )
-
-        document.processing_stage = (
-            "ready"
-        )
-
-        document.processing_progress = (
-            100
-        )
-
+    # Read source metadata outside the final transaction.
+    pages_count = len(PdfReader(path).pages) if file_type == "pdf" else None
+    with claim.session() as db:
+        document = processing_document(db, document_id)
+        db.flush()
+        completeness = inspect_embeddings(db, [document_id])[0]
+        if not completeness.complete:
+            raise ValueError("Document embeddings are incomplete")
+        if pages_count is not None:
+            document.pages_count = pages_count
+        document.processing_status = "ready"
+        document.processing_stage = "ready"
+        document.processing_progress = 100
         document.processing_error = None
+    log_event(logger, logging.INFO, "processing_completed", document_id=document_id)
+    return "completed"
 
-        db.commit()
 
-        total_time = (
-            perf_counter()
-            - total_start
-        )
-
-        print(
-            f"[SUCCESS] Document "
-            f"{document_id} ready "
-            f"in {total_time:.2f}s\n"
-        )
-
-    except Exception as error:
-        processing_error = error
-        db.rollback()
-
-        document = db.get(
-            Document,
-            document_id,
-        )
-
-        if document:
-            document.processing_status = (
-                "failed"
-            )
-
-            document.processing_stage = (
-                "failed"
-            )
-
-            document.processing_error = (
-                log_and_get_public_error(
-                    error,
-                    "Document processing failed. Please try again.",
-                )
-            )
-
-            db.commit()
-
-        print(
-            f"[ERROR] Document "
-            f"{document_id}: "
-            f"{error}"
-        )
-
-    finally:
-        db.close()
-
-    # =====================================
-    # Wake queued questions
-    # =====================================
-
+@document_job
+def process_document(document_id: int, file_path: str | None = None):
+    # Keep the old task signature compatible; the stored source path is authoritative.
+    outcome = None
     try:
-        process_waiting_messages_for_document(
-            document_id
-        )
-
+        with claim_document_processing(document_id) as claim:
+            if claim is None:
+                log_event(logger, logging.INFO, "processing_duplicate_invocation_skipped", document_id=document_id)
+                return "busy"
+            log_event(logger, logging.INFO, "processing_claim_acquired", document_id=document_id)
+            try:
+                outcome = process_claimed_document(claim, document_id)
+            except DocumentDeletedDuringProcessing:
+                log_event(logger, logging.INFO, "processing_deleted_document_skipped", document_id=document_id)
+                return "deleted"
+            except Exception as error:
+                retryable = is_retryable_processing_error(error)
+                public_error = log_generation_failure(error, "document", document_id=document_id)
+                try:
+                    with claim.session() as db:
+                        document = processing_document(db, document_id)
+                        document.processing_status = "failed"
+                        document.processing_stage = "retryable_failure" if retryable else "permanent_failure"
+                        document.processing_error = public_error
+                except DocumentDeletedDuringProcessing:
+                    return "deleted"
+                except Exception as state_error:
+                    log_generation_failure(state_error, "document", document_id=document_id)
+                    # A lost connection cannot reconnect and write without ownership.
+                    retryable = retryable or is_retryable_processing_error(state_error)
+                if retryable:
+                    raise RetryableDocumentProcessingError("Document processing temporarily unavailable") from None
+                log_event(logger, logging.WARNING, "processing_permanent_failure", document_id=document_id)
+                outcome = "permanent_failure"
+    except RetryableDocumentProcessingError:
+        raise
     except Exception as error:
-        print(
-            "[QUEUE ERROR] Could not process "
-            f"waiting messages: {error}"
-        )
+        log_generation_failure(error, "document", document_id=document_id)
+        if is_retryable_processing_error(error):
+            raise RetryableDocumentProcessingError("Document processing temporarily unavailable") from None
+        # Sanitize errors escaping to Celery/result storage.
+        raise RuntimeError("Could not start document processing") from None
 
-    if processing_error is not None:
-        raise processing_error
+    if outcome in ("completed", "already_complete", "permanent_failure"):
+        try:
+            process_waiting_messages_for_document(document_id)
+        except Exception as error:
+            # A queue wake-up error must never repeat successful document processing.
+            log_generation_failure(error, "document", document_id=document_id)
+    return outcome
+
+
+def mark_processing_retries_exhausted(document_id):
+    with claim_document_processing(document_id) as claim:
+        if claim is None:
+            return
+        with claim.session() as db:
+            document = db.get(Document, document_id, with_for_update=True)
+            if (document is not None and document.processing_status == "failed"
+                    and document.processing_stage == "retryable_failure"):
+                document.processing_stage = "retry_exhausted"

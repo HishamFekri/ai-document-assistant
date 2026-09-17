@@ -1,4 +1,5 @@
 import os
+import re
 
 from datetime import datetime, timedelta, timezone
 
@@ -11,17 +12,18 @@ from google.oauth2 import id_token
 from sqlalchemy.orm import Session
 
 from app.database.models import User
+from app.services.auth_config import auth_settings
 
 
 load_dotenv()
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+# Loading the shared policy validates configuration at API/worker import.
+GOOGLE_REDIRECT_URI = auth_settings().google_redirect_uri
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
-JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "10080"))
 GOOGLE_CLOCK_SKEW_SECONDS = int(
     os.getenv("GOOGLE_CLOCK_SKEW_SECONDS", "10")
 )
@@ -46,7 +48,7 @@ def verify_google_token(
 
     except ValueError as error:
         raise ValueError(
-            f"Invalid Google credential: {error}"
+            "Invalid Google credential"
         ) from error
 
     except Exception as error:
@@ -57,10 +59,10 @@ def verify_google_token(
     google_sub = google_user.get("sub")
     email = google_user.get("email")
 
-    if not google_sub:
+    if not isinstance(google_sub, str) or not google_sub.strip():
         raise ValueError("Google account ID is missing")
 
-    if not email:
+    if not isinstance(email, str) or not email.strip():
         raise ValueError("Google account email is missing")
 
     if google_user.get("email_verified") is False:
@@ -109,12 +111,7 @@ def exchange_google_code(
         ) from error
 
     if not response.ok:
-        description = (
-            payload.get("error_description")
-            or payload.get("error")
-            or "Google OAuth code exchange failed"
-        )
-        raise ValueError(str(description))
+        raise ValueError("Google OAuth code exchange failed")
 
     credential = payload.get("id_token")
 
@@ -168,7 +165,7 @@ def create_access_token(
 ) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(
-        minutes=JWT_EXPIRE_MINUTES
+        seconds=auth_settings().session_seconds
     )
 
     payload = {
@@ -189,18 +186,25 @@ def decode_access_token(
     token: str,
 ) -> dict:
     try:
-        return jwt.decode(
+        payload = jwt.decode(
             token,
             JWT_SECRET_KEY,
             algorithms=[JWT_ALGORITHM],
+            options={"require": ["exp", "sub"]},
         )
+        subject = payload["sub"]
+        if (not isinstance(subject, str) or not re.fullmatch(r"[1-9][0-9]{0,9}", subject)
+                or int(subject) >= 2**31 or type(payload["exp"]) is not int
+                or ("iat" in payload and type(payload["iat"]) is not int)):
+            raise ValueError("Invalid access token")
+        return payload
 
     except jwt.ExpiredSignatureError as error:
         raise ValueError(
             "Access token has expired"
         ) from error
 
-    except jwt.InvalidTokenError as error:
+    except (jwt.InvalidTokenError, ValueError, TypeError, OverflowError) as error:
         raise ValueError(
             "Invalid access token"
         ) from error

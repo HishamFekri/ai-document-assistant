@@ -1,4 +1,7 @@
 "use client";
+import { useRequestScope } from "@/hooks/useRequestScope";
+import { mergePageItems } from "@/lib/pagination";
+import { logoutSession } from "@/lib/logout";
 
 import {
   ChangeEvent,
@@ -144,6 +147,18 @@ export function useChat(
     && chatId > 0;
 
 
+  const [chatCursor, setChatCursor] = useState<string | null>(null);
+  const [messageCursor, setMessageCursor] = useState<string | null>(null);
+  const [loadingMoreChats, setLoadingMoreChats] = useState(false);
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
+  const olderMessagesLoaded = useRef(false);
+  const messageScope = useRef<number | null>(chatId);
+  const chatPageBusy = useRef(false);
+  const messagePageBusy = useRef(false);
+
+  const scope = useRequestScope(String(chatId));
+  const reconcileIds = useRef(new Set<number>());
+
   const getToken =
     useCallback(() => {
       return "__cookie__";
@@ -164,6 +179,7 @@ export function useChat(
 
   useEffect(() => {
     const handleAuthExpired = () => {
+      scope.dispose();
       setUser(null);
       setChat(null);
       setMessages([]);
@@ -181,275 +197,81 @@ export function useChat(
         handleAuthExpired
       );
     };
-  }, [router]);
+  }, [router, scope]);
 
 
-  const refreshChats =
-    useCallback(
-      async () => {
-        const token =
-          requireToken();
+  const refreshChats = useCallback(async () => {
+    if (!scope.isActive()) return;
+    scope.cancel("chatPage"); chatPageBusy.current = false; setLoadingMoreChats(false);
+    const request = scope.begin("chats");
+    try {
+      const data = await getChats(requireToken(), undefined, request.signal);
+      if (!request.current()) return;
+      setChats(data.items); setChatCursor(data.nextCursor);
+    } catch (error) {
+      if (request.current()) console.error("[CHAT] Could not refresh chats", error);
+    } finally { request.finish(); }
+  }, [scope, requireToken]);
 
-        if (!token) {
-          return;
-        }
+  const refreshChat = useCallback(async () => {
+    if (!scope.isActive() || !validChatId || chatId === null) return;
+    const request = scope.begin("chat");
+    try {
+      const data = await getChat(requireToken(), chatId, request.signal);
+      if (request.current()) setChat(data);
+    } catch (error) {
+      if (request.current()) console.error("[CHAT] Could not refresh chat", error);
+    } finally { request.finish(); }
+  }, [scope, validChatId, chatId, requireToken]);
 
-        try {
-          const data =
-            await getChats(
-              token
-            );
+  const refreshMessages = useCallback(async (replaceTemporaryIds: number[] = []) => {
+    if (!scope.isActive() || !validChatId || chatId === null) return;
+    for (const id of replaceTemporaryIds) reconcileIds.current.add(id);
+    const request = scope.begin("messages");
+    try {
+      const data = await getMessages(requireToken(), chatId, undefined, request.signal);
+      if (!request.current()) return;
+      const removed = new Set(reconcileIds.current);
+      setMessages(current => mergePageItems(current.filter(message => !removed.has(message.id)
+        && !(message.id < 0 && ["completed", "stopped"].includes(message.status ?? ""))), data.items));
+      reconcileIds.current.clear();
+      if (!olderMessagesLoaded.current) setMessageCursor(data.nextCursor);
+    } catch (error) {
+      if (request.current()) console.error("[CHAT] Could not refresh messages", error);
+    } finally { request.finish(); }
+  }, [scope, validChatId, chatId, requireToken]);
 
-          setChats(
-            data
-          );
+  const loadAppData = useCallback(async () => {
+    if (!scope.isActive() || appLoadedRef.current) return;
+    const request = scope.begin("user");
+    setLoading(true);
+    try {
+      const [userData] = await Promise.all([
+        getCurrentUser(requireToken(), request.signal), refreshChats(),
+      ]);
+      if (!request.current()) return;
+      setUser(userData); appLoadedRef.current = true;
+    } catch (error) {
+      if (request.current()) console.error("[CHAT] Could not load app data", error);
+    } finally {
+      if (request.current()) { setLoading(false); request.finish(); }
+    }
+  }, [scope, requireToken, refreshChats]);
 
-        } catch (error) {
-          console.error(
-            "[CHAT] Could not refresh chats",
-            error
-          );
-        }
-      },
-      [
-        requireToken,
-      ]
-    );
-
-
-  const refreshChat =
-    useCallback(
-      async () => {
-        if (
-          !validChatId
-          || chatId === null
-        ) {
-          return;
-        }
-
-        const token =
-          requireToken();
-
-        if (!token) {
-          return;
-        }
-
-        try {
-          const data =
-            await getChat(
-              token,
-              chatId
-            );
-
-          setChat(
-            data
-          );
-
-        } catch (error) {
-          console.error(
-            "[CHAT] Could not refresh chat",
-            error
-          );
-        }
-      },
-      [
-        validChatId,
-        chatId,
-        requireToken,
-      ]
-    );
-
-
-  const refreshMessages =
-    useCallback(
-      async () => {
-        if (
-          !validChatId
-          || chatId === null
-        ) {
-          return;
-        }
-
-        const token =
-          requireToken();
-
-        if (!token) {
-          return;
-        }
-
-        try {
-          const data =
-            await getMessages(
-              token,
-              chatId
-            );
-
-          setMessages(
-            data
-          );
-
-        } catch (error) {
-          console.error(
-            "[CHAT] Could not refresh messages",
-            error
-          );
-        }
-      },
-      [
-        validChatId,
-        chatId,
-        requireToken,
-      ]
-    );
-
-
-  const loadAppData =
-    useCallback(
-      async () => {
-        if (
-          appLoadedRef.current
-        ) {
-          return;
-        }
-
-        const token =
-          requireToken();
-
-        if (!token) {
-          setLoading(
-            false
-          );
-
-          return;
-        }
-
-        try {
-          setLoading(
-            true
-          );
-
-          const [
-            userData,
-            chatsData,
-          ] = await Promise.all([
-            getCurrentUser(
-              token
-            ),
-
-            getChats(
-              token
-            ),
-          ]);
-
-          setUser(
-            userData
-          );
-
-          setChats(
-            chatsData
-          );
-
-          appLoadedRef.current =
-            true;
-
-        } catch (error) {
-          console.error(
-            "[CHAT] Could not load app data",
-            error
-          );
-
-        } finally {
-          setLoading(
-            false
-          );
-        }
-      },
-      [
-        requireToken,
-      ]
-    );
-
-
-  const loadActiveChat =
-    useCallback(
-      async () => {
-        if (
-          !validChatId
-          || chatId === null
-        ) {
-          setChatLoading(
-            false
-          );
-
-          return;
-        }
-
-        const token =
-          requireToken();
-
-        if (!token) {
-          setChatLoading(
-            false
-          );
-
-          return;
-        }
-
-        try {
-          setChatLoading(
-            true
-          );
-
-          const [
-            chatData,
-            messagesData,
-          ] = await Promise.all([
-            getChat(
-              token,
-              chatId
-            ),
-
-            getMessages(
-              token,
-              chatId
-            ),
-          ]);
-
-          setChat(
-            chatData
-          );
-
-          setMessages(
-            messagesData
-          );
-
-        } catch (error) {
-          console.error(
-            "[CHAT] Could not load active chat",
-            error
-          );
-
-          setChat(
-            null
-          );
-
-          setMessages(
-            []
-          );
-
-        } finally {
-          setChatLoading(
-            false
-          );
-        }
-      },
-      [
-        validChatId,
-        chatId,
-        requireToken,
-      ]
-    );
-
+  const loadActiveChat = useCallback(async () => {
+    if (!scope.isActive()) return;
+    messageScope.current = chatId;
+    olderMessagesLoaded.current = false;
+    messagePageBusy.current = false;
+    chatPageBusy.current = false;
+    reconcileIds.current.clear();
+    setMessageCursor(null); setMessages([]); setChat(null);
+    setLoadingOlderMessages(false); setLoadingMoreChats(false);
+    if (!validChatId || chatId === null) { setChatLoading(false); return; }
+    setChatLoading(true);
+    try { await Promise.all([refreshChat(), refreshMessages()]); }
+    finally { if (scope.isActive()) setChatLoading(false); }
+  }, [scope, validChatId, chatId, refreshChat, refreshMessages]);
 
   useEffect(() => {
     loadAppData();
@@ -660,7 +482,11 @@ export function useChat(
 
   const createPersistedChat =
     useCallback(
-      async (): Promise<Chat> => {
+      async (signal?: AbortSignal): Promise<Chat> => {
+        if (!scope.isActive() || signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
+        const request = scope.begin("create");
+        const stopped = () => { if (request.current()) setCreatingChat(false); };
+        signal?.addEventListener("abort", stopped, { once: true });
         const token =
           requireToken();
 
@@ -677,8 +503,9 @@ export function useChat(
         try {
           const newChat =
             await createChat(
-              token
+              token, undefined, signal ?? request.signal
             );
+          if (!request.current() || signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
 
           /*
             Do not add the chat to Recent here.
@@ -694,13 +521,12 @@ export function useChat(
           return newChat;
 
         } finally {
-          setCreatingChat(
-            false
-          );
+          signal?.removeEventListener("abort", stopped);
+          if (request.current()) { setCreatingChat(false); request.finish(); }
         }
       },
       [
-        requireToken,
+        requireToken, scope,
       ]
     );
 
@@ -709,8 +535,10 @@ export function useChat(
     useCallback(
       async (
         targetChatId: number,
-        documentId: number
+        documentId: number,
+        signal?: AbortSignal
       ): Promise<Chat> => {
+        if (!scope.isActive() || signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
         const token =
           requireToken();
 
@@ -724,8 +552,9 @@ export function useChat(
           await attachDocument(
             token,
             targetChatId,
-            documentId
+            documentId, signal
           );
+        if (!scope.isActive() || signal?.aborted) throw new DOMException("Request cancelled", "AbortError");
 
         setChat(
           updatedChat
@@ -734,7 +563,7 @@ export function useChat(
         return updatedChat;
       },
       [
-        requireToken,
+        requireToken, scope,
       ]
     );
 
@@ -831,6 +660,7 @@ export function useChat(
           token,
           file
         );
+        if (!scope.isActive()) return;
 
       const wasCancelled =
         cancelledAttachmentIdsRef
@@ -852,6 +682,7 @@ export function useChat(
             chatId,
             document.id
           );
+        if (!scope.isActive()) return;
       }
 
       if (wasCancelled) {
@@ -866,12 +697,14 @@ export function useChat(
                 chatId,
                 document.id
               );
+        if (!scope.isActive()) return;
 
             setChat(
               detachedChat
             );
 
           } catch (error) {
+      if (!scope.isActive()) return;
             console.error(
               "[CHAT] Could not detach cancelled upload",
               error
@@ -931,6 +764,7 @@ export function useChat(
       );
 
     } catch (error) {
+      if (!scope.isActive()) return;
       console.error(
         "[CHAT UPLOAD ERROR]",
         error
@@ -959,9 +793,7 @@ export function useChat(
       );
 
     } finally {
-      setUploading(
-        false
-      );
+      if (scope.isActive()) setUploading(false);
     }
   }
 
@@ -1012,12 +844,14 @@ export function useChat(
           chatId,
           currentAttachment.documentId
         );
+        if (!scope.isActive()) return;
 
       setChat(
         updatedChat
       );
 
     } catch (error) {
+      if (!scope.isActive()) return;
       console.error(
         "[CHAT] Could not remove composer attachment",
         error
@@ -1056,12 +890,14 @@ export function useChat(
           chatId,
           documentId
         );
+        if (!scope.isActive()) return;
 
       setChat(
         updatedChat
       );
 
     } catch (error) {
+      if (!scope.isActive()) return;
       alert(
         error instanceof Error
           ? error.message
@@ -1096,6 +932,7 @@ export function useChat(
           targetChatId,
           trimmedTitle
         );
+      if (!scope.isActive()) return;
 
       setChats(
         (current) =>
@@ -1123,6 +960,7 @@ export function useChat(
       }
 
     } catch (error) {
+      if (!scope.isActive()) return;
       alert(
         error instanceof Error
           ? error.message
@@ -1150,6 +988,7 @@ export function useChat(
           token,
           targetChatId
         );
+        if (!scope.isActive()) return;
 
       setChats(
         (current) =>
@@ -1180,6 +1019,7 @@ export function useChat(
       }
 
     } catch (error) {
+      if (!scope.isActive()) return;
       alert(
         error instanceof Error
           ? error.message
@@ -1207,6 +1047,7 @@ export function useChat(
           token,
           targetChatId
         );
+        if (!scope.isActive()) return;
 
       const updatedChats =
         chats.map(
@@ -1279,6 +1120,7 @@ export function useChat(
       );
 
     } catch (error) {
+      if (!scope.isActive()) return;
       alert(
         error instanceof Error
           ? error.message
@@ -1308,6 +1150,7 @@ export function useChat(
         token,
         targetChatId
       );
+        if (!scope.isActive()) return;
 
       const remainingChats =
         chats.filter(
@@ -1358,6 +1201,7 @@ export function useChat(
       );
 
     } catch (error) {
+      if (!scope.isActive()) return;
       const message =
         error instanceof Error
           && error.message
@@ -1384,27 +1228,63 @@ export function useChat(
   }
 
 
-  function logout() {
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/auth/logout`,
-      {
-        method: "POST",
-        credentials: "include",
-      }
-    ).catch((error) => {
-      console.error("[LOGOUT ERROR]", error);
-    });
+  async function loadMoreChats() {
+    if (!scope.isActive() || !chatCursor || chatPageBusy.current) return;
+    const request = scope.begin("chatPage");
+    chatPageBusy.current = true;
+    setLoadingMoreChats(true);
+    try {
+      const page = await getChats(requireToken(), chatCursor, request.signal);
+      if (!request.current()) return;
+      setChats((current) => mergePageItems(current, page.items, "chats"));
+      setChatCursor(page.nextCursor);
+    } catch (error) {
+      if (!request.current()) return;
+      window.alert(error instanceof Error ? error.message : "Could not load more chats");
+    } finally {
+      if (request.current()) { chatPageBusy.current = false; setLoadingMoreChats(false); request.finish(); }
+    }
+  }
 
-    appLoadedRef.current =
-      false;
+  async function loadOlderMessages() {
+    if (!scope.isActive() || !messageCursor || chatId === null || messagePageBusy.current) return;
+    const request = scope.begin("messagePage");
+    const targetChatId = chatId;
+    messagePageBusy.current = true;
+    setLoadingOlderMessages(true);
+    try {
+      const page = await getMessages(requireToken(), targetChatId, messageCursor, request.signal);
+      if (!request.current()) return;
+      if (messageScope.current !== targetChatId) return;
+      olderMessagesLoaded.current = true;
+      setMessages((current) => mergePageItems(current, page.items));
+      setMessageCursor(page.nextCursor);
+    } catch (error) {
+      if (!request.current()) return;
+      window.alert(error instanceof Error ? error.message : "Could not load older messages");
+    } finally {
+      if (request.current()) { messagePageBusy.current = false; setLoadingOlderMessages(false); request.finish(); }
+    }
+  }
 
-    router.replace(
-      "/"
-    );
+  async function logout() {
+    await logoutSession(() => {
+      scope.dispose();
+      appLoadedRef.current = false;
+      setUser(null);
+      setChat(null);
+      setChats([]);
+      setMessages([]);
+      setAttachment(null);
+      router.replace("/");
+    }, (message) => window.alert(message));
   }
 
 
   return {
+    hasMoreChats: chatCursor !== null,
+    hasOlderMessages: messageCursor !== null,
+    loadingMoreChats, loadingOlderMessages, loadMoreChats, loadOlderMessages,
     user,
     chat,
     chats,

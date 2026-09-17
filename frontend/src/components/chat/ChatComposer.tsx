@@ -1,4 +1,6 @@
 "use client";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
   ChangeEvent,
@@ -114,6 +116,7 @@ export default function ChatComposer({
   onSubmit,
   onStop,
 }: Props) {
+  const uploadPolicy = useUploadPolicy();
   const hasQuestion =
     Boolean(
       question.trim()
@@ -350,7 +353,7 @@ export default function ChatComposer({
               fileInputRef
             }
             type="file"
-            accept=".pdf,.docx,.xlsx,.txt"
+            accept={uploadPolicy.policy?.supported_extensions.join(",")}
             onChange={
               onUpload
             }
@@ -376,6 +379,7 @@ export default function ChatComposer({
               disabled={
                 uploading
                 || sending
+                || !uploadPolicy.policy
               }
               title="Attach file"
               className="
@@ -568,6 +572,7 @@ export default function ChatComposer({
             )}
           </div>
         </form>
+        <UploadGuidance {...uploadPolicy} />
       </div>
     </div>
   );

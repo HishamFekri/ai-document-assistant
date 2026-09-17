@@ -1,11 +1,12 @@
 import logging
+from app.services.observability import submit_observed
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from dotenv import load_dotenv
 from pypdf import PdfReader
 
+from app.services.retrieval_conventions import integer_page
 from app.services.page_classifier_service import (
     is_complex_page,
 )
@@ -16,40 +17,16 @@ from app.services.datalab_service import (
 )
 
 
-load_dotenv()
 
 
 logger = logging.getLogger(__name__)
 
 
-MAX_PDF_PAGES = int(
-    os.getenv(
-        "MAX_PDF_PAGES",
-        "500",
-    )
-)
-
-MAX_DATALAB_PAGES = int(
-    os.getenv(
-        "MAX_DATALAB_PAGES",
-        "20",
-    )
-)
-
-MAX_DATALAB_RATIO = float(
-    os.getenv(
-        "MAX_DATALAB_RATIO",
-        "0.35",
-    )
-)
-
-
-DATALAB_PARALLEL_BATCHES = int(
-    os.getenv(
-        "DATALAB_PARALLEL_BATCHES",
-        "2",
-    )
-)
+from app.services.resource_limits import upload_limits
+from app.services.upload_validation import validate_document_source, check_pdf_pages, PDFTextBudget
+from app.services.document_resource_errors import DocumentResourceError
+from app.services.content_budget import ContentBudget, check_content
+from app.services.datalab_admission import AdvancedPageBudget
 
 
 def create_pypdf_block(
@@ -114,108 +91,36 @@ def build_page_range(
     )
 
 
-def classify_pdf_pages(
-    reader: PdfReader,
-):
-    simple_blocks = []
-    complex_pages = []
-
-    for page_number, page in enumerate(
-        reader.pages,
-        start=1,
-    ):
+def classify_pdf_pages(reader: PdfReader):
+    simple_blocks, advanced_pages = [], []
+    budget = PDFTextBudget()
+    limit = upload_limits().datalab_document_pages
+    for page_number, page in enumerate(reader.pages, start=1):
         try:
-            text = (
-                page.extract_text()
-                or ""
-            ).strip()
-
+            text = budget.extract(page)
+        except DocumentResourceError:
+            raise
         except Exception:
-            logger.warning(
-                "Could not extract text from PDF page %s",
-                page_number,
-            )
-
+            logger.warning("Could not extract text from PDF page %s", page_number)
             text = ""
-
-        if is_complex_page(
-            page=page,
-            text=text,
-        ):
-            complex_pages.append(
-                page_number
-            )
-
-        elif text:
-            simple_blocks.append(
-                create_pypdf_block(
-                    text=text,
-                    page_number=page_number,
-                )
-            )
-
-    return (
-        simple_blocks,
-        complex_pages,
-    )
+        if is_complex_page(page=page, text=text):
+            if len(advanced_pages) < limit:
+                advanced_pages.append(page_number)
+                continue
+            if not text:
+                # Reject before any batches start; never silently drop scanned pages.
+                raise DocumentResourceError("advanced_pages")
+        if text:
+            simple_blocks.append(create_pypdf_block(text, page_number))
+    return simple_blocks, advanced_pages
 
 
-def validate_processing_cost(
-    total_pages: int,
-    complex_pages: list[int],
-):
-    if total_pages > MAX_PDF_PAGES:
-        raise ValueError(
-            (
-                f"PDF contains {total_pages} pages. "
-                f"Maximum allowed is "
-                f"{MAX_PDF_PAGES} pages."
-            )
-        )
-
-    complex_count = len(
-        complex_pages
-    )
-
-    if complex_count == 0:
-        logger.info(
-            "No advanced PDF processing required"
-        )
-        return
-
-    complex_ratio = (
-        complex_count
-        / total_pages
-    )
-
-    batch_count = (
-        complex_count
-        + MAX_DATALAB_PAGES
-        - 1
-    ) // MAX_DATALAB_PAGES
-
-    logger.info(
-        (
-            "Advanced PDF processing "
-            "pages=%s/%s ratio=%.2f%% "
-            "batch_size=%s batches=%s"
-        ),
-        complex_count,
-        total_pages,
-        complex_ratio * 100,
-        MAX_DATALAB_PAGES,
-        batch_count,
-    )
-
-    if complex_ratio > MAX_DATALAB_RATIO:
-        logger.warning(
-            (
-                "Complex page ratio %.2f%% exceeds "
-                "preferred threshold %.2f%%"
-            ),
-            complex_ratio * 100,
-            MAX_DATALAB_RATIO * 100,
-        )
+def validate_processing_cost(total_pages: int, complex_pages: list[int]):
+    limits = upload_limits()
+    if total_pages > limits.pdf_pages:
+        raise DocumentResourceError("pdf_pages")
+    if len(complex_pages) > limits.datalab_document_pages:
+        raise DocumentResourceError("advanced_pages")
 
 
 def split_page_batches(
@@ -302,7 +207,7 @@ def normalize_block_type(
         or "equation" in raw_type
         or "math" in raw_type
     ):
-        return "formula"
+        return "equation"
 
     if (
         "picture" in raw_type
@@ -332,57 +237,30 @@ def get_datalab_page_number(
         metadata.get("page_id"),
     ]
 
-    for value in possible_values:
-        if value is not None:
-            return value
+    values = [value for value in possible_values if value is not None]
+    if not values:
+        return None
+    first = integer_page(values[0])
+    if any(integer_page(value) != first for value in values[1:]):
+        return "conflicting page metadata"
+    return values[0]
 
-    return None
 
-
-def resolve_original_page(
-    page_number,
-    complex_pages: list[int],
-):
+def resolve_original_page(page_number, complex_pages: list[int], convention: str = "unknown"):
+    """Map only an explicit contract; unverified provider values stay unknown."""
     if page_number is None:
+        return complex_pages[0] if len(complex_pages) == 1 else None
+    value = integer_page(page_number)
+    if value is None:
         return None
-
-    if isinstance(
-        page_number,
-        str,
-    ):
-        try:
-            page_number = int(
-                page_number
-            )
-
-        except ValueError:
-            return None
-
-    if not isinstance(
-        page_number,
-        int,
-    ):
-        return None
-
-    if (
-        0 <= page_number
-        < len(complex_pages)
-    ):
-        return complex_pages[
-            page_number
-        ]
-
-    if (
-        1 <= page_number
-        <= len(complex_pages)
-    ):
-        return complex_pages[
-            page_number - 1
-        ]
-
-    if page_number in complex_pages:
-        return page_number
-
+    if convention == "original_one_based":
+        return value if value in complex_pages else None
+    if convention == "original_zero_based":
+        return value + 1 if value + 1 in complex_pages else None
+    if convention == "batch_zero_based" and 0 <= value < len(complex_pages):
+        return complex_pages[value]
+    if convention == "batch_one_based" and 1 <= value <= len(complex_pages):
+        return complex_pages[value - 1]
     return None
 
 
@@ -552,53 +430,18 @@ def convert_datalab_child(
         )
     )
 
-    original_page = (
-        resolve_original_page(
-            page_number=page_number,
-            complex_pages=complex_pages,
-        )
-    )
-
-    if (
-        original_page is None
-        and len(complex_pages) == 1
-    ):
-        original_page = (
-            complex_pages[0]
-        )
-
-    metadata[
-        "parser"
-    ] = "datalab"
-
+    convention = os.getenv("DATALAB_PAGE_NUMBERING", "unknown")
+    original_page = resolve_original_page(page_number, complex_pages, convention)
+    metadata["provider_page"] = page_number
+    metadata["page_numbering"] = convention
+    metadata["page_mapping_status"] = "resolved" if original_page is not None else "unknown"
+    for key in ("page", "page_number", "page_id", "page_num", "location"):
+        metadata.pop(key, None)
+    metadata['parser'] = 'datalab'
+    location = 'Unknown location'
     if original_page is not None:
-        metadata[
-            "page"
-        ] = original_page
-
-        location = (
-            f"Page {original_page}"
-        )
-
-    else:
-        raw_location = (
-            child.get(
-                "location"
-            )
-            or metadata.get(
-                "location"
-            )
-        )
-
-        if raw_location:
-            location = str(
-                raw_location
-            )
-
-        else:
-            location = (
-                "Unknown location"
-            )
+        metadata['page'] = original_page
+        location = f'Page {original_page}'
 
     content = (
         get_block_content(
@@ -684,6 +527,7 @@ def convert_datalab_children(
     complex_pages: list[int],
     image_assets: list[dict],
     image_state: dict,
+    inherited_page=None,
 ):
     blocks = []
 
@@ -694,11 +538,22 @@ def convert_datalab_children(
         return blocks
 
     for child in children:
+        image_state["nodes"] += 1
+        if image_state["nodes"] > upload_limits().xml_nodes:
+            raise DocumentResourceError("content_limit")
         if not isinstance(
             child,
             dict,
         ):
             continue
+
+        child = dict(child)
+        metadata = child.get('metadata')
+        reported_page = get_datalab_page_number(child, metadata if isinstance(metadata, dict) else {})
+        if reported_page is None:
+            reported_page = inherited_page
+            if reported_page is not None:
+                child['page'] = reported_page
 
         block = (
             convert_datalab_child(
@@ -710,9 +565,7 @@ def convert_datalab_children(
         )
 
         if block:
-            blocks.append(
-                block
-            )
+            blocks.append(image_state["budget"].block(block))
 
         nested_children = (
             child.get(
@@ -724,15 +577,20 @@ def convert_datalab_children(
             nested_children,
             list,
         ):
+            image_state["depth"] += 1
+            if image_state["depth"] > upload_limits().xml_depth:
+                raise DocumentResourceError("content_limit")
             nested_blocks = (
                 convert_datalab_children(
                     children=nested_children,
                     complex_pages=complex_pages,
                     image_assets=image_assets,
                     image_state=image_state,
+                    inherited_page=reported_page,
                 )
             )
 
+            image_state["depth"] -= 1
             blocks.extend(
                 nested_blocks
             )
@@ -772,7 +630,7 @@ def extract_datalab_blocks(
     )
 
     image_state = {
-        "used_indices": set(),
+        "used_indices": set(), "nodes": 0, "depth": 0, "budget": ContentBudget(),
     }
 
     blocks = (
@@ -821,7 +679,7 @@ def extract_datalab_blocks(
             ] = fallback_page
 
         blocks.append(
-            {
+            image_state["budget"].block({
                 "type": "image",
                 "content": (
                     build_image_fallback_content(
@@ -837,7 +695,7 @@ def extract_datalab_blocks(
                     else "Unknown location"
                 ),
                 "metadata": metadata,
-            }
+            })
         )
 
         unassigned_count += 1
@@ -882,385 +740,76 @@ def get_asset_directory(
 
 
 
-def process_datalab_batch(
-    *,
-    path: Path,
-    batch_number: int,
-    batch_pages: list[int],
-    total_batches: int,
-    asset_directory: Path,
-):
-    page_range = (
-        build_page_range(
-            batch_pages
-        )
-    )
-
-    logger.info(
-        (
-            "Processing Datalab batch "
-            "%s/%s range=%s"
-        ),
-        batch_number,
-        total_batches,
-        page_range,
-    )
-
-    datalab_result = (
-        extract_content_with_datalab(
-            file_path=path,
-            page_range=page_range,
-        )
-    )
-
-    document_json = (
-        datalab_result.get(
-            "document_json"
-        )
-    )
-
-    images = (
-        datalab_result.get(
-            "images"
-        )
-        or {}
-    )
-
-    if not document_json:
-        raise ValueError(
-            (
-                "Datalab returned no "
-                "document JSON"
-            )
-        )
-
-    logger.info(
-        "Datalab batch %s returned %s images",
-        batch_number,
-        len(images),
-    )
-
-    batch_asset_directory = (
-        asset_directory
-        / f"batch_{batch_number}"
-    )
-
-    saved_images = {}
-
-    if images:
-        saved_images = (
-            save_datalab_images(
-                images=images,
-                output_directory=(
-                    batch_asset_directory
-                ),
-            )
-        )
-
-    logger.info(
-        "Datalab batch %s saved %s images",
-        batch_number,
-        len(saved_images),
-    )
-
-    return {
-        "batch_number":
-            batch_number,
-        "batch_pages":
-            batch_pages,
-        "document_json":
-            document_json,
-        "saved_images":
-            saved_images,
-    }
+def process_datalab_batch(*, path: Path, batch_number: int, batch_pages: list[int],
+                          total_batches: int, asset_directory: Path, admission):
+    try:
+        result = extract_content_with_datalab(file_path=path, page_range=build_page_range(batch_pages), admission=admission)
+        document_json = result.get("document_json")
+        images = result.get("images") or {}
+        if not document_json:
+            raise ValueError("Datalab returned no document JSON")
+        # Validate provider text before any image upload. The image count is also
+        # included as a block reservation, since fallback image blocks may be added.
+        preliminary = extract_datalab_blocks(document_json, batch_pages, {})
+        check_content(preliminary)
+        if len(preliminary) + len(images) > upload_limits().blocks:
+            raise DocumentResourceError("content_limit")
+        return {"batch_number": batch_number, "batch_pages": batch_pages,
+                "document_json": document_json, "images": images}
+    except DocumentResourceError:
+        admission.stop()
+        raise
 
 
-def extract_content_from_hybrid_pdf(
-    file_path,
-    document_id: int | None = None,
-):
-    path = Path(
-        file_path
-    )
-
-    if not path.exists():
-        raise FileNotFoundError(
-            f"PDF not found: {path.name}"
-        )
-
-    if not path.is_file():
-        raise ValueError(
-            "PDF path is not a file"
-        )
-
-    reader = PdfReader(
-        path
-    )
-
-    total_pages = len(
-        reader.pages
-    )
-
-    logger.info(
-        "Hybrid PDF processing started pages=%s",
-        total_pages,
-    )
-
-    if total_pages > MAX_PDF_PAGES:
-        raise ValueError(
-            (
-                f"PDF contains {total_pages} pages. "
-                f"Maximum allowed is "
-                f"{MAX_PDF_PAGES}."
-            )
-        )
-
-    (
-        simple_blocks,
-        complex_pages,
-    ) = classify_pdf_pages(
-        reader
-    )
-
-    simple_count = (
-        total_pages
-        - len(complex_pages)
-    )
-
-    logger.info(
-        (
-            "PDF classification complete "
-            "simple_pages=%s complex_pages=%s"
-        ),
-        simple_count,
-        len(complex_pages),
-    )
-
-    logger.debug(
-        "Complex PDF page numbers: %s",
-        complex_pages,
-    )
-
-    validate_processing_cost(
-        total_pages=total_pages,
-        complex_pages=complex_pages,
-    )
-
-    datalab_blocks = []
-
-    if complex_pages:
-        page_batches = (
-            split_page_batches(
-                pages=complex_pages,
-                batch_size=MAX_DATALAB_PAGES,
-            )
-        )
-
-        asset_directory = (
-            get_asset_directory(
-                pdf_path=path,
-                document_id=document_id,
-            )
-        )
-
-        total_batches = len(
-            page_batches
-        )
-
-        max_workers = max(
-            1,
-            min(
-                DATALAB_PARALLEL_BATCHES,
-                total_batches,
-            ),
-        )
-
-        batch_results = []
-
-        if max_workers == 1:
-            for (
-                batch_number,
-                batch_pages,
-            ) in enumerate(
-                page_batches,
-                start=1,
-            ):
-                batch_results.append(
-                    process_datalab_batch(
-                        path=path,
-                        batch_number=(
-                            batch_number
-                        ),
-                        batch_pages=(
-                            batch_pages
-                        ),
-                        total_batches=(
-                            total_batches
-                        ),
-                        asset_directory=(
-                            asset_directory
-                        ),
-                    )
-                )
-
-        else:
-            logger.info(
-                (
-                    "Running Datalab batches "
-                    "in parallel workers=%s "
-                    "total_batches=%s"
-                ),
-                max_workers,
-                total_batches,
-            )
-
-            with ThreadPoolExecutor(
-                max_workers=max_workers
-            ) as executor:
-                future_to_batch = {
-                    executor.submit(
-                        process_datalab_batch,
-                        path=path,
-                        batch_number=(
-                            batch_number
-                        ),
-                        batch_pages=(
-                            batch_pages
-                        ),
-                        total_batches=(
-                            total_batches
-                        ),
-                        asset_directory=(
-                            asset_directory
-                        ),
-                    ):
-                        batch_number
-                    for (
-                        batch_number,
-                        batch_pages,
-                    ) in enumerate(
-                        page_batches,
-                        start=1,
-                    )
-                }
-
-                for future in as_completed(
-                    future_to_batch
-                ):
-                    batch_number = (
-                        future_to_batch[
-                            future
-                        ]
-                    )
-
-                    try:
-                        batch_results.append(
-                            future.result()
-                        )
-
-                    except Exception:
-                        logger.exception(
-                            (
-                                "Datalab batch %s "
-                                "failed during parallel "
-                                "processing"
-                            ),
-                            batch_number,
-                        )
-
-                        raise
-
-        batch_results.sort(
-            key=lambda item:
-                item["batch_number"]
-        )
-
-        for batch_result in batch_results:
-            batch_blocks = (
-                extract_datalab_blocks(
-                    document_json=(
-                        batch_result[
-                            "document_json"
-                        ]
-                    ),
-                    complex_pages=(
-                        batch_result[
-                            "batch_pages"
-                        ]
-                    ),
-                    saved_images=(
-                        batch_result[
-                            "saved_images"
-                        ]
-                    ),
-                )
-            )
-
-            datalab_blocks.extend(
-                batch_blocks
-            )
-
-        image_blocks = [
-            block
-            for block in datalab_blocks
-            if block.get(
-                "type"
-            ) == "image"
-        ]
-
-        image_blocks_with_assets = [
-            block
-            for block in image_blocks
-            if block.get(
-                "metadata",
-                {},
-            ).get(
-                "asset_path"
-            )
-        ]
-
-        logger.info(
-            (
-                "Datalab processing complete "
-                "blocks=%s image_blocks=%s "
-                "images_with_assets=%s"
-            ),
-            len(datalab_blocks),
-            len(image_blocks),
-            len(image_blocks_with_assets),
-        )
-
-    else:
-        logger.info(
-            "No Datalab processing required"
-        )
-
-    all_blocks = (
-        simple_blocks
-        + datalab_blocks
-    )
-
-    all_blocks.sort(
-        key=lambda block: (
-            block.get(
-                "metadata",
-                {},
-            ).get(
-                "page",
-                999999,
-            )
-        )
-    )
-
-    logger.info(
-        (
-            "Hybrid PDF processing complete "
-            "pypdf_blocks=%s datalab_blocks=%s "
-            "total_blocks=%s"
-        ),
-        len(simple_blocks),
-        len(datalab_blocks),
-        len(all_blocks),
-    )
-
+def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
+    path = Path(file_path)
+    validate_document_source(path, ".pdf")
+    reader = PdfReader(path)
+    try:
+        total_pages = check_pdf_pages(reader)
+        simple_blocks, complex_pages = classify_pdf_pages(reader)
+    finally:
+        reader.close()
+    validate_processing_cost(total_pages, complex_pages)
+    from app.services.chunk_service import create_chunks_from_content
+    create_chunks_from_content(simple_blocks)
+    if not complex_pages:
+        return simple_blocks
+    limits = upload_limits()
+    admission = AdvancedPageBudget(path, complex_pages)
+    page_batches = split_page_batches(complex_pages, limits.datalab_batch_size)
+    asset_directory = get_asset_directory(path, document_id)
+    results = []
+    # Submit only bounded batches; shared admission checks every paid entry point.
+    with ThreadPoolExecutor(max_workers=min(limits.datalab_parallel_batches, len(page_batches))) as executor:
+        futures = [submit_observed(executor, process_datalab_batch, path=path, batch_number=index,
+                                   batch_pages=pages, total_batches=len(page_batches),
+                                   asset_directory=asset_directory, admission=admission)
+                   for index, pages in enumerate(page_batches, 1)]
+        try:
+            for future in as_completed(futures):
+                results.append(future.result())
+        except BaseException:
+            admission.stop()
+            for future in futures:
+                future.cancel()
+            raise
+    results.sort(key=lambda result: result["batch_number"])
+    all_blocks = list(simple_blocks)
+    for result in results:
+        # Preview successful image references, including fallback descriptions,
+        # before creating remote assets. Failed image uploads can only remove
+        # these references, so they cannot expand the approved content budget.
+        preview = {name: "pending" for name, data in result["images"].items()
+                   if data and Path(name).name}
+        all_blocks.extend(extract_datalab_blocks(result["document_json"], result["batch_pages"], preview))
+        check_content(all_blocks)
+    # Also check chunk admission before creating remote image assets.
+    create_chunks_from_content(all_blocks)
+    all_blocks = list(simple_blocks)
+    for result in results:
+        saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}") if result["images"] else {}
+        all_blocks.extend(extract_datalab_blocks(result["document_json"], result["batch_pages"], saved))
+    check_content(all_blocks)
+    all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
     return all_blocks

@@ -1,6 +1,11 @@
 "use client";
+import { getDocuments } from "@/lib/chat-api";
+import { mergePageItems } from "@/lib/pagination";
+import { logoutSession } from "@/lib/logout";
+import UploadGuidance from "@/components/documents/UploadGuidance";
+import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -43,6 +48,7 @@ type Chat = {
 
 
 export default function DashboardPage() {
+  const uploadPolicy = useUploadPolicy();
   const router = useRouter();
 
   const [user, setUser] = useState<User | null>(
@@ -61,6 +67,26 @@ export default function DashboardPage() {
     true
   );
 
+
+  const [documentCursor, setDocumentCursor] = useState<string | null>(null);
+  const [loadingMoreDocuments, setLoadingMoreDocuments] = useState(false);
+  const documentPageBusy = useRef(false);
+
+  async function loadMoreDocuments() {
+    if (!documentCursor || documentPageBusy.current) return;
+    documentPageBusy.current = true;
+    setLoadingMoreDocuments(true);
+    try {
+      const page = await getDocuments("__cookie__", documentCursor);
+      setDocuments((current) => mergePageItems(current, page.items, "chats"));
+      setDocumentCursor(page.nextCursor);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not load more documents");
+    } finally {
+      documentPageBusy.current = false;
+      setLoadingMoreDocuments(false);
+    }
+  }
 
   async function loadDashboard() {
     const token = "";
@@ -139,6 +165,7 @@ export default function DashboardPage() {
       setDocuments(
         documentsData
       );
+      setDocumentCursor(documentsResponse.headers.get("X-Next-Cursor"));
 
       setChats(
         chatsData
@@ -164,18 +191,13 @@ export default function DashboardPage() {
   }, []);
 
 
-  function logout() {
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/auth/logout`,
-      {
-        method: "POST",
-        credentials: "include",
-      }
-    ).catch((error) => {
-      console.error("[LOGOUT ERROR]", error);
-    });
-
-    router.push("/");
+  async function logout() {
+    await logoutSession(() => {
+      setUser(null);
+      setDocuments([]);
+      setChats([]);
+      router.push("/");
+    }, (message) => window.alert(message));
   }
 
 
@@ -283,10 +305,7 @@ export default function DashboardPage() {
                 Upload documents
               </h2>
 
-              <p className="mt-1 text-sm text-neutral-500">
-                PDF, DOCX, XLSX, or TXT.
-                Maximum file size 50 MB.
-              </p>
+              <UploadGuidance {...uploadPolicy} className="mt-1 text-sm text-neutral-500" />
             </div>
 
             <button className="flex min-h-52 w-full flex-col items-center justify-center rounded-2xl border border-dashed border-neutral-300 bg-neutral-50 transition hover:border-neutral-400 hover:bg-neutral-100">
@@ -375,7 +394,7 @@ export default function DashboardPage() {
             </div>
 
             <span className="text-sm text-neutral-400">
-              {documents.length}
+              {documents.length}{documentCursor ? "+" : ""}
             </span>
           </div>
 
@@ -426,6 +445,12 @@ export default function DashboardPage() {
               )
             )}
           </div>
+          {documentCursor && (
+            <button type="button" disabled={loadingMoreDocuments} onClick={loadMoreDocuments}
+              className="mt-4 rounded border px-3 py-2 text-sm disabled:opacity-50">
+              {loadingMoreDocuments ? "Loading documents..." : "Load more documents"}
+            </button>
+          )}
         </section>
       </section>
     </main>

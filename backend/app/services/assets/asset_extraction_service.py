@@ -1,4 +1,7 @@
+import logging
+from app.services.observability import log_event
 from pathlib import Path
+import json
 
 from sqlalchemy.orm import Session
 
@@ -321,6 +324,30 @@ def build_document_assets(
     return assets
 
 
+def ensure_document_assets(db: Session, document_id: int, content: list[dict]):
+    """Reuse matching rows under the document claim; never delete prior assets."""
+    def identity(asset):
+        return (
+            asset.asset_type, asset.location, asset.title, asset.caption,
+            asset.content, asset.file_path,
+            json.dumps(asset.asset_metadata, sort_keys=True, ensure_ascii=True),
+        )
+
+    existing = db.query(DocumentAsset).filter(DocumentAsset.document_id == document_id).all()
+    identities = {identity(asset) for asset in existing}
+    candidates = build_document_assets(document_id, content)
+    candidate_identities = {identity(asset) for asset in candidates}
+    if not identities.issubset(candidate_identities):
+        # Legacy assets can predate the chunk checkpoint. Changed extraction
+        # output must not silently add alternate copies or erase old references.
+        raise ValueError("Existing document assets require explicit review")
+    for asset in candidates:
+        key = identity(asset)
+        if key not in identities:
+            db.add(asset)
+            identities.add(key)
+
+
 def replace_document_assets(
     db: Session,
     document_id: int,
@@ -355,11 +382,7 @@ def replace_document_assets(
 
     db.flush()
 
-    print(
-        f"[ASSETS] Document "
-        f"{document_id}: "
-        f"{len(assets)} assets found"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "document_assets_found", document_id=document_id, count=len(assets))
 
     image_count = sum(
         1
@@ -382,19 +405,10 @@ def replace_document_assets(
         == "equation"
     )
 
-    print(
-        f"[ASSETS] Images: "
-        f"{image_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_images", images=image_count)
 
-    print(
-        f"[ASSETS] Tables: "
-        f"{table_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_tables", tables=table_count)
 
-    print(
-        f"[ASSETS] Equations: "
-        f"{equation_count}"
-    )
+    log_event(logging.getLogger(__name__), logging.INFO, "asset_equations", equations=equation_count)
 
     return assets

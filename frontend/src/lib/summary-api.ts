@@ -1,3 +1,4 @@
+import { readNDJSON } from "@/lib/ndjson";
 import {
   DocumentSummary,
 } from "@/types/summary";
@@ -69,7 +70,8 @@ export async function getSelectedSummary(
   token: string,
   chatId: number,
   documentId: number,
-  mode: SummaryMode = "summary"
+  mode: SummaryMode = "summary",
+  signal?: AbortSignal
 ): Promise<DocumentSummary | null> {
   const params =
     new URLSearchParams({
@@ -89,6 +91,7 @@ export async function getSelectedSummary(
       ),
       {
         credentials: "include",
+        signal,
         headers:
           getHeaders(token),
 
@@ -196,125 +199,23 @@ export async function streamDocumentSummary(
     );
   }
 
-  const reader =
-    response.body.getReader();
-
-  const decoder =
-    new TextDecoder(
-      "utf-8"
-    );
-
-  let buffer = "";
-
-  let completedSummary:
-    DocumentSummary | null = null;
-
-
-  function processLine(
-    rawLine: string
-  ) {
-    const line =
-      rawLine.trim();
-
-    if (!line) {
-      return;
+  let completed: DocumentSummary | null = null;
+  await readNDJSON(response.body, (raw) => {
+    const event = raw as SummaryStreamEvent;
+    if (event.type === "error") throw new Error(event.message || "Could not generate summary");
+    if (event.type === "done") {
+      const summary = event.summary;
+      if (!summary || summary.chat_id !== chatId || summary.document_id !== documentId
+          || summary.mode !== mode || !Number.isInteger(summary.id) || summary.id <= 0
+          || !["completed", "cancelled", "failed"].includes(summary.status)) {
+        throw new Error("Invalid summary completion");
+      }
+      completed = summary;
     }
-
-    let event:
-      SummaryStreamEvent;
-
-    try {
-      event =
-        JSON.parse(
-          line
-        );
-    } catch {
-      return;
-    }
-
-    if (
-      event.type
-      === "error"
-    ) {
-      throw new Error(
-        event.message
-        || "Could not generate summary"
-      );
-    }
-
-    onEvent(
-      event
-    );
-
-    if (
-      event.type
-      === "done"
-    ) {
-      completedSummary =
-        event.summary;
-    }
-  }
-
-
-  while (true) {
-    const {
-      done,
-      value,
-    } = await reader.read();
-
-    if (value) {
-      buffer +=
-        decoder.decode(
-          value,
-          {
-            stream:
-              !done,
-          }
-        );
-    }
-
-    const lines =
-      buffer.split(
-        "\n"
-      );
-
-    buffer =
-      lines.pop()
-      ?? "";
-
-    for (
-      const rawLine
-      of lines
-    ) {
-      processLine(
-        rawLine
-      );
-    }
-
-    if (done) {
-      break;
-    }
-  }
-
-
-  if (
-    buffer.trim()
-  ) {
-    processLine(
-      buffer
-    );
-  }
-
-
-  if (
-    !completedSummary
-  ) {
-    throw new Error(
-      "Summary stream ended unexpectedly"
-    );
-  }
-
-  return completedSummary;
+    onEvent(event);
+  }, signal);
+  if (!completed) throw new Error("Summary stream ended unexpectedly");
+  return completed;
 }
 
 
@@ -361,7 +262,8 @@ export async function deleteDocumentSummary(
   token: string,
   chatId: number,
   documentId: number,
-  summaryId: number
+  summaryId: number,
+  signal?: AbortSignal
 ) {
   const response =
     await fetch(
@@ -376,6 +278,7 @@ export async function deleteDocumentSummary(
           "DELETE",
 
         credentials: "include",
+        signal,
 
         headers:
           getHeaders(

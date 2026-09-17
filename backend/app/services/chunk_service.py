@@ -1,34 +1,19 @@
-def chunk_text(
-    text: str,
-    chunk_size: int = 300,
-    overlap: int = 50,
-):
+from app.services.retrieval_conventions import canonical_content_type
+from app.services.content_budget import ContentBudget
+
+
+def chunk_text(text: str, chunk_size: int = 300, overlap: int = 50, *, budget=None):
+    if chunk_size <= 0 or not 0 <= overlap < chunk_size:
+        raise ValueError("Invalid chunking parameters")
+    if budget is None:
+        budget = ContentBudget()
+        budget.text(text)
     words = text.split()
-
-    if not words:
-        return []
-
     chunks = []
-    start = 0
-
-    while start < len(words):
-        end = start + chunk_size
-
-        chunk_words = words[
-            start:end
-        ]
-
-        chunks.append(
-            " ".join(
-                chunk_words
-            )
-        )
-
-        start += (
-            chunk_size
-            - overlap
-        )
-
+    for start in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[start:start + chunk_size])
+        budget.chunk(chunk)
+        chunks.append(chunk)
     return chunks
 
 
@@ -117,14 +102,18 @@ def create_chunks_from_content(
     overlap: int = 50,
 ):
     result = []
+    budget = ContentBudget()
 
     for block in blocks:
+        budget.block(block)
         block_type = (
             block.get(
                 "type",
                 "text",
             )
         )
+
+        block_type = canonical_content_type(block_type)
 
         content = (
             block.get(
@@ -147,6 +136,7 @@ def create_chunks_from_content(
                 content,
                 chunk_size,
                 overlap,
+                budget=budget,
             )
 
         elif block_type == "table":
@@ -154,7 +144,7 @@ def create_chunks_from_content(
                 content
             )
 
-        elif block_type == "formula":
+        elif block_type == "equation":
             chunks = chunk_formula(
                 content
             )
@@ -175,9 +165,12 @@ def create_chunks_from_content(
                 content,
                 chunk_size,
                 overlap,
+                budget=budget,
             )
 
         for chunk in chunks:
+            if block_type in {"table", "equation", "code", "image"}:
+                budget.chunk(chunk)
             result.append(
                 {
                     "content": chunk,

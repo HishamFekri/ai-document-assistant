@@ -1,4 +1,12 @@
+from fastapi import Response
+from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
+from fastapi import Query
+from app.services.admission_dependencies import admit_summary
+from app.services.resource_admission import (
+    Permit, ResourceRejected, AdmittedStreamingResponse, stream_resource_error,
+)
 import json
+from types import SimpleNamespace
 
 from fastapi import (
     APIRouter,
@@ -11,7 +19,12 @@ from fastapi.responses import (
     StreamingResponse,
 )
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+from app.database.summary_models import DocumentSummary
+from app.services.error_service import log_generation_failure
+from app.services.summaries.summary_claim import SummaryGenerationBusy
 
 from app.database.database import (
     SessionLocal,
@@ -36,11 +49,13 @@ from app.schemas.summary_schemas import (
 from app.services.summaries.summary_generation_service import (
     generate_summary_for_record,
     stream_summary_content,
+    snapshot_document,
+    start_summary_generation,
+    SummaryGenerationStopped,
 )
 
 from app.services.summaries.summary_service import (
     SummaryMode,
-    create_summary_record,
     delete_summary,
     get_document_summaries,
     get_selected_summary,
@@ -48,7 +63,6 @@ from app.services.summaries.summary_service import (
     mark_summary_cancelled,
     mark_summary_completed,
     mark_summary_failed,
-    mark_summary_generating,
     select_summary,
 )
 
@@ -175,28 +189,12 @@ def ensure_summary_belongs_to_context(
     return summary
 
 
-def summary_was_cancelled(
-    db: Session,
-    summary_id: int,
-) -> bool:
-    summary = (
-        get_summary_by_id(
-            db=db,
-            summary_id=summary_id,
-        )
-    )
-
-    if summary is None:
-        return True
-
-    db.refresh(
-        summary
-    )
-
-    return (
-        summary.status
-        == "cancelled"
-    )
+def summary_was_cancelled(db: Session, summary_id: int) -> bool:
+    current_status = db.scalar(select(DocumentSummary.status).where(
+        DocumentSummary.id == summary_id,
+    ))
+    db.rollback()
+    return current_status not in ("pending", "generating")
 
 
 def build_cancelled_content(
@@ -274,8 +272,11 @@ def build_cancelled_content(
     ],
 )
 def list_document_summaries(
+    response: Response,
     document_id: int,
     chat_id: int,
+    limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
+    cursor: str | None = Query(None, max_length=2048),
     mode: SummaryMode = "summary",
     current_user: User = Depends(
         get_current_user
@@ -293,6 +294,7 @@ def list_document_summaries(
 
     return get_document_summaries(
         db=db,
+        response=response, limit=limit, cursor=cursor, owner=current_user.id,
         chat_id=chat_id,
         document_id=document_id,
         mode=mode,
@@ -353,6 +355,7 @@ def create_document_summary(
     db: Session = Depends(
         get_db
     ),
+    admission: Permit = Depends(admit_summary, scope="request"),
 ):
     _, document = get_chat_document(
         chat_id=data.chat_id,
@@ -373,19 +376,10 @@ def create_document_summary(
             ),
         )
 
-    summary = create_summary_record(
-        db=db,
-        chat_id=data.chat_id,
-        document_id=document_id,
-        mode=data.mode,
+    return generate_summary_for_record(
+        db=db, document=document, chat_id=data.chat_id, mode=data.mode, admission=admission,
     )
 
-    return generate_summary_for_record(
-        db=db,
-        document=document,
-        summary=summary,
-        mode=data.mode,
-    )
 
 
 @router.post(
@@ -394,391 +388,109 @@ def create_document_summary(
 def stream_document_summary(
     document_id: int,
     data: SummaryGenerateRequest,
-    current_user: User = Depends(
-        get_current_user
-    ),
-    db: Session = Depends(
-        get_db
-    ),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    admission: Permit = Depends(admit_summary, scope="request"),
 ):
-    _, document = get_chat_document(
-        chat_id=data.chat_id,
-        document_id=document_id,
-        current_user=current_user,
-        db=db,
-    )
+    _, document = get_chat_document(data.chat_id, document_id, current_user, db)
+    if document.processing_status != "ready":
+        raise HTTPException(409, "Document is not ready for summary generation")
+    user_id, chat_id, mode = current_user.id, data.chat_id, data.mode
+    db.rollback()
 
-    if (
-        document.processing_status
-        != "ready"
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Document is not ready "
-                "for summary generation"
-            ),
-        )
-
-    user_id = current_user.id
-
-    chat_id = data.chat_id
-
-    mode = data.mode
+    def encode(event):
+        return json.dumps(event, ensure_ascii=False) + "\n"
 
     def generate():
-        stream_db = SessionLocal()
-
         summary = None
-
-        title = None
-
-        sections = []
-
-        generator = None
-
-
-        def persist_cancelled_partial():
-            if summary is None:
-                return
-
-            try:
-                current_summary = (
-                    get_summary_by_id(
-                        db=stream_db,
-                        summary_id=summary.id,
-                    )
-                )
-
-                if (
-                    current_summary
-                    is None
-                    or current_summary
-                    .status
-                    == "completed"
-                ):
-                    return
-
-                partial_content = (
-                    build_cancelled_content(
-                        title=title,
-                        sections=sections,
-                        mode=mode,
-                    )
-                )
-
-                mark_summary_cancelled(
-                    db=stream_db,
-                    summary=current_summary,
-                    content=partial_content,
-                )
-
-            except Exception:
-                stream_db.rollback()
-
-
         try:
-            stream_chat = (
-                stream_db.query(Chat)
-                .filter(
-                    Chat.id
-                    == chat_id,
-                    Chat.user_id
-                    == user_id,
+            # Streaming may begin after the request dependency has closed.
+            with SessionLocal() as validation_db:
+                _, document = get_chat_document(
+                    chat_id, document_id, SimpleNamespace(id=user_id), validation_db,
                 )
-                .first()
-            )
-
-            if stream_chat is None:
-                raise ValueError(
-                    "Chat not found"
-                )
-
-            stream_document = (
-                stream_db.query(Document)
-                .filter(
-                    Document.id
-                    == document_id,
-                    Document.user_id
-                    == user_id,
-                )
-                .first()
-            )
-
-            if stream_document is None:
-                raise ValueError(
-                    "Document not found"
-                )
-
-            document_in_chat = any(
-                item.id
-                == document_id
-                for item
-                in stream_chat.documents
-            )
-
-            if not document_in_chat:
-                raise ValueError(
-                    "Document is not attached "
-                    "to this chat"
-                )
-
-            if (
-                stream_document
-                .processing_status
-                != "ready"
+                if document.processing_status != "ready":
+                    raise ValueError("Document is not ready for summary generation")
+                document = snapshot_document(document)
+            with start_summary_generation(chat_id, document_id, mode, admission=admission) as (
+                stream_db, summary, owns_lifecycle,
             ):
-                raise ValueError(
-                    "Document is not ready "
-                    "for summary generation"
-                )
+                if not owns_lifecycle:
+                    return
+                title, sections, generator = None, [], None
 
-            summary = (
-                create_summary_record(
-                    db=stream_db,
-                    chat_id=chat_id,
-                    document_id=document_id,
-                    mode=mode,
-                )
-            )
+                def persist_cancelled_partial():
+                    mark_summary_cancelled(
+                        stream_db, summary,
+                        build_cancelled_content(title, sections, mode),
+                    )
 
-            mark_summary_generating(
-                db=stream_db,
-                summary=summary,
-            )
-
-            yield (
-                json.dumps(
-                    {
-                        "type":
-                            "start",
-
-                        "summary_id":
-                            summary.id,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-            generator = (
-                stream_summary_content(
-                    db=stream_db,
-                    document=(
-                        stream_document
-                    ),
-                    chat_id=chat_id,
-                    mode=mode,
-                )
-            )
-
-            while True:
                 try:
-                    if (
-                        summary_was_cancelled(
-                            db=stream_db,
-                            summary_id=summary.id,
-                        )
-                    ):
-                        persist_cancelled_partial()
-
+                    yield encode({"type": "start", "summary_id": summary.id})
+                    generator = stream_summary_content(
+                        db=stream_db, document=document, chat_id=chat_id, mode=mode,
+                    )
+                    while True:
+                        if summary_was_cancelled(stream_db, summary.id):
+                            persist_cancelled_partial()
+                            return
                         try:
-                            generator.close()
-                        except Exception:
-                            pass
-
-                        return
-
-                    event = next(
-                        generator
-                    )
-
-                    if (
-                        event.get(
-                            "type"
-                        )
-                        == "title"
-                    ):
-                        title = (
-                            event.get(
-                                "title"
-                            )
-                        )
-
-                    elif (
-                        event.get(
-                            "type"
-                        )
-                        == "section"
-                    ):
-                        sections.append(
-                            event[
-                                "section"
-                            ]
-                        )
-
-                    if (
-                        summary_was_cancelled(
-                            db=stream_db,
-                            summary_id=summary.id,
-                        )
-                    ):
+                            event = next(generator)
+                        except StopIteration as stop:
+                            final_content = stop.value or {"title": title, "sections": sections}
+                            break
+                        # A blocked provider may have returned after cancellation.
+                        if summary_was_cancelled(stream_db, summary.id):
+                            persist_cancelled_partial()
+                            return
+                        if event.get("type") == "title":
+                            title = event.get("title")
+                        elif event.get("type") == "section":
+                            sections.append(event["section"])
+                        yield encode(event)
+                    completed = mark_summary_completed(stream_db, summary, final_content)
+                    if completed is None or completed.status != "completed":
                         persist_cancelled_partial()
-
-                        try:
-                            generator.close()
-                        except Exception:
-                            pass
-
                         return
-
-                    yield (
-                        json.dumps(
-                            event,
-                            ensure_ascii=False,
-                        )
-                        + "\n"
+                    yield encode({
+                        "type": "done",
+                        "summary": DocumentSummaryResponse.model_validate(completed).model_dump(mode="json"),
+                    })
+                except SummaryGenerationStopped:
+                    persist_cancelled_partial()
+                    return
+                except GeneratorExit:
+                    # Save only what this owner actually sent, before releasing
+                    # the claim. A completed/deleted record remains untouched.
+                    persist_cancelled_partial()
+                    raise
+                except Exception as error:
+                    public_error = log_generation_failure(
+                        error, "summary", document_id=document_id,
+                        chat_id=chat_id, summary_id=summary.id,
                     )
-
-                except StopIteration as stop:
-                    final_content = (
-                        stop.value
-                        or {
-                            "title":
-                                title,
-
-                            "sections":
-                                sections,
-                        }
-                    )
-
-                    break
-
-            if (
-                summary_was_cancelled(
-                    db=stream_db,
-                    summary_id=summary.id,
-                )
-            ):
-                persist_cancelled_partial()
-
-                return
-
-            summary = (
-                mark_summary_completed(
-                    db=stream_db,
-                    summary=summary,
-                    content=final_content,
-                )
-            )
-
-            if (
-                summary.status
-                == "cancelled"
-            ):
-                return
-
-            response_summary = (
-                DocumentSummaryResponse
-                .model_validate(
-                    summary
-                )
-                .model_dump(
-                    mode="json"
-                )
-            )
-
-            yield (
-                json.dumps(
-                    {
-                        "type":
-                            "done",
-
-                        "summary":
-                            response_summary,
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-        except GeneratorExit:
-            # The browser closed the stream, for example after Stop.
-            # Persist exactly what had already streamed instead of
-            # losing it or falling back to the previous result.
-            persist_cancelled_partial()
-
-            if generator is not None:
-                try:
-                    generator.close()
-                except Exception:
-                    pass
-
-            raise
-
-        except Exception as error:
-            stream_db.rollback()
-
-            if (
-                summary is not None
-            ):
-                try:
-                    summary = (
-                        stream_db
-                        .query(
-                            type(summary)
-                        )
-                        .filter(
-                            type(summary).id
-                            == summary.id
-                        )
-                        .first()
-                    )
-
-                    if summary is not None:
-                        mark_summary_failed(
-                            db=stream_db,
-                            summary=summary,
-                            error=(
-                                "Summary generation failed. "
-                                "Please try again."
-                            ),
-                        )
-
-                except Exception:
                     stream_db.rollback()
-
-            yield (
-                json.dumps(
-                    {
-                        "type":
-                            "error",
-
-                        "message": (
-                            "Summary generation failed. "
-                            "Please try again."
-                        ),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
+                    mark_summary_failed(stream_db, summary, public_error)
+                    yield encode({"type": "error", "message": public_error})
+                finally:
+                    if generator is not None:
+                        generator.close()
+        except ResourceRejected as error:
+            yield encode(stream_resource_error(error))
+        except SummaryGenerationBusy as error:
+            # Existing frontend understands this error event; never send a start
+            # event that would let this duplicate cancel the original request.
+            yield encode({"type": "error", "message": error.detail})
+        except Exception as error:
+            public_error = log_generation_failure(
+                error, "summary", document_id=document_id,
+                chat_id=chat_id, summary_id=summary.id if summary else None,
             )
+            yield encode({"type": "error", "message": public_error})
 
-        finally:
-            stream_db.close()
-
-    return StreamingResponse(
-        generate(),
-        media_type=(
-            "application/x-ndjson"
-        ),
-        headers={
-            "Cache-Control":
-                "no-cache",
-
-            "X-Accel-Buffering":
-                "no",
-        },
+    return AdmittedStreamingResponse(
+        generate(), admission, media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
@@ -816,37 +528,17 @@ def cancel_document_summary(
         )
     )
 
-    if (
-        summary.status
-        == "completed"
-    ):
-        return {
-            "message":
-                "Summary already completed",
-            "summary_id":
-                summary.id,
-            "status":
-                summary.status,
-        }
-
-    if (
-        summary.status
-        != "cancelled"
-    ):
-        summary = (
-            mark_summary_cancelled(
-                db=db,
-                summary=summary,
-            )
-        )
-
+    summary = mark_summary_cancelled(db=db, summary=summary)
+    if summary is None:
+        raise HTTPException(404, "Summary not found")
     return {
-        "message":
-            "Summary generation cancelled",
-        "summary_id":
-            summary.id,
-        "status":
-            summary.status,
+        "message": (
+            "Summary already completed" if summary.status == "completed"
+            else "Summary generation cancelled" if summary.status == "cancelled"
+            else "Summary generation already stopped"
+        ),
+        "summary_id": summary.id,
+        "status": summary.status,
     }
 
 
