@@ -23,4 +23,4 @@ openpyxl==3.1.5
 celery==5.6.3
 redis==8.1.0
 
-cloudinary==1.44.1
+cloudinary==1.46.2
