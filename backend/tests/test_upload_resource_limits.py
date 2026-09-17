@@ -425,8 +425,81 @@ class UploadResourceTests(unittest.TestCase):
     def test_http_policy_exposes_only_configured_product_limits(self):
         self.configure(MAX_PDF_PAGES=12)
         response = self.http_client().get("/documents/upload-policy")
+        self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json(), {"supported_extensions": [".pdf", ".docx", ".xlsx", ".txt"],
                                           "max_file_bytes": 50 * 1024**2, "max_pdf_pages": 12})
+
+    def test_http_policy_cannot_be_shadowed_by_document_route_registered_first(self):
+        from fastapi import APIRouter
+        routes = sorted(self.documents.router.routes,
+                        key=lambda route: route.endpoint is not self.documents.get_document)
+        # Reproduce the unsafe ordering with the real routes and dependencies.
+        with patch.object(self.documents, "router", APIRouter(routes=routes)), \
+             patch.object(self.documents, "get_owned_document") as lookup:
+            response = self.http_client().get("/documents/upload-policy")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), self.limits.upload_limits().public_policy())
+        self.assertNotIn("int_parsing", response.text)
+        lookup.assert_not_called()
+        self.assertEqual(self.rates.calls, 1)
+
+    def test_http_numeric_document_route_preserves_lookup_and_public_path(self):
+        from fastapi import HTTPException
+        client = self.http_client()
+        document = SimpleNamespace(
+            id=123, user_id=1, filename="synthetic.txt", file_type="txt", pages_count=None,
+            processing_status="ready", processing_stage="completed", processing_progress=100,
+            processing_error=None, created_at=datetime.now(timezone.utc),
+        )
+        with patch.object(self.documents, "get_owned_document", return_value=document) as lookup:
+            response = client.get("/documents/123")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["id"], 123)
+            lookup.assert_called_once_with(db=self.db, document_id=123, current_user=self.db.get.return_value)
+            lookup.side_effect = HTTPException(404, "Document not found")
+            missing = client.get("/documents/124")
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(missing.json(), {"detail": "Document not found"})
+        paths = client.get("/openapi.json").json()["paths"]
+        self.assertIn("get", paths["/documents/{document_id}"])
+        self.assertEqual(self.rates.calls, 2)
+
+    def test_http_invalid_document_paths_fail_without_document_lookup(self):
+        client = self.http_client()
+        with patch.object(self.documents, "get_owned_document") as lookup:
+            for value in ("not-a-number", "1.5", "-1"):
+                with self.subTest(value=value):
+                    response = client.get(f"/documents/{value}")
+                    # The unchanged DELETE route matches the path only; no GET
+                    # handler accepts it, so Starlette returns its safe 405.
+                    self.assertEqual(response.status_code, 405, response.text)
+                    self.assertEqual(response.json(), {"detail": "Method Not Allowed"})
+        lookup.assert_not_called()
+
+    def test_http_policy_and_document_routes_keep_auth_and_admission(self):
+        client = self.http_client()
+        with patch.object(self.documents, "get_owned_document") as lookup, \
+             patch.object(self.documents, "upload_limits") as policy:
+            for path in ("/documents/upload-policy", "/documents/123"):
+                with self.subTest(path=path):
+                    client.headers.pop("Authorization", None)
+                    before = self.rates.calls
+                    self.assertEqual(client.get(path).status_code, 401)
+                    self.assertEqual(self.rates.calls, before)
+                    client.headers["Authorization"] = "Bearer synthetic"
+                    with patch.object(self.rates, "eval", return_value=(0, 7)):
+                        limited = client.get(path)
+                    self.assertEqual(limited.status_code, 429)
+                    self.assertEqual(limited.json()["code"], "rate_limit")
+                    self.assertEqual(limited.headers["Retry-After"], "7")
+                    with patch.object(self.rates, "eval", side_effect=RuntimeError("private Redis marker")):
+                        unavailable = client.get(path)
+                    self.assertEqual(unavailable.status_code, 503)
+                    self.assertEqual(unavailable.json()["code"], "admission_unavailable")
+                    self.assertEqual(unavailable.headers["Retry-After"], "5")
+                    self.assertNotIn("private Redis marker", unavailable.text)
+        lookup.assert_not_called()
+        policy.assert_not_called()
 
     def test_declared_oversized_body_rejected_before_multipart_or_quota(self):
         client = self.http_client()
