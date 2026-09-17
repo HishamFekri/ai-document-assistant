@@ -375,7 +375,7 @@ def get_documents(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1
 
 
 @router.get(
-    "/{document_id}",
+    "/{document_id:int}",
     response_model=DocumentResponse,
 )
 def get_document(
