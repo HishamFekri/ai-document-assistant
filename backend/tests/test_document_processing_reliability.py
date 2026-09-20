@@ -19,6 +19,9 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
 import test_embedding_recovery as embedding_test_harness
 from test_embedding_recovery import vector
 
@@ -336,6 +339,45 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(self.processing.process_document(1), "permanent_failure")
         self.extract.assert_not_called()
         self.embed.assert_not_called()
+
+    def test_late_delivery_cannot_process_a_reconciled_stale_document(self):
+        self.state.document.processing_status = "failed"
+        self.state.document.processing_stage = "retry_exhausted"
+        with patch.object(self.processing, "materialize_original") as materialize:
+            self.assertEqual(self.processing.process_document(1), "permanent_failure")
+        materialize.assert_not_called()
+        self.extract.assert_not_called()
+        self.embed.assert_not_called()
+
+    def test_processing_progress_refreshes_the_liveness_timestamp(self):
+        engine = create_engine("sqlite://")
+        self.processing.Document.__table__.create(engine)
+        old_timestamp = datetime(2000, 1, 1)
+        with Session(engine) as db, db.begin():
+            document = self.processing.Document(
+                filename="synthetic.txt",
+                file_type="txt",
+                processing_status="processing",
+                processing_stage="uploaded",
+                processing_progress=5,
+                processing_updated_at=old_timestamp,
+            )
+            db.add(document)
+            db.flush()
+            document_id = document.id
+
+        class Claim:
+            @contextmanager
+            def session(self):
+                with Session(engine) as db, db.begin():
+                    yield db
+
+        self.processing.set_progress(Claim(), document_id, "analyzing_document", 20)
+        with Session(engine) as db:
+            document = db.get(self.processing.Document, document_id)
+            self.assertEqual(document.processing_stage, "analyzing_document")
+            self.assertEqual(document.processing_progress, 20)
+            self.assertGreater(document.processing_updated_at, old_timestamp)
 
     def test_retry_publish_error_is_sanitized_without_another_processing_attempt(self):
         task = self.worker.process_document_task

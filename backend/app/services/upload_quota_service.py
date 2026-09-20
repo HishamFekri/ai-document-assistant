@@ -1,14 +1,62 @@
 """Serialize reservations using existing rows and shared, immutable originals."""
 
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
 from app.database.models import Document
 from app.services.resource_admission import AdmissionUnavailable, ResourceRejected, user_operation
 from app.services.resource_limits import resource_limits, upload_limits
+
+
+PROCESSING_STALE_SECONDS = 15 * 60
+PROCESSING_CLAIM_NAMESPACE = 0x444F4350
+TRY_STALE_PROCESSING_CLAIM = text(
+    "SELECT pg_try_advisory_xact_lock(:namespace, :document_id)"
+)
+STALE_PROCESSING_ERROR = "Document processing was interrupted. Please retry."
+
+
+def stale_processing_cutoff():
+    return func.now() - timedelta(seconds=PROCESSING_STALE_SECONDS)
+
+
+def reconcile_stale_processing(db, user_id):
+    """Fail old processing rows only while atomically proving no worker owns them."""
+    candidate_ids = db.scalars(select(Document.id).where(
+        Document.user_id == user_id,
+        Document.processing_status == "processing",
+        Document.processing_updated_at <= stale_processing_cutoff(),
+    )).all()
+    db.rollback()
+
+    for document_id in candidate_ids:
+        try:
+            acquired = db.scalar(TRY_STALE_PROCESSING_CLAIM, {
+                "namespace": PROCESSING_CLAIM_NAMESPACE,
+                "document_id": document_id,
+            })
+            if not acquired:
+                db.rollback()
+                continue
+            db.execute(update(Document).where(
+                Document.id == document_id,
+                Document.user_id == user_id,
+                Document.processing_status == "processing",
+                Document.processing_updated_at <= stale_processing_cutoff(),
+            ).values(
+                processing_status="failed",
+                processing_stage="retry_exhausted",
+                processing_error=STALE_PROCESSING_ERROR,
+            ).execution_options(synchronize_session=False))
+            # The transaction-scoped document lock releases with this commit.
+            db.commit()
+        except BaseException:
+            db.rollback()
+            raise
 
 
 def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload_root=Path("uploads")):
@@ -55,6 +103,7 @@ def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload
 def upload_quota_session(user_id, *, incoming_bytes=None, retry_document_id=None):
     with user_operation(user_id, "upload_quota", rate=False) as permit:
         with Session(bind=permit.connection, expire_on_commit=False, autoflush=False) as db:
+            reconcile_stale_processing(db, user_id)
             rows = db.execute(select(
                 Document.id, Document.file_path, Document.file_size_bytes,
                 Document.processing_status,
