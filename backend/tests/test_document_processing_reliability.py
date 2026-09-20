@@ -7,8 +7,10 @@ blocked networking. PostgreSQL lock behavior has separate guarded live tests.
 import copy
 from contextlib import contextmanager, ExitStack
 from datetime import datetime
+import hashlib
 import importlib
 import io
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -29,6 +31,7 @@ class ProcessingState:
         self.document = SimpleNamespace(
             id=1, user_id=7, filename="synthetic.txt", file_type="txt",
             file_path="synthetic.txt", pages_count=None, processing_status="processing",
+            storage_key=None, file_size_bytes=None, file_sha256=None,
             processing_stage="uploaded", processing_progress=5, processing_error=None,
             created_at=datetime(2026, 1, 1),
         )
@@ -115,6 +118,7 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         embedding_test_harness.EmbeddingRecoveryTests.setUpClass.__func__(cls)
         cls.claims = importlib.import_module("app.services.document_processing_claim")
         cls.failures = importlib.import_module("app.services.document_processing_errors")
+        cls.storage = importlib.import_module("app.services.original_storage")
         cls.queue_module = importlib.import_module("app.services.task_queue")
         cls.worker = importlib.import_module("app.worker")
         cls.errors = importlib.import_module("app.services.error_service")
@@ -262,7 +266,7 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
     def test_background_and_legacy_paths_share_the_claim(self):
         self.assertIs(self.parser_service.process_document, self.processing.process_document)
         self.state.owned = True
-        self.queue_module._run_document_processing(1, "ignored.txt")
+        self.queue_module._run_document_processing(1)
         self.extract.assert_not_called()
         self.embed.assert_not_called()
 
@@ -349,7 +353,7 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         with patch.object(self.queue_module, "TASK_QUEUE", "celery"), \
                 patch.object(self.worker.process_document_task, "apply_async") as submit:
             self.queue_module.enqueue_document_processing(MagicMock(), 1, "synthetic.txt")
-        submit.assert_called_once_with(args=(1, "synthetic.txt"), retry=False)
+        submit.assert_called_once_with(args=(1,), retry=False)
 
     def test_lost_claim_never_reconnects_for_a_write(self):
         connection = MagicMock(closed=False, invalidated=True)
@@ -412,23 +416,11 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         @contextmanager
         def quota(*args, **kwargs):
             yield db
-        async def direct_preflight(function, *args):
-            return function(*args)
         with patch.object(self.routes, "UPLOAD_DIR", Path(self.temp)), \
-                patch.object(self.routes, "run_in_threadpool", side_effect=direct_preflight), \
                 patch.object(self.routes, "upload_quota_session", side_effect=quota), \
                 patch.object(self.routes, "enqueue_document_processing", side_effect=RuntimeError("secret broker URL")), \
                 patch.object(self.routes, "log_generation_failure"), patch.object(self.routes.logger, "warning"):
-            # Execute preflight directly in this fixture. Drive the route
-            # without creating Windows asyncio's loopback socketpair; networking
-            # remains completely blocked by the harness.
-            coroutine = self.routes.upload_document(BackgroundTasks(), UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"), db, SimpleNamespace(id=7))
-            try:
-                with self.assertRaises(StopIteration) as completed:
-                    coroutine.send(None)
-                response = completed.exception.value
-            finally:
-                coroutine.close()
+            response = self.routes.upload_document(BackgroundTasks(), UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"), db, SimpleNamespace(id=7))
         self.assertEqual(response.processing_status, "failed")
         self.assertNotIn("secret", response.model_dump_json())
         self.assertTrue(Path(saved[0].file_path).exists())
@@ -438,9 +430,265 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertIn("documents.processing_stage =", sql)
         self.assertIn("documents.processing_status =", sql)
 
+    def test_private_raw_storage_persists_exact_metadata(self):
+        source = io.BytesIO(b"synthetic original")
+        upload_options = {}
+
+        def upload(upload_source, **options):
+            upload_options.update(options)
+            self.assertIs(upload_source.source, source)
+            return {
+                "public_id": options["public_id"],
+                "resource_type": "raw",
+                "type": "authenticated",
+                "bytes": len(source.getvalue()),
+            }
+
+        with patch.object(self.storage, "uses_shared_original_storage", return_value=True), \
+                patch.object(self.storage, "_cloudinary_config", return_value=SimpleNamespace(
+                    cloud_name="synthetic", api_key="synthetic", api_secret="synthetic",
+                )), patch.object(self.storage.cloudinary.uploader, "upload_large", side_effect=upload), \
+                patch.object(self.storage.cloudinary.uploader, "destroy") as destroy:
+            stored = self.storage.store_original(
+                source, ".txt", len(source.getvalue()), 1024, Path(self.temp),
+            )
+
+        self.assertIsNone(stored.file_path)
+        self.assertRegex(stored.storage_key, self.storage.STORAGE_KEY_PATTERN)
+        self.assertEqual(stored.file_size_bytes, len(source.getvalue()))
+        self.assertEqual(stored.file_sha256, hashlib.sha256(source.getvalue()).hexdigest())
+        self.assertEqual(upload_options["resource_type"], "raw")
+        self.assertEqual(upload_options["type"], "authenticated")
+        self.assertFalse(upload_options["overwrite"])
+        self.assertEqual(source.tell(), 0)
+        destroy.assert_not_called()
+
+    def test_signed_worker_downloads_support_every_document_extension(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        identifier = "0123456789abcdef0123456789abcdef"
+        config = self.storage.cloudinary.Config()
+        config.update(cloud_name="synthetic", api_key="synthetic", api_secret="synthetic")
+        with patch.object(self.storage.cloudinary, "_config", config):
+            for extension in ("pdf", "docx", "xlsx", "txt"):
+                with self.subTest(extension=extension):
+                    storage_key = f"ai-document-assistant/originals/{identifier}.{extension}"
+                    parsed = urlsplit(self.storage._signed_download_url(storage_key, extension))
+                    query = parse_qs(parsed.query)
+                    self.assertEqual(parsed.scheme, "https")
+                    self.assertEqual(parsed.netloc, "api.cloudinary.com")
+                    self.assertEqual(query["public_id"], [storage_key])
+                    self.assertEqual(query["format"], [extension])
+                    self.assertEqual(query["type"], ["authenticated"])
+
+    def test_storage_upload_failure_creates_no_document(self):
+        from fastapi import BackgroundTasks, HTTPException, UploadFile
+
+        db = MagicMock()
+        @contextmanager
+        def quota(*args, **kwargs):
+            yield db
+
+        with patch.object(self.routes, "upload_quota_session", side_effect=quota), \
+                patch.object(self.routes, "store_original", side_effect=RuntimeError("storage unavailable")), \
+                patch.object(self.routes, "enqueue_document_processing") as enqueue, \
+                self.assertRaises(HTTPException) as error:
+            self.routes.upload_document(
+                BackgroundTasks(),
+                UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"),
+                db,
+                SimpleNamespace(id=7),
+            )
+
+        self.assertEqual(error.exception.status_code, 500)
+        db.add.assert_not_called()
+        db.commit.assert_not_called()
+        enqueue.assert_not_called()
+
+    def test_ambiguous_private_upload_is_compensated_without_closing_request_file(self):
+        source = io.BytesIO(b"synthetic original")
+        storage_key = "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.pdf"
+        with patch.object(self.storage, "uses_shared_original_storage", return_value=True), \
+                patch.object(self.storage, "_cloudinary_config", return_value=SimpleNamespace(
+                    cloud_name="synthetic", api_key="synthetic", api_secret="synthetic",
+                )), patch.object(self.storage, "uuid4", return_value=SimpleNamespace(
+                    hex="0123456789abcdef0123456789abcdef",
+                )), patch.object(
+                    self.storage.cloudinary.uploader, "upload_large",
+                    side_effect=RuntimeError("ambiguous provider response"),
+                ), patch.object(
+                    self.storage.cloudinary.uploader, "destroy", return_value={"result": "not found"},
+                ) as destroy, self.assertRaises(RuntimeError):
+            self.storage.store_original(source, ".pdf", len(source.getvalue()), 1024, Path(self.temp))
+
+        destroy.assert_called_once_with(
+            storage_key,
+            resource_type="raw",
+            type="authenticated",
+            invalidate=False,
+            timeout=30,
+        )
+        self.assertFalse(source.closed)
+        self.assertEqual(source.tell(), 0)
+
+    def test_production_upload_records_shared_key_checksum_and_enqueues_by_id(self):
+        from fastapi import BackgroundTasks, UploadFile
+
+        db = MagicMock()
+        saved = []
+        def add(document):
+            document.id = 1
+            document.created_at = datetime(2026, 1, 1)
+            saved.append(document)
+        db.add.side_effect = add
+        @contextmanager
+        def quota(*args, **kwargs):
+            yield db
+        stored = self.storage.StoredOriginal(
+            None,
+            "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt",
+            9,
+            "a" * 64,
+        )
+        tasks = BackgroundTasks()
+        with patch.object(self.routes, "upload_quota_session", side_effect=quota), \
+                patch.object(self.routes, "store_original", return_value=stored), \
+                patch.object(self.routes, "enqueue_document_processing") as enqueue:
+            response = self.routes.upload_document(
+                tasks,
+                UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"),
+                db,
+                SimpleNamespace(id=7),
+            )
+
+        self.assertEqual(response.id, 1)
+        self.assertIsNone(saved[0].file_path)
+        self.assertEqual(saved[0].storage_key, stored.storage_key)
+        self.assertEqual(saved[0].file_size_bytes, 9)
+        self.assertEqual(saved[0].file_sha256, "a" * 64)
+        enqueue.assert_called_once_with(tasks, 1, None)
+
+    def test_document_commit_failure_removes_uploaded_shared_original(self):
+        from fastapi import BackgroundTasks, HTTPException, UploadFile
+
+        db = MagicMock()
+        db.commit.side_effect = RuntimeError("database unavailable")
+        @contextmanager
+        def quota(*args, **kwargs):
+            yield db
+        stored = self.storage.StoredOriginal(
+            None,
+            "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt",
+            9,
+            "a" * 64,
+        )
+        with patch.object(self.routes, "upload_quota_session", side_effect=quota), \
+                patch.object(self.routes, "store_original", return_value=stored), \
+                patch.object(self.routes, "delete_stored_original") as delete, \
+                patch.object(self.routes, "enqueue_document_processing") as enqueue, \
+                self.assertRaises(HTTPException) as error:
+            self.routes.upload_document(
+                BackgroundTasks(),
+                UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"),
+                db,
+                SimpleNamespace(id=7),
+            )
+
+        self.assertEqual(error.exception.status_code, 500)
+        delete.assert_called_once_with(stored.storage_key)
+        enqueue.assert_not_called()
+
+    def test_worker_download_is_verified_and_temporary_file_is_always_removed(self):
+        data = b"verified shared original"
+        temporary_path = Path(self.temp) / "worker-original.txt"
+        response = MagicMock()
+        response.status_code = 200
+        response.headers = {"Content-Length": str(len(data)), "Content-Encoding": "identity"}
+        response.iter_content.return_value = [data[:8], data[8:]]
+        response_context = MagicMock()
+        response_context.__enter__.return_value = response
+        session = MagicMock()
+        session.get.return_value = response_context
+        session_context = MagicMock()
+        session_context.__enter__.return_value = session
+
+        def make_temporary(**kwargs):
+            descriptor = os.open(temporary_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            return descriptor, str(temporary_path)
+
+        with patch.object(self.storage, "_signed_download_url", return_value="https://api.cloudinary.com/signed"), \
+                patch.object(self.storage.requests, "Session", return_value=session_context), \
+                patch.object(self.storage.tempfile, "mkstemp", side_effect=make_temporary):
+            with self.storage.materialize_original(
+                file_path=None,
+                storage_key="ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt",
+                file_type="txt",
+                expected_size=len(data),
+                checksum=hashlib.sha256(data).hexdigest(),
+                max_size=1024,
+            ) as path:
+                self.assertTrue(path.is_file())
+                self.assertEqual(path.read_bytes(), data)
+            self.assertFalse(temporary_path.exists())
+
+        bad_path = Path(self.temp) / "worker-bad-original.txt"
+        response.iter_content.return_value = [data]
+        with patch.object(self.storage, "_signed_download_url", return_value="https://api.cloudinary.com/signed"), \
+                patch.object(self.storage.requests, "Session", return_value=session_context), \
+                patch.object(self.storage.tempfile, "mkstemp", side_effect=lambda **kwargs: (
+                    os.open(bad_path, os.O_CREAT | os.O_EXCL | os.O_RDWR), str(bad_path),
+                )), self.assertRaises(ValueError):
+            with self.storage.materialize_original(
+                file_path=None,
+                storage_key="ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt",
+                file_type="txt",
+                expected_size=len(data),
+                checksum="0" * 64,
+                max_size=1024,
+            ):
+                pass
+        self.assertFalse(bad_path.exists())
+
+    def test_worker_download_failure_uses_existing_retryable_failed_state(self):
+        import requests
+
+        self.state.document.file_path = None
+        self.state.document.storage_key = (
+            "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt"
+        )
+        self.state.document.file_size_bytes = 9
+        self.state.document.file_sha256 = "a" * 64
+
+        @contextmanager
+        def failed_download(**kwargs):
+            raise requests.ConnectionError("synthetic storage outage")
+            yield
+
+        with patch.object(self.processing, "materialize_original", failed_download), \
+                self.assertRaises(self.failures.RetryableDocumentProcessingError):
+            self.processing.process_document(1)
+        self.assertEqual(self.state.document.processing_status, "failed")
+        self.assertEqual(self.state.document.processing_stage, "retryable_failure")
+        self.extract.assert_not_called()
+
+    def test_document_deletion_removes_authenticated_raw_original_after_commit(self):
+        storage_key = "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt"
+        document = SimpleNamespace(id=1, file_path=None, storage_key=storage_key)
+        db = MagicMock()
+        with patch.object(self.routes, "get_owned_document", return_value=document), \
+                patch.object(self.routes, "delete_stored_original") as delete:
+            result = self.routes.delete_document(1, db, SimpleNamespace(id=7))
+        self.assertEqual(result["document_id"], 1)
+        db.commit.assert_called_once()
+        delete.assert_called_once_with(storage_key)
+
     def test_retry_route_resets_interrupted_work_and_releases_claim_before_dispatch(self):
         from fastapi import BackgroundTasks
         db = MagicMock()
+        self.state.document.file_path = None
+        self.state.document.storage_key = (
+            "ai-document-assistant/originals/0123456789abcdef0123456789abcdef.txt"
+        )
         with patch.object(self.routes, "get_owned_document", return_value=self.state.document), \
                 patch.object(self.routes, "claim_document_processing", self.state.claim), \
                 patch.object(self.routes, "enqueue_document_processing") as dispatch:

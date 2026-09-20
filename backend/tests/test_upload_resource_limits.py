@@ -402,13 +402,14 @@ class UploadResourceTests(unittest.TestCase):
         self.assertEqual(response.json()["filename"], "normal.txt")
         self.assertEqual(len(list(self.folder.iterdir())), 1)
         self.quota_db.add.assert_called_once()
+        self.assertEqual(self.quota_db.add.call_args.args[0].file_size_bytes, len(b"Normal text"))
         self.quota_db.commit.assert_called_once()
         self.dispatch.assert_called_once()
         self.assertEqual(self.permits.slots, {})
 
     def test_write_time_size_rejection_removes_original_and_releases_quota(self):
         client = self.http_client()
-        async def earlier_size_check(file):
+        def earlier_size_check(file):
             # Exercise the independent copy-time guard after content preflight.
             return None
         with patch.object(self.documents, "validate_file_size", side_effect=earlier_size_check), \
@@ -421,6 +422,96 @@ class UploadResourceTests(unittest.TestCase):
         self.quota_db.add.assert_not_called()
         self.quota_db.commit.assert_not_called()
         self.dispatch.assert_not_called()
+
+    def test_http_acceptance_queues_after_persistence_without_deep_processing(self):
+        dispatch = self.documents.dispatch_uploaded_document
+        client = self.http_client()
+        queue = importlib.import_module("app.services.task_queue")
+        fixtures = {".pdf": b"%PDF-private-upload-marker",
+                    ".docx": self.office().getvalue(),
+                    ".xlsx": self.office(".xlsx").getvalue(),
+                    ".txt": b"private-upload-marker"}
+        for extension, data in fixtures.items():
+            with self.subTest(extension=extension):
+                self.quota_db.commit.reset_mock()
+                queued_result = MagicMock()
+                def publish(*, args, retry):
+                    self.assertEqual(args, (1,))
+                    document = self.quota_db.add.call_args.args[0]
+                    self.assertEqual(Path(document.file_path).read_bytes(), data)
+                    self.quota_db.commit.assert_called_once()
+                    self.assertEqual(self.permits.slots, {})
+                    self.assertFalse(retry)
+                    # Broker publication must run off the ASGI event loop.
+                    with self.assertRaises(RuntimeError):
+                        asyncio.get_running_loop()
+                    return queued_result
+                with patch.object(self.documents, "dispatch_uploaded_document", dispatch), \
+                     patch.object(queue, "TASK_QUEUE", "celery"), \
+                     patch.object(self.worker.process_document_task, "apply_async", side_effect=publish) as enqueue, \
+                     patch.object(self.worker.process_document_task, "run") as process, \
+                     patch.object(self.validation, "PdfReader") as pdf_parse, \
+                     patch.object(self.validation.OfficeStructure, "inspect_xml") as xml_parse, \
+                     patch.object(self.validation, "validate_text_source") as text_parse, \
+                     self.assertLogs(self.ingress.logger, "INFO") as logs:
+                    response = client.post("/documents", files={"file": (
+                        "private-upload-marker" + extension, data, "application/octet-stream")})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["processing_status"], "processing")
+                enqueue.assert_called_once()
+                queued_result.get.assert_not_called()
+                for heavy in (process, pdf_parse, xml_parse, text_parse):
+                    heavy.assert_not_called()
+                phases = [record.safe_event for record in logs.records]
+                self.assertEqual({phase["operation"] for phase in phases}, {
+                    "upload_receive", "upload_validation", "upload_persistence",
+                    "upload_record", "upload_enqueue", "upload_total"})
+                self.assertTrue(all(phase["duration_ms"] >= 0 and phase["outcome"] == "success"
+                                    for phase in phases))
+                self.assertNotIn("private-upload-marker", json.dumps(phases))
+
+    def test_deep_checks_still_reject_accepted_sources_before_extraction(self):
+        self.configure(MAX_PDF_PAGES=1)
+        pdf = self.pdf_file(2)
+        office = self.source("untrusted.docx", self.office(
+            body='<!DOCTYPE x [<!ENTITY secret "private">]><document>&secret;</document>').getvalue())
+        sheet = self.source("untrusted.xlsx", self.office(".xlsx", extra={
+            "xl/worksheets/sheet1.xml": '<worksheet><dimension ref="A1:XFD1048576"/></worksheet>'}).getvalue())
+        text = self.source("untrusted.txt", b"a" * 65536 + b"\xffprivate")
+        cases = ((pdf, "pdf_pages", self.hybrid.extract_content_from_hybrid_pdf),
+                 (office, "invalid_office", self.word.extract_content_from_word),
+                 (sheet, "spreadsheet_limit", self.excel.extract_content_from_excel),
+                 (text, "invalid_text", self.txt.extract_content_from_text))
+        with patch.object(self.hybrid, "classify_pdf_pages") as classify, \
+             patch.object(self.hybrid, "extract_content_with_datalab") as paid, \
+             patch.object(self.word, "Document") as word_parse, \
+             patch.object(self.excel, "load_workbook") as sheet_parse:
+            for path, code, extract in cases:
+                with self.subTest(extension=path.suffix):
+                    self.validation.validate_upload_source(path, path.suffix)
+                    self.assert_rejected(code, lambda: extract(path))
+            for heavy in (classify, paid, word_parse, sheet_parse):
+                heavy.assert_not_called()
+
+    def test_fast_admission_retains_archive_guards(self):
+        cases = [(self.office(extra={"../private.xml": "<x/>"}), "invalid_office", 1000),
+                 (self.office(extra={"large.xml": "a" * 100_000}), "office_expansion", 1000),
+                 (self.office(extra={"extra.xml": "<x/>"}), "office_expansion", 2)]
+        for stream, code, entry_limit in cases:
+            with self.subTest(code=code):
+                # Test metadata checks individually, including traversal/ratio.
+                self.configure(MAX_OFFICE_ZIP_ENTRIES=entry_limit)
+                self.assert_rejected(code, lambda: self.validation.validate_upload_source(stream, ".docx"))
+                self.assertEqual(stream.tell(), 0)
+
+    def test_fast_text_sample_allows_split_utf8_and_bounds_reads(self):
+        data = b"a" * 65535 + "€".encode() + b"tail"
+        stream = io.BytesIO(data)
+        with patch.object(stream, "read", wraps=stream.read) as read:
+            self.validation.validate_upload_source(stream, ".txt")
+        read.assert_called_once_with(65536)
+        self.assertEqual(stream.tell(), 0)
+        self.validation.validate_document_source(stream, ".txt")
 
     def test_http_policy_exposes_only_configured_product_limits(self):
         self.configure(MAX_PDF_PAGES=12)

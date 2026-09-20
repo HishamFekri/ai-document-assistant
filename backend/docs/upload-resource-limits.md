@@ -3,7 +3,8 @@
 The backend is authoritative. `app/services/resource_limits.py:upload_limits()`
 loads positive integer settings once per process. Restart API and worker processes
 after changing settings, and keep their configuration identical. Defaults are in
-`.env.example`. No database migration or existing-document rewrite is required.
+`.env.example`. The document storage-metadata migration is nullable, so no
+existing-document rewrite is required.
 
 ## Product policy and ingress
 
@@ -24,9 +25,11 @@ multipart overhead. An excessive Content-Length is rejected before body reads;
 missing or understated Content-Length cannot bypass the running byte counter.
 The route accepts one file and no extra form fields. Partial multipart spools are
 closed on rejection; Starlette 1.6.0 is explicitly pinned for its stream-error
-cleanup behavior. The route checks actual file length, content, and copied bytes
-again. Heavier preflight runs in the thread pool. Other endpoints retain their
-existing request behavior.
+cleanup behavior. The route checks actual file length, bounded content signatures
+and archive metadata, and copied bytes again. The synchronous acceptance handler
+runs in FastAPI's thread pool so filesystem, quota/DB and broker waits do not block
+the ASGI event loop. Deep content validation runs in the worker before extraction.
+Other endpoints retain their existing request behavior.
 
 **Production ingress must also enforce this limit before the request fully reaches
 FastAPI.** Configure every applicable CDN/WAF/load balancer/reverse proxy to accept
@@ -95,7 +98,8 @@ can resubmit admitted pages. Once chunks are checkpointed, retries validate that
 checkpoint and resume missing embeddings without repeating extraction. No pages
 outside the selected allowance are submitted by an attempt.
 
-DOCX/XLSX preflight examines ZIP metadata before decompression, then streams XML
+DOCX/XLSX admission examines ZIP metadata before decompression. Worker preflight
+repeats those checks, then streams XML
 without extracting archive paths. It rejects duplicate names, traversal, absolute
 or drive paths, backslashes, nulls, symlinks, encryption, DTDs and external entities.
 The policy intentionally rejects ZIP64/special central-directory layouts and
@@ -106,8 +110,9 @@ coordinates even when dimensions lie, and resets dimensions before iteration.
 Sparse sheets are charged for their rectangular extent to bound empty-cell work.
 Styled/empty rows, chart sheets and auxiliary XML can therefore consume limits.
 
-TXT uses incremental UTF-8 decoding, including BOM support, and rejects invalid
-tails or nulls. Multibyte characters spanning sample/read boundaries are valid.
+TXT admission inspects at most the first 64 KiB. Worker validation uses incremental
+UTF-8 decoding, including BOM support, and rejects invalid tails or nulls throughout
+the file. Multibyte characters spanning sample/read boundaries are valid.
 Text chunks retain their existing 300-word / 50-word-overlap behavior. Overlap
 counts toward generated-chunk text totals, so a document can exceed that budget
 before reaching the raw-text limit. Budgets reject the document instead of silently
@@ -131,11 +136,104 @@ multipart files, and never dispatches work. A write-time rejection removes the
 partial original. Processing rejection releases the processing permit and does not
 create chunks or invoke embeddings beyond the content budget.
 
+PDF admission checks the file signature without building a page tree; full PDF
+validity and page-count checks still run before classification or paid extraction.
+Office XML structure, DTD/entity restrictions, worksheet/paragraph limits and full
+text budgets also remain mandatory worker checks. Consequently an oversized page
+count, unsafe XML or invalid text after the sample may now be accepted for queuing
+and subsequently fail processing instead of being rejected during POST.
+
 An accepted document that subsequently fails processing remains a visible failed
 row with its original file, consistent with existing retry/delete behavior. It
 continues to count toward retained-document/storage quotas until the user deletes
 it. This is intentional accounting, not an orphaned reservation. A later rejection
 cannot undo provider work completed earlier in the attempt.
+
+## Upload response timing and network path
+
+Production requires `ENVIRONMENT=production` and `TASK_QUEUE=celery`. POST completes
+after bounded admission, uploading the original as a raw authenticated Cloudinary
+asset, committing its document record, releasing the quota transaction/permit, and
+synchronous Celery publication.
+The Celery message contains only the document ID; the worker reloads authoritative
+source metadata from PostgreSQL. It does not wait for task execution or a task result. Classification, extraction,
+Datalab, chunks, embeddings and derived-image processing remain in the worker. The
+worker downloads the original through a short-lived signed URL, verifies its exact
+persisted size and SHA-256, processes a bounded temporary file, and always removes
+that file. Development background-task behavior keeps local originals. Broker
+failures retain the existing safe
+`dispatch_failed` response/recovery behavior; they do not represent successful
+acceptance for processing.
+
+Both production services require the same `CLOUDINARY_URL`. Originals use
+`resource_type=raw` and `type=authenticated`; they are not public delivery assets.
+The Cloudinary product environment must allow delivery of PDF and ZIP/archive
+formats because PDF, DOCX and XLSX downloads can otherwise be blocked by account
+security settings.
+
+The previous request path duplicated full PDF/Office/text validation already
+performed by the worker, including Office XML decompression/traversal. It also
+performed synchronous storage, quota/DB and broker work inside an async route.
+These are confirmed repository sources of avoidable upload latency/event-loop
+blocking; the dominant cause of any particular production delay still requires
+deployed timing evidence.
+
+Structured `upload_phase_finished` events carry `operation`, `duration_ms`,
+`outcome`, inherited request/correlation IDs, and a document ID at enqueue. They
+never include filenames, file contents, credentials or exception payloads:
+
+| Operation | Measurement |
+| --- | --- |
+| `upload_receive` | Backend request-body receive plus multipart parsing/spooling |
+| `upload_validation` | Bounded signature/text-sample/archive admission checks |
+| `upload_persistence` | SHA-256 plus local-development save or authenticated raw Cloudinary upload |
+| `upload_record` | Document add, commit and refresh |
+| `upload_enqueue` | Celery import/publication, including broker waits; no result wait |
+| `upload_total` | Route entry through response creation and multipart cleanup |
+
+Total includes authentication, rate/quota admission and thread scheduling in
+addition to the named subphases. These phases are not expected to sum to total.
+Use the existing `http_request_completed` status/duration event for the outer ASGI
+request. Neither server duration measures browser-to-edge time or proxy buffering
+before the backend receives the request. Rejections before route entry retain the
+existing request-level instrumentation.
+
+An offline comparison on 2026-09-20 used the same synthetic 1,404,275-byte DOCX
+(18,000 paragraphs, uncompressed ZIP) through TestClient and the updated route,
+switching only between legacy full validation and bounded admission. Database,
+Redis/admission and broker calls were mocked; multipart and local writes were real.
+One diagnostic sample, in milliseconds:
+
+| Phase | Legacy full validation | Bounded admission |
+| --- | ---: | ---: |
+| Receive/multipart | 2.751 | 3.980 |
+| Validation | 48.384 | 0.233 |
+| Local persistence | 1.779 | 1.340 |
+| Record creation (mocked) | 0.669 | 0.824 |
+| Enqueue (mocked) | 0.146 | 0.143 |
+| Route total | 59.164 | 10.962 |
+| TestClient total | 67.417 | 18.235 |
+
+This isolates validation cost, not deployed DB/broker performance, network speed,
+concurrency capacity or a guaranteed production improvement. A 1,024,000-byte TXT
+sample spent only 0.300 ms in legacy validation (0.064 ms with bounded admission),
+so a long text-upload delay would need another explanation.
+
+`frontend/src/lib/chat-api.ts` sends the complete FormData body to
+`${NEXT_PUBLIC_API_URL}/documents`, after a separate upload-policy GET. If the
+deployed value is `/api/backend`, `frontend/next.config.ts` rewrites that request
+through Next.js/Vercel to Render, including the file body. An absolute Render API
+URL sends the body directly to that backend. The deployed build-time value is not
+established by the repository; the rewrite alone does not prove it is in use or
+responsible for observed latency.
+
+For a real slow upload, record the browser POST Request URL (without tokens),
+file type/size, request-send time and waiting/TTFB, and match its request ID to the
+phase events. Check the separate policy GET as well. Inspect only nonsecret
+deployment settings to confirm the API URL and Celery mode. Do not bypass the
+proxy blindly: host-only cookies, SameSite/Secure, CORS and OAuth callback settings
+must remain compatible; see [authentication sessions](authentication-sessions.md).
+No frontend routing or authentication configuration is changed by this fix.
 
 ## Validation and practical limits
 

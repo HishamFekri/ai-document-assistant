@@ -295,6 +295,7 @@ class ObservabilityTests(unittest.TestCase):
             self.runtime.validate_runtime()
             for name, value in [("TASK_QUEUE", "background"), ("DATABASE_URL", SECRET),
                                 ("CELERY_BROKER_URL", SECRET), ("CELERY_RESULT_BACKEND", ""),
+                                ("CLOUDINARY_URL", ""),
                                 ("JWT_SECRET_KEY", "short")]:
                 with patch.dict(os.environ, {name: value}), self.assertRaises(ValueError) as caught:
                     self.runtime.validate_runtime()
