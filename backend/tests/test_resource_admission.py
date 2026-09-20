@@ -378,6 +378,42 @@ class ResourceAdmissionTests(unittest.TestCase):
         with self.assertRaises(self.admission.ResourceRejected):
             self.quota.check_upload_quota(rows, retry_document_id=1)
 
+    def test_stale_processing_row_is_failed_only_when_no_worker_owns_document(self):
+        stale = MagicMock()
+        stale.scalars.return_value.all.return_value = [41]
+        stale.scalar.return_value = True
+        stale.execute.return_value.rowcount = 1
+
+        self.quota.reconcile_stale_processing(stale, 7)
+
+        candidate_sql = str(stale.scalars.call_args.args[0])
+        self.assertIn("documents.processing_status", candidate_sql)
+        self.assertIn("documents.processing_updated_at", candidate_sql)
+        stale.scalar.assert_called_once_with(
+            self.quota.TRY_STALE_PROCESSING_CLAIM,
+            {"namespace": self.quota.PROCESSING_CLAIM_NAMESPACE, "document_id": 41},
+        )
+        update_statement = stale.execute.call_args.args[0]
+        values = update_statement.compile().params.values()
+        for expected in ("failed", "retry_exhausted", self.quota.STALE_PROCESSING_ERROR):
+            self.assertIn(expected, values)
+        stale.commit.assert_called_once()
+        # Once reconciled, the stale row no longer reserves the one active slot.
+        self.quota.check_upload_quota([])
+
+        active = MagicMock()
+        active.scalars.return_value.all.return_value = [42]
+        active.scalar.return_value = False
+        self.quota.reconcile_stale_processing(active, 7)
+        active.execute.assert_not_called()
+        active.commit.assert_not_called()
+        with self.assertRaises(self.admission.ResourceRejected) as error:
+            self.quota.check_upload_quota([
+                SimpleNamespace(id=42, file_path=None, processing_status="processing"),
+            ])
+        self.assertEqual(error.exception.code, "processing_quota")
+        self.assertEqual(error.exception.retry_after, 5)
+
     def test_upload_serialization_rejects_competing_reservation(self):
         with self.admission.user_operation(1, "upload_quota", rate=False):
             with self.assertRaises(self.admission.ResourceRejected):
