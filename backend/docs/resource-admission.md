@@ -95,9 +95,9 @@ Defaults: `RESOURCE_MAX_DOCUMENTS=100` and
 `RESOURCE_MAX_ORIGINAL_BYTES=1073741824` (1 GiB) per user. Existing per-file size
 and content validation remain in place. The count includes every retained
 document row, including failed documents. Original byte usage is computed from
-the files referenced by those rows, plus the incoming file. No size column or
-historical backfill is introduced. Null original paths contribute zero bytes
-but still count as documents.
+the exact byte sizes persisted for those rows, plus the incoming file. The nullable
+metadata migration requires no historical backfill. Legacy rows use a conservative
+fallback when their original size is not available.
 
 A per-user PostgreSQL lock serializes quota checking, original-file saving and
 document commit. Another upload/retry cannot concurrently reserve the same
@@ -107,14 +107,17 @@ also checks actual per-user processing capacity before expensive work. Multiple
 documents/tabs/processes cannot bypass either gate. Ready/permanent-failure guards
 and Batch 6's individual document claim remain in place.
 
-All API/worker instances must see the same immutable originals at the same stored
-paths under `uploads`. Missing, unreadable or out-of-root tracked originals cause
-safe 503 rejection rather than under-counting. This is a quota for tracked original
-files, not Cloudinary assets, generated files, chunks/vectors, logs, temporary
-multipart files or orphan files. Existing deletion semantics are unchanged;
-deleting a row removes it from the tracked quota, even if some derived/orphan bytes
-remain. Stale `processing` rows can conservatively block uploads until the existing
-retry/recovery workflow resolves them. No automatic cleanup is introduced.
+Production/staging originals are authenticated raw Cloudinary objects so separate
+API and Celery services share immutable bytes without a shared filesystem. The
+worker materializes one size- and checksum-verified temporary file and removes it
+after success or failure. Quota accounting uses the byte size persisted with each
+new document and does not depend on a later filesystem stat. Legacy rows without
+that metadata use their in-root file when available and otherwise reserve the full
+per-file maximum; malformed or out-of-root paths still cause a safe 503. This quota
+covers tracked original bytes, not derived files, chunks/vectors, logs, temporary
+multipart files or orphan objects. Deletion removes the authenticated raw original
+after the existing DB cleanup commits. Stale `processing` rows can conservatively
+block uploads until the existing retry/recovery workflow resolves them.
 
 ## Streaming and errors
 

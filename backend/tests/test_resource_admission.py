@@ -340,7 +340,8 @@ class ResourceAdmissionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, patch.object(self.quota, "resource_limits", return_value=settings):
             path = Path(folder) / "original.txt"
             path.write_bytes(b"123456")
-            row = SimpleNamespace(id=1, file_path=str(path), processing_status="ready")
+            row = SimpleNamespace(id=1, file_path=str(path), file_size_bytes=None,
+                                  processing_status="ready")
             self.quota.check_upload_quota([row], 4, upload_root=Path(folder))
             with self.assertRaises(self.admission.ResourceRejected) as error:
                 self.quota.check_upload_quota([row], 5, upload_root=Path(folder))
@@ -349,10 +350,27 @@ class ResourceAdmissionTests(unittest.TestCase):
                 self.quota.check_upload_quota([row, row], 1, upload_root=Path(folder))
             self.assertEqual(error.exception.code, "document_quota")
 
-    def test_unreadable_original_usage_rejects_upload(self):
-        row = SimpleNamespace(id=1, file_path="missing-original.txt", processing_status="ready")
-        with self.assertRaises(self.admission.AdmissionUnavailable):
-            self.quota.check_upload_quota([row], 1)
+    def test_missing_legacy_original_is_conservatively_charged(self):
+        settings = replace(self.limits.resource_limits(), max_original_bytes=10)
+        with tempfile.TemporaryDirectory() as folder:
+            row = SimpleNamespace(id=1, file_path=str(Path(folder) / "missing-original.txt"),
+                                  file_size_bytes=None, processing_status="ready")
+            with patch.object(self.quota, "resource_limits", return_value=settings), \
+                 patch.object(self.quota, "upload_limits",
+                              return_value=SimpleNamespace(file_bytes=10)):
+                with self.assertRaises(self.admission.ResourceRejected) as error:
+                    self.quota.check_upload_quota([row], 1, upload_root=Path(folder))
+        self.assertEqual(error.exception.code, "storage_quota")
+
+    def test_recorded_original_size_does_not_require_local_file(self):
+        settings = replace(self.limits.resource_limits(), max_original_bytes=10)
+        row = SimpleNamespace(id=1, file_path="missing-original.txt",
+                              file_size_bytes=6, processing_status="ready")
+        with patch.object(self.quota, "resource_limits", return_value=settings):
+            self.quota.check_upload_quota([row], 4)
+            with self.assertRaises(self.admission.ResourceRejected) as error:
+                self.quota.check_upload_quota([row], 5)
+        self.assertEqual(error.exception.code, "storage_quota")
 
     def test_retry_cannot_bypass_processing_reservation(self):
         rows = [SimpleNamespace(id=i, file_path=None, processing_status="processing") for i in (1, 2)]

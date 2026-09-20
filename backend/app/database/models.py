@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    BigInteger,
     String,
     Text,
 )
@@ -157,6 +158,27 @@ class Document(Base):
         str | None
     ] = mapped_column(
         String(500),
+        nullable=True,
+    )
+
+    file_size_bytes: Mapped[
+        int | None
+    ] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    storage_key: Mapped[
+        str | None
+    ] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+
+    file_sha256: Mapped[
+        str | None
+    ] = mapped_column(
+        String(64),
         nullable=True,
     )
 

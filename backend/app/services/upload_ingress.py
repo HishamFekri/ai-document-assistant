@@ -1,10 +1,32 @@
 """Bound bytes before multipart consumption; transport/edge limits are separate."""
 
+from contextlib import AsyncExitStack, contextmanager
+import logging
+from time import perf_counter
+
 from fastapi.routing import APIRoute
 from starlette.exceptions import HTTPException
 
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.resource_limits import upload_limits
+from app.services.observability import log_event
+
+
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def upload_phase(operation, *, document_id=None):
+    """Correlate server-side durations without filenames, bodies or credentials."""
+    started = perf_counter()
+    outcome = "failed"
+    try:
+        yield
+        outcome = "success"
+    finally:
+        log_event(logger, logging.INFO, "upload_phase_finished", operation=operation,
+                  duration_ms=round((perf_counter() - started) * 1000, 3),
+                  outcome=outcome, document_id=document_id)
 
 
 class UploadBodyLimitMiddleware:
@@ -45,14 +67,18 @@ class UploadRoute(APIRoute):
         if self.name != "upload_document":
             return handler
         async def bounded_form(request):
-            try:
-                async with request.form(max_files=1, max_fields=0,
-                                        max_part_size=upload_limits().multipart_overhead_bytes):
-                    return await handler(request)
-            except DocumentResourceError:
-                raise
-            except HTTPException as error:
-                if error.status_code == 400 and request._form is None:
-                    raise DocumentResourceError("upload_form", 400) from None
-                raise
+            with upload_phase("upload_total"):
+                try:
+                    async with AsyncExitStack() as stack:
+                        with upload_phase("upload_receive"):
+                            await stack.enter_async_context(request.form(
+                                max_files=1, max_fields=0,
+                                max_part_size=upload_limits().multipart_overhead_bytes))
+                        return await handler(request)
+                except DocumentResourceError:
+                    raise
+                except HTTPException as error:
+                    if error.status_code == 400 and request._form is None:
+                        raise DocumentResourceError("upload_form", 400) from None
+                    raise
         return bounded_form

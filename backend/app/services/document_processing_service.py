@@ -29,6 +29,7 @@ from app.services.resource_limits import upload_limits
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.upload_validation import validate_document_source
 from app.services.queued_message_service import process_waiting_messages_for_document
+from app.services.original_storage import materialize_original
 
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ def process_claimed_document(claim, document_id):
         owner_id = document.user_id
         file_path = document.file_path
         file_type = document.file_type
+        storage_key = getattr(document, "storage_key", None)
+        file_size_bytes = getattr(document, "file_size_bytes", None)
+        file_sha256 = getattr(document, "file_sha256", None)
         has_chunks = db.scalar(select(DocumentChunk.id).where(DocumentChunk.document_id == document_id).limit(1)) is not None
         # Dispatch-failure handling may only change the pre-execution uploaded
         # stage. Publish this transition before leaving the first transaction.
@@ -77,7 +81,17 @@ def process_claimed_document(claim, document_id):
 
     try:
         with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
-            return process_admitted_document(claim, document_id, file_path, file_type, has_chunks)
+            with materialize_original(
+                file_path=file_path,
+                storage_key=storage_key,
+                file_type=file_type,
+                expected_size=file_size_bytes,
+                checksum=file_sha256,
+                max_size=upload_limits().file_bytes,
+            ) as processing_path:
+                return process_admitted_document(
+                    claim, document_id, processing_path, file_type, has_chunks,
+                )
     except ResourceRejected:
         raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
 

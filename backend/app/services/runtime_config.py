@@ -44,6 +44,18 @@ def validate_runtime():
         valid = False
     if not valid:
         raise ValueError("Invalid or missing DATABASE_URL") from None
+    try:
+        cloudinary_url = urlsplit(os.getenv("CLOUDINARY_URL", ""))
+        valid = (
+            cloudinary_url.scheme == "cloudinary"
+            and bool(cloudinary_url.username)
+            and bool(cloudinary_url.password)
+            and bool(cloudinary_url.hostname)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError("Invalid or missing CLOUDINARY_URL") from None
     secret = os.getenv("JWT_SECRET_KEY", "")
     if len(secret) < 32 or secret in {"generate-a-long-random-secret", "replace-me"}:
         raise ValueError("JWT_SECRET_KEY must be a strong deployment secret of at least 32 characters")

@@ -13,12 +13,14 @@ logger = logging.getLogger(__name__)
 def enqueue_document_processing(
     background_tasks: BackgroundTasks,
     document_id: int,
-    file_path: str,
+    file_path: str | None,
 ) -> None:
     if TASK_QUEUE == "celery":
         from app.worker import process_document_task
 
-        process_document_task.apply_async(args=(document_id, file_path), retry=False)
+        # The worker reloads authoritative source metadata from PostgreSQL. Keep
+        # file_path in this call signature for callers, but never serialize it.
+        process_document_task.apply_async(args=(document_id,), retry=False)
         return
 
     if TASK_QUEUE != "background":
@@ -27,18 +29,16 @@ def enqueue_document_processing(
     background_tasks.add_task(
         _run_document_processing,
         document_id,
-        file_path,
     )
 
 
 def _run_document_processing(
     document_id: int,
-    file_path: str,
 ) -> None:
     from app.services.document_processing_service import process_document
 
     try:
-        process_document(document_id, file_path)
+        process_document(document_id)
     except Exception as error:
         # Failed/interrupted background work requires the explicit retry route.
         log_generation_failure(error, "document", document_id=document_id)

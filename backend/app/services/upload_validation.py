@@ -1,4 +1,4 @@
-"""Bounded preflight, reused before persistence and before worker extraction."""
+"""Fast upload admission and full resource validation before worker extraction."""
 
 import codecs
 from contextlib import contextmanager
@@ -206,7 +206,7 @@ class OfficeStructure:
                 raise DocumentResourceError("spreadsheet_limit")
 
 
-def validate_office_source(stream, extension):
+def validate_office_source(stream, extension, *, inspect_content=True):
     limits = upload_limits()
     try:
         # EOCD count prevents building a huge ZipInfo list for an obvious bomb.
@@ -262,16 +262,45 @@ def validate_office_source(stream, extension):
             required = "word/document.xml" if extension == ".docx" else "xl/workbook.xml"
             if "[Content_Types].xml" not in names or required not in names:
                 raise DocumentResourceError("invalid_office", 400)
-            structure = OfficeStructure(extension)
-            # Stream XML for structural checks; never extract archive paths.
-            for entry in entries:
-                if entry.filename.lower().endswith((".xml", ".rels")):
-                    with archive.open(entry) as xml:
-                        structure.inspect_xml(xml, entry.filename)
+            if inspect_content:
+                structure = OfficeStructure(extension)
+                # Stream XML for structural checks; never extract archive paths.
+                for entry in entries:
+                    if entry.filename.lower().endswith((".xml", ".rels")):
+                        with archive.open(entry) as xml:
+                            structure.inspect_xml(xml, entry.filename)
     except DocumentResourceError:
         raise
     except Exception:
         raise DocumentResourceError("invalid_office", 400) from None
+
+
+def validate_upload_source(source, extension):
+    """Inspect size/signature/archive metadata without parsing document contents.
+
+    Workers must still call validate_document_source before extraction/providers.
+    Acceptance is not a claim that a file will pass deep content validation.
+    """
+    if extension not in SUPPORTED_UPLOAD_TYPES:
+        raise DocumentResourceError("unsupported_file", 400)
+    with source_stream(source) as stream:
+        validate_source_size(stream)
+        if extension == ".pdf":
+            if stream.read(5) != b"%PDF-":
+                raise DocumentResourceError("invalid_pdf", 400)
+        elif extension in {".docx", ".xlsx"}:
+            validate_office_source(stream, extension, inspect_content=False)
+        else:
+            # Bound request-time text inspection. An incomplete multibyte code
+            # point at the sample boundary is valid; the worker checks the tail.
+            sample = stream.read(64 * 1024)
+            try:
+                if b"\x00" in sample:
+                    raise DocumentResourceError("invalid_text", 400)
+                decoder = codecs.getincrementaldecoder("utf-8-sig")("strict")
+                decoder.decode(sample, final=len(sample) < 64 * 1024)
+            except UnicodeDecodeError:
+                raise DocumentResourceError("invalid_text", 400) from None
 
 
 def validate_document_source(source, extension):
