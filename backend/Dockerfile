@@ -27,4 +27,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=20s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.build_opener(urllib.request.ProxyHandler({})).open('http://127.0.0.1:' + os.getenv('PORT', '8000') + '/health', timeout=2).close()"
 
-CMD ["/bin/sh", "-c", "python -m alembic upgrade head && exec python runtime.py"]
+CMD python -m alembic upgrade head && exec python runtime.py
