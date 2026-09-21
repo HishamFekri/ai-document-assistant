@@ -2,7 +2,7 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor, Future
-from contextlib import ExitStack
+from contextlib import contextmanager, ExitStack
 from dataclasses import replace
 from datetime import datetime, timezone
 import importlib
@@ -372,11 +372,10 @@ class ResourceAdmissionTests(unittest.TestCase):
                 self.quota.check_upload_quota([row], 5)
         self.assertEqual(error.exception.code, "storage_quota")
 
-    def test_retry_cannot_bypass_processing_reservation(self):
+    def test_processing_rows_do_not_reject_additional_uploads(self):
         rows = [SimpleNamespace(id=i, file_path=None, processing_status="processing") for i in (1, 2)]
         self.quota.check_upload_quota(rows[:1], retry_document_id=1)
-        with self.assertRaises(self.admission.ResourceRejected):
-            self.quota.check_upload_quota(rows, retry_document_id=1)
+        self.quota.check_upload_quota(rows, retry_document_id=1)
 
     def test_stale_processing_row_is_failed_only_when_no_worker_owns_document(self):
         stale = MagicMock()
@@ -398,7 +397,7 @@ class ResourceAdmissionTests(unittest.TestCase):
         for expected in ("failed", "retry_exhausted", self.quota.STALE_PROCESSING_ERROR):
             self.assertIn(expected, values)
         stale.commit.assert_called_once()
-        # Once reconciled, the stale row no longer reserves the one active slot.
+        # Reconciliation still converts abandoned processing state safely.
         self.quota.check_upload_quota([])
 
         active = MagicMock()
@@ -407,12 +406,23 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.quota.reconcile_stale_processing(active, 7)
         active.execute.assert_not_called()
         active.commit.assert_not_called()
-        with self.assertRaises(self.admission.ResourceRejected) as error:
-            self.quota.check_upload_quota([
-                SimpleNamespace(id=42, file_path=None, processing_status="processing"),
-            ])
-        self.assertEqual(error.exception.code, "processing_quota")
-        self.assertEqual(error.exception.retry_after, 5)
+        # A live worker remains protected, but its row no longer rejects uploads.
+        self.quota.check_upload_quota([
+            SimpleNamespace(id=42, file_path=None, processing_status="processing"),
+        ])
+
+    def test_capacity_queued_rows_are_never_reconciled_as_stale(self):
+        queued = MagicMock()
+        queued.scalars.return_value.all.return_value = []
+
+        self.quota.reconcile_stale_processing(queued, 7)
+
+        candidate = queued.scalars.call_args.args[0]
+        self.assertIn("documents.processing_stage IS DISTINCT FROM", str(candidate))
+        self.assertIn("queued", candidate.compile().params.values())
+        queued.scalar.assert_not_called()
+        queued.execute.assert_not_called()
+        queued.commit.assert_not_called()
 
     def test_upload_serialization_rejects_competing_reservation(self):
         with self.admission.user_operation(1, "upload_quota", rate=False):
@@ -465,6 +475,51 @@ class ResourceAdmissionTests(unittest.TestCase):
         client = self.http_client()
         self.assertEqual(client.get("/auth/me").status_code, 200)
         self.assertEqual(self.rates.calls, 1)
+
+    def test_http_second_upload_is_accepted_while_the_first_is_processing(self):
+        client = self.http_client()
+        saved = []
+
+        def add(document):
+            document.id = len(saved) + 1
+            document.created_at = datetime.now(timezone.utc)
+            saved.append(document)
+
+        self.db.add.side_effect = add
+
+        @contextmanager
+        def quota(*args, incoming_bytes=None, **kwargs):
+            self.quota.check_upload_quota(saved, incoming_bytes=incoming_bytes)
+            yield self.db
+
+        stored_count = 0
+
+        def store_original(source, extension, expected_size, *args):
+            nonlocal stored_count
+            stored_count += 1
+            return SimpleNamespace(
+                file_path=None,
+                storage_key=f"ai-document-assistant/originals/{stored_count:032x}{extension}",
+                file_size_bytes=expected_size,
+                file_sha256=f"{stored_count:x}" * 64,
+            )
+
+        with patch.object(self.documents, "upload_quota_session", side_effect=quota), \
+                patch.object(self.documents, "store_original", side_effect=store_original), \
+                patch.object(
+                    self.documents,
+                    "dispatch_uploaded_document",
+                    side_effect=lambda **kwargs: kwargs["response"],
+                ):
+            responses = [
+                client.post("/documents", files={"file": ("first.txt", b"first", "text/plain")}),
+                client.post("/documents", files={"file": ("second.txt", b"second", "text/plain")}),
+            ]
+
+        self.assertEqual([response.status_code for response in responses], [200, 200])
+        self.assertNotIn("processing_quota", "".join(response.text for response in responses))
+        self.assertEqual(len(saved), 2)
+        self.assertTrue(all(document.processing_status == "processing" for document in saved))
 
     def test_http_search_upload_and_summary_reject_before_expensive_work(self):
         client = self.http_client()
