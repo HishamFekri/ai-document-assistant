@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
+from stat import S_ISREG
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
@@ -78,6 +79,10 @@ def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload
             if type(recorded_size) is not int or recorded_size <= 0:
                 raise AdmissionUnavailable()
             total += recorded_size
+        elif getattr(row, "storage_key", None):
+            # A legacy/ambiguous shared object may still consume retained
+            # storage even if its exact size metadata is unavailable.
+            total += upload_limits().file_bytes
         elif row.file_path:
             try:
                 path = Path(row.file_path).resolve()
@@ -85,15 +90,20 @@ def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload
                 raise AdmissionUnavailable() from None
             if not path.is_relative_to(root):
                 raise AdmissionUnavailable()
-            # Render-local originals can disappear on a restart or deploy.
-            # Legacy rows have no durable byte count, so reserve the full
-            # per-file allowance rather than undercounting retained storage.
             try:
-                total += path.stat().st_size if path.is_file() else upload_limits().file_bytes
+                metadata = path.stat()
+            except FileNotFoundError:
+                # A vanished Render-local original consumes no retained shared
+                # or local document storage and must not be charged forever.
+                continue
             except OSError:
+                # Permissions or another indeterminate filesystem failure must
+                # remain conservative because the original may still exist.
                 total += upload_limits().file_bytes
-        else:
-            total += upload_limits().file_bytes
+            else:
+                if not S_ISREG(metadata.st_mode):
+                    raise AdmissionUnavailable()
+                total += metadata.st_size
     if total > limits.max_original_bytes:
         raise ResourceRejected("storage_quota", "Your document storage limit has been reached. Delete documents before uploading more.", 60)
 
@@ -104,7 +114,7 @@ def upload_quota_session(user_id, *, incoming_bytes=None, retry_document_id=None
         with Session(bind=permit.connection, expire_on_commit=False, autoflush=False) as db:
             reconcile_stale_processing(db, user_id)
             rows = db.execute(select(
-                Document.id, Document.file_path, Document.file_size_bytes,
+                Document.id, Document.file_path, Document.file_size_bytes, Document.storage_key,
                 Document.processing_status,
             ).where(Document.user_id == user_id)).all()
             db.rollback()
