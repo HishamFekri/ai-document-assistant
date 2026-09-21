@@ -266,6 +266,24 @@ export async function getDocuments(token: string, cursor?: string): Promise<Page
   return readPage<Document>(response);
 }
 
+
+export async function getDocument(
+  token: string,
+  documentId: number,
+  signal?: AbortSignal
+): Promise<Document> {
+  const response = await fetch(
+    `${API_URL}/documents/${documentId}`,
+    {
+      credentials: "include",
+      signal,
+      headers: buildAuthHeaders(token),
+    }
+  );
+  await ensureOk(response, "Could not load document");
+  return response.json();
+}
+
 export async function getChats(
   token: string,
   cursor?: string,

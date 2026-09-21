@@ -36,6 +36,7 @@ function application(fetch) {
     modules.set(relative, exports);
     const dependency = (name) => {
       if (name === "@/hooks/useRequestScope") return load("src/hooks/useRequestScope.ts");
+      if (name === "@/hooks/useDocumentStatusPolling") return { useDocumentStatusPolling: () => {} };
       if (name === "@/lib/request-scope") return load("src/lib/request-scope.ts");
       if (name === "@/lib/pagination") return load("src/lib/pagination.ts");
       if (name === "@/lib/logout") return load("src/lib/logout.ts");
