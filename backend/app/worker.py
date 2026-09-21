@@ -7,6 +7,10 @@ from celery import signals
 from dotenv import load_dotenv
 
 from app.services.document_processing_errors import RetryableDocumentProcessingError
+from app.services.document_processing_retry import (
+    MAX_PROCESSING_RETRIES,
+    retry_delay,
+)
 from app.services.error_service import log_generation_failure
 from app.services.observability import configure_logging, current_context, log_context, valid_id, log_event, log_exception
 from app.services.runtime_config import validate_runtime
@@ -14,8 +18,6 @@ from app.services.runtime_config import validate_runtime
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-MAX_PROCESSING_RETRIES = 3
-MAX_RETRY_DELAY_SECONDS = 60
 
 
 @signals.setup_logging.connect
@@ -63,10 +65,6 @@ celery_app.conf.update(
         "socket_timeout": 5,
     },
 )
-
-
-def retry_delay(retries):
-    return min(MAX_RETRY_DELAY_SECONDS, 2 ** min(max(retries, 0) + 1, 6))
 
 
 @celery_app.task(

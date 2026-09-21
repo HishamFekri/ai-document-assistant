@@ -432,11 +432,12 @@ class ResourceAdmissionTests(unittest.TestCase):
             SimpleNamespace(id=42, file_path=None, processing_status="processing"),
         ])
 
-    def test_capacity_queued_rows_are_never_reconciled_as_stale(self):
+    def test_celery_capacity_queued_rows_are_never_reconciled_as_stale(self):
         queued = MagicMock()
         queued.scalars.return_value.all.return_value = []
 
-        self.quota.reconcile_stale_processing(queued, 7)
+        with patch.dict(os.environ, {"TASK_QUEUE": "celery"}):
+            self.quota.reconcile_stale_processing(queued, 7)
 
         candidate = queued.scalars.call_args.args[0]
         self.assertIn("documents.processing_stage IS DISTINCT FROM", str(candidate))
@@ -444,6 +445,22 @@ class ResourceAdmissionTests(unittest.TestCase):
         queued.scalar.assert_not_called()
         queued.execute.assert_not_called()
         queued.commit.assert_not_called()
+
+    def test_abandoned_background_queued_row_is_reconciled_as_stale(self):
+        queued = MagicMock()
+        queued.scalars.return_value.all.return_value = [43]
+        queued.scalar.return_value = True
+        queued.execute.return_value.rowcount = 1
+
+        with patch.dict(os.environ, {"TASK_QUEUE": "background"}):
+            self.quota.reconcile_stale_processing(queued, 7)
+
+        candidate = queued.scalars.call_args.args[0]
+        self.assertNotIn("documents.processing_stage IS DISTINCT FROM", str(candidate))
+        values = queued.execute.call_args.args[0].compile().params.values()
+        for expected in ("failed", "retry_exhausted", self.quota.STALE_PROCESSING_ERROR):
+            self.assertIn(expected, values)
+        queued.commit.assert_called_once()
 
     def test_upload_serialization_rejects_competing_reservation(self):
         with self.admission.user_operation(1, "upload_quota", rate=False):

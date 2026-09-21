@@ -15,18 +15,21 @@ def validate_runtime():
     pool_options()
     limits = resource_limits()
     upload_limits()
-    queue = os.getenv("TASK_QUEUE", "background").lower()
+    configured_queue = os.getenv("TASK_QUEUE")
+    queue = (configured_queue or "background").lower()
     if queue not in {"background", "celery"}:
         raise ValueError("Invalid TASK_QUEUE")
     if not production:
         return
-    if queue != "celery":
-        raise ValueError("Production/staging requires TASK_QUEUE=celery")
-    for name, value in {
-        "RESOURCE_REDIS_URL": limits.redis_url,
-        "CELERY_BROKER_URL": os.getenv("CELERY_BROKER_URL"),
-        "CELERY_RESULT_BACKEND": os.getenv("CELERY_RESULT_BACKEND"),
-    }.items():
+    if configured_queue is None:
+        raise ValueError("Production/staging requires an explicit TASK_QUEUE")
+    redis_targets = {"RESOURCE_REDIS_URL": limits.redis_url}
+    if queue == "celery":
+        redis_targets.update({
+            "CELERY_BROKER_URL": os.getenv("CELERY_BROKER_URL"),
+            "CELERY_RESULT_BACKEND": os.getenv("CELERY_RESULT_BACKEND"),
+        })
+    for name, value in redis_targets.items():
         try:
             parsed = urlsplit(value or "")
             valid = parsed.scheme in {"redis", "rediss"} and bool(parsed.hostname)

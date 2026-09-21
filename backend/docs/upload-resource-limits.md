@@ -151,19 +151,22 @@ cannot undo provider work completed earlier in the attempt.
 
 ## Upload response timing and network path
 
-Production requires `ENVIRONMENT=production` and `TASK_QUEUE=celery`. POST completes
-after bounded admission, uploading the original as a raw authenticated Cloudinary
-asset, committing its document record, releasing the quota transaction/permit, and
-synchronous Celery publication.
-The Celery message contains only the document ID; the worker reloads authoritative
-source metadata from PostgreSQL. It does not wait for task execution or a task result. Classification, extraction,
-Datalab, chunks, embeddings and derived-image processing remain in the worker. The
-worker downloads the original through a short-lived signed URL, verifies its exact
-persisted size and SHA-256, processes a bounded temporary file, and always removes
-that file. Development background-task behavior keeps local originals. Broker
-failures retain the existing safe
-`dispatch_failed` response/recovery behavior; they do not represent successful
-acceptance for processing.
+Production requires an explicit `TASK_QUEUE=celery` or `TASK_QUEUE=background`.
+Celery is recommended when a separate durable worker exists. Background mode is
+the single-web-service compatibility mode and is not durable across web-process
+restarts. In either mode, POST completes after bounded admission, uploading the
+original as a raw authenticated Cloudinary asset, committing its document record,
+and releasing the quota transaction/permit. Celery publication is synchronous;
+FastAPI background execution begins after its response is sent.
+
+Both dispatch modes use only the document ID and reload authoritative source
+metadata from PostgreSQL. Classification, extraction, Datalab, chunks, embeddings
+and derived-image processing remain outside the upload request. Processing
+downloads the original through a short-lived signed URL, verifies its exact
+persisted size and SHA-256, uses a bounded temporary file, and always removes that
+file. Celery broker failures retain the existing safe `dispatch_failed`
+response/recovery behavior; they do not represent successful acceptance for
+processing.
 
 Both production services require the same `CLOUDINARY_URL`. Originals use
 `resource_type=raw` and `type=authenticated`; they are not public delivery assets.
