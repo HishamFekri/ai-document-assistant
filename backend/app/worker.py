@@ -70,42 +70,61 @@ def retry_delay(retries):
 
 
 @celery_app.task(
-    bind=True, max_retries=MAX_PROCESSING_RETRIES,
+    # Capacity deferrals are queueing, not processing failures, and may outlive
+    # the bounded retry budget used for actual transient processing errors.
+    bind=True, max_retries=None,
     soft_time_limit=480, time_limit=600,
     reject_on_worker_lost=False,
 )
-def process_document_task(self, document_id: int, file_path: str | None = None):
+def process_document_task(
+    self,
+    document_id: int,
+    file_path: str | None = None,
+    processing_failures: int = 0,
+):
     headers = self.request.headers or {}
     with log_context(operation="document_processing", job_id=self.request.id, document_id=document_id,
                      request_id=headers.get("request_id"), correlation_id=headers.get("correlation_id")):
-        return _process_document_task(self, document_id, file_path)
+        return _process_document_task(self, document_id, file_path, processing_failures)
 
 
-def _process_document_task(self, document_id, file_path):
+def schedule_document_retry(self, document_id, processing_failures, event):
+    delay = retry_delay(self.request.retries)
+    log_event(logger, logging.INFO, event, document_id=document_id,
+              retry=self.request.retries + 1, delay_seconds=delay)
+    try:
+        raise self.retry(
+            exc=RetryableDocumentProcessingError("Document processing temporarily unavailable"),
+            countdown=delay,
+            kwargs={"processing_failures": processing_failures},
+        )
+    except Retry:
+        raise
+    except Exception as error:
+        log_generation_failure(error, "document", document_id=document_id)
+        raise RuntimeError("Could not schedule document processing retry") from None
+
+
+def _process_document_task(self, document_id, file_path, processing_failures):
     from app.services.document_processing_service import (
         mark_processing_retries_exhausted, process_document,
     )
 
     try:
-        return process_document(document_id, file_path)
+        outcome = process_document(document_id, file_path)
+        if outcome == "deferred":
+            return schedule_document_retry(
+                self, document_id, processing_failures, "document_processing_deferred",
+            )
+        return outcome
     except RetryableDocumentProcessingError:
-        if self.request.retries >= MAX_PROCESSING_RETRIES:
+        if processing_failures >= MAX_PROCESSING_RETRIES:
             try:
                 mark_processing_retries_exhausted(document_id)
             except Exception as error:
                 log_generation_failure(error, "document", document_id=document_id)
             log_event(logger, logging.WARNING, "document_retries_exhausted", document_id=document_id)
             return "retry_exhausted"
-        delay = retry_delay(self.request.retries)
-        log_event(logger, logging.INFO, "document_retry_scheduled", document_id=document_id,
-                  retry=self.request.retries + 1, delay_seconds=delay)
-        try:
-            raise self.retry(
-                exc=RetryableDocumentProcessingError("Document processing temporarily unavailable"),
-                countdown=delay, max_retries=MAX_PROCESSING_RETRIES,
-            )
-        except Retry:
-            raise
-        except Exception as error:
-            log_generation_failure(error, "document", document_id=document_id)
-            raise RuntimeError("Could not schedule document processing retry") from None
+        return schedule_document_retry(
+            self, document_id, processing_failures + 1, "document_retry_scheduled",
+        )

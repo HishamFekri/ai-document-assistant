@@ -29,6 +29,7 @@ def reconcile_stale_processing(db, user_id):
     candidate_ids = db.scalars(select(Document.id).where(
         Document.user_id == user_id,
         Document.processing_status == "processing",
+        Document.processing_stage.is_distinct_from("queued"),
         Document.processing_updated_at <= stale_processing_cutoff(),
     )).all()
     db.rollback()
@@ -46,6 +47,7 @@ def reconcile_stale_processing(db, user_id):
                 Document.id == document_id,
                 Document.user_id == user_id,
                 Document.processing_status == "processing",
+                Document.processing_stage.is_distinct_from("queued"),
                 Document.processing_updated_at <= stale_processing_cutoff(),
             ).values(
                 processing_status="failed",
@@ -61,9 +63,6 @@ def reconcile_stale_processing(db, user_id):
 
 def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload_root=Path("uploads")):
     limits = resource_limits()
-    active = sum(row.processing_status == "processing" and row.id != retry_document_id for row in rows)
-    if active >= limits.concurrency["processing"]:
-        raise ResourceRejected("processing_quota", "Please wait for your current document processing to finish.", 5)
     if incoming_bytes is None:
         return
     if len(rows) >= limits.max_documents:

@@ -313,17 +313,61 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
                     with patch.object(task, "retry", side_effect=Retry()) as retry:
                         if retries < 3:
                             with self.assertRaises(Retry):
-                                task.run(1)
-                            self.assertEqual(retry.call_args.kwargs["max_retries"], 3)
+                                task.run(1, processing_failures=retries)
+                            self.assertEqual(
+                                retry.call_args.kwargs["kwargs"]["processing_failures"],
+                                retries + 1,
+                            )
                             self.assertLessEqual(retry.call_args.kwargs["countdown"], 60)
                         else:
-                            self.assertEqual(task.run(1), "retry_exhausted")
+                            self.assertEqual(
+                                task.run(1, processing_failures=retries),
+                                "retry_exhausted",
+                            )
                             retry.assert_not_called()
                 finally:
                     task.pop_request()
             exhausted.assert_called_once_with(1)
         self.assertLessEqual(self.worker.retry_delay(1000000), 60)
+        self.assertIsNone(task.max_retries)
         self.assertFalse(self.worker.celery_app.conf.task_reject_on_worker_lost)
+
+    def test_processing_capacity_waits_without_marking_the_document_failed(self):
+        @contextmanager
+        def full_processing_slot(*args, **kwargs):
+            raise self.processing.ResourceRejected(
+                "concurrency_limit", "Synthetic processing slot is occupied", 5,
+            )
+            yield
+
+        with patch.object(self.processing, "user_operation", full_processing_slot), \
+                patch.object(self.processing, "materialize_original") as materialize:
+            self.assertEqual(self.processing.process_document(1), "deferred")
+
+        self.assertEqual(self.state.document.processing_status, "processing")
+        self.assertEqual(self.state.document.processing_stage, "queued")
+        self.assertIsNone(self.state.document.processing_error)
+        materialize.assert_not_called()
+        self.extract.assert_not_called()
+        self.embed.assert_not_called()
+
+    def test_celery_capacity_deferral_preserves_the_processing_failure_budget(self):
+        from celery.exceptions import Retry
+        task = self.worker.process_document_task
+        task.push_request(retries=25)
+        try:
+            with patch.object(self.processing, "process_document", return_value="deferred"), \
+                    patch.object(self.processing, "mark_processing_retries_exhausted") as exhausted, \
+                    patch.object(task, "retry", side_effect=Retry()) as retry, \
+                    self.assertRaises(Retry):
+                task.run(1, processing_failures=2)
+            self.assertEqual(
+                retry.call_args.kwargs["kwargs"]["processing_failures"], 2,
+            )
+            self.assertLessEqual(retry.call_args.kwargs["countdown"], 60)
+            exhausted.assert_not_called()
+        finally:
+            task.pop_request()
 
     def test_celery_does_not_retry_permanent_processing_result(self):
         task = self.worker.process_document_task
@@ -609,6 +653,62 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(saved[0].file_size_bytes, 9)
         self.assertEqual(saved[0].file_sha256, "a" * 64)
         enqueue.assert_called_once_with(tasks, 1, None)
+
+    def test_two_uploads_are_persisted_while_the_first_remains_processing(self):
+        from fastapi import BackgroundTasks, UploadFile
+        from app.services.upload_quota_service import check_upload_quota
+
+        db = MagicMock()
+        saved = []
+
+        def add(document):
+            document.id = len(saved) + 1
+            document.created_at = datetime(2026, 1, document.id)
+            saved.append(document)
+
+        db.add.side_effect = add
+
+        @contextmanager
+        def quota(*args, incoming_bytes=None, **kwargs):
+            check_upload_quota(saved, incoming_bytes=incoming_bytes)
+            yield db
+
+        stored_count = 0
+
+        def store_original(source, extension, expected_size, *args):
+            nonlocal stored_count
+            stored_count += 1
+            return self.storage.StoredOriginal(
+                None,
+                f"ai-document-assistant/originals/{stored_count:032x}{extension}",
+                expected_size,
+                f"{stored_count:x}" * 64,
+            )
+
+        with patch.object(self.routes, "upload_quota_session", side_effect=quota), \
+                patch.object(self.routes, "store_original", side_effect=store_original), \
+                patch.object(
+                    self.routes,
+                    "dispatch_uploaded_document",
+                    side_effect=lambda **kwargs: kwargs["response"],
+                ):
+            first = self.routes.upload_document(
+                BackgroundTasks(),
+                UploadFile(file=io.BytesIO(b"first"), filename="first.txt"),
+                db,
+                SimpleNamespace(id=7),
+            )
+            second = self.routes.upload_document(
+                BackgroundTasks(),
+                UploadFile(file=io.BytesIO(b"second"), filename="second.txt"),
+                db,
+                SimpleNamespace(id=7),
+            )
+
+        self.assertEqual([first.id, second.id], [1, 2])
+        self.assertEqual(len(saved), 2)
+        self.assertTrue(all(document.processing_status == "processing" for document in saved))
+        self.assertTrue(all(document.processing_stage == "uploaded" for document in saved))
 
     def test_document_commit_failure_removes_uploaded_shared_original(self):
         from fastapi import BackgroundTasks, HTTPException, UploadFile

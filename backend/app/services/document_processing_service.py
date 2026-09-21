@@ -72,15 +72,13 @@ def process_claimed_document(claim, document_id):
         file_size_bytes = getattr(document, "file_size_bytes", None)
         file_sha256 = getattr(document, "file_sha256", None)
         has_chunks = db.scalar(select(DocumentChunk.id).where(DocumentChunk.document_id == document_id).limit(1)) is not None
-        # Dispatch-failure handling may only change the pre-execution uploaded
-        # stage. Publish this transition before leaving the first transaction.
-        document.processing_status = "processing"
-        document.processing_stage = "starting"
-        document.processing_progress = 10
-        document.processing_error = None
 
+    # A broker-delivered task remains healthy while it waits for the user's
+    # bounded processing slot. This also refreshes stale-processing liveness.
+    set_progress(claim, document_id, "queued", 5)
     try:
         with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
+            set_progress(claim, document_id, "starting", 10)
             with materialize_original(
                 file_path=file_path,
                 storage_key=storage_key,
@@ -92,7 +90,10 @@ def process_claimed_document(claim, document_id):
                 return process_admitted_document(
                     claim, document_id, processing_path, file_type, has_chunks,
                 )
-    except ResourceRejected:
+    except ResourceRejected as error:
+        if error.code == "concurrency_limit":
+            log_event(logger, logging.INFO, "document_processing_queued", document_id=document_id)
+            return "deferred"
         raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
 
 

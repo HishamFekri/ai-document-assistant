@@ -91,6 +91,21 @@ test("latest chat refetch wins and persisted rows replace optimistic duplicates 
   app.unmount();
 });
 
+test("a successfully queued upload remains processing instead of becoming failed", async () => {
+  const app = runtime({ passive: false, stubs: { "@/lib/chat-api": {
+    uploadDocument: async () => ({ id: 9, processing_status: "processing",
+      processing_stage: "uploaded", processing_progress: 5, processing_error: null }),
+  } } });
+  const render = () => app.render("src/hooks/useChat.ts", "useChat", null);
+  const target = { files: [{ name: "queued.txt", size: 6 }], value: "selected" };
+  await render().handleUpload({ target });
+  assert.equal(target.value, "");
+  assert.equal(render().attachment.documentId, 9);
+  assert.equal(render().attachment.status, "processing");
+  assert.equal(render().attachment.error, null);
+  app.unmount();
+});
+
 test("switching documents ignores a stale selected-summary response", async () => {
   const old = deferred(); const calls = [];
   const app = runtime({ fetch: (url, options) => { calls.push(options); return url.includes('/documents/1/') ? old.promise : Promise.resolve(json(summary(2))); } });
