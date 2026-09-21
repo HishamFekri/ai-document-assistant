@@ -350,22 +350,43 @@ class ResourceAdmissionTests(unittest.TestCase):
                 self.quota.check_upload_quota([row, row], 1, upload_root=Path(folder))
             self.assertEqual(error.exception.code, "document_quota")
 
-    def test_missing_legacy_original_is_conservatively_charged(self):
+    def test_missing_legacy_original_without_shared_storage_is_not_charged(self):
         settings = replace(self.limits.resource_limits(), max_original_bytes=10)
         with tempfile.TemporaryDirectory() as folder:
             row = SimpleNamespace(id=1, file_path=str(Path(folder) / "missing-original.txt"),
-                                  file_size_bytes=None, processing_status="ready")
+                                  file_size_bytes=None, storage_key=None, processing_status="ready")
             with patch.object(self.quota, "resource_limits", return_value=settings), \
                  patch.object(self.quota, "upload_limits",
                               return_value=SimpleNamespace(file_bytes=10)):
-                with self.assertRaises(self.admission.ResourceRejected) as error:
-                    self.quota.check_upload_quota([row], 1, upload_root=Path(folder))
+                self.quota.check_upload_quota([row], 10, upload_root=Path(folder))
+
+    def test_source_less_legacy_row_is_not_charged_but_ambiguous_shared_row_is(self):
+        settings = replace(self.limits.resource_limits(), max_original_bytes=10)
+        source_less = SimpleNamespace(
+            id=1, file_path=None, file_size_bytes=None, storage_key=None,
+            processing_status="failed",
+        )
+        ambiguous_shared = SimpleNamespace(
+            id=2, file_path=None, file_size_bytes=None,
+            storage_key="ai-document-assistant/originals/legacy.txt",
+            processing_status="failed",
+        )
+        with patch.object(self.quota, "resource_limits", return_value=settings), \
+                patch.object(
+                    self.quota, "upload_limits", return_value=SimpleNamespace(file_bytes=10),
+                ):
+            self.quota.check_upload_quota([source_less], 10)
+            with self.assertRaises(self.admission.ResourceRejected) as error:
+                self.quota.check_upload_quota([ambiguous_shared], 1)
         self.assertEqual(error.exception.code, "storage_quota")
 
     def test_recorded_original_size_does_not_require_local_file(self):
         settings = replace(self.limits.resource_limits(), max_original_bytes=10)
-        row = SimpleNamespace(id=1, file_path="missing-original.txt",
-                              file_size_bytes=6, processing_status="ready")
+        row = SimpleNamespace(
+            id=1, file_path=None, file_size_bytes=6,
+            storage_key="ai-document-assistant/originals/retained.txt",
+            processing_status="failed",
+        )
         with patch.object(self.quota, "resource_limits", return_value=settings):
             self.quota.check_upload_quota([row], 4)
             with self.assertRaises(self.admission.ResourceRejected) as error:
