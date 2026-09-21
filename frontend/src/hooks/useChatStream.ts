@@ -134,7 +134,8 @@ function buildOptimisticDocument(
       attachment.status,
 
     processing_stage:
-      attachment.status,
+      attachment.stage
+      ?? attachment.status,
 
     processing_progress:
       attachment.progress

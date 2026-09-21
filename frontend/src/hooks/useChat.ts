@@ -1,5 +1,6 @@
 "use client";
 import { useRequestScope } from "@/hooks/useRequestScope";
+import { useDocumentStatusPolling } from "@/hooks/useDocumentStatusPolling";
 import { mergePageItems } from "@/lib/pagination";
 import { logoutSession } from "@/lib/logout";
 
@@ -33,6 +34,7 @@ import {
 import {
   Chat,
   ChatListItem,
+  Document,
   Message,
   User,
 } from "@/types/chat";
@@ -49,6 +51,8 @@ export type ComposerAttachment = {
     | "failed";
 
   progress?: number;
+
+  stage?: string | null;
 
   documentId:
     number | null;
@@ -158,6 +162,55 @@ export function useChat(
 
   const scope = useRequestScope(String(chatId));
   const reconcileIds = useRef(new Set<number>());
+
+  const attachmentDocumentInChat = Boolean(
+    attachment?.documentId !== null
+    && attachment?.documentId !== undefined
+    && validChatId
+    && chat?.documents.some(
+      (document) => document.id === attachment.documentId
+    )
+  );
+
+  const updatePolledAttachment = useCallback(
+    (documents: Document[]) => {
+      const document = documents[0];
+      if (!document) {
+        return;
+      }
+
+      setAttachment((current) => {
+        if (!current || current.documentId !== document.id) {
+          return current;
+        }
+
+        return {
+          ...current,
+          status: document.processing_status === "ready"
+            ? "ready"
+            : document.processing_status === "failed"
+              ? "failed"
+              : "processing",
+          stage: document.processing_stage,
+          progress: document.processing_progress,
+          error: document.processing_error,
+        };
+      });
+    },
+    []
+  );
+
+  useDocumentStatusPolling({
+    documentIds:
+      attachment?.documentId !== null
+      && attachment?.documentId !== undefined
+      && attachment.status === "processing"
+      && !attachmentDocumentInChat
+        ? [attachment.documentId]
+        : [],
+    token: "__cookie__",
+    onDocuments: updatePolledAttachment,
+  });
 
   const getToken =
     useCallback(() => {
@@ -382,6 +435,8 @@ export function useChat(
             document.processing_error
             ?? null
           )
+          && current.stage
+          === document.processing_stage
         ) {
           return current;
         }
@@ -393,6 +448,8 @@ export function useChat(
           progress:
             document.processing_progress
             ?? undefined,
+          stage:
+            document.processing_stage,
           error:
             document.processing_error
             ?? null,
@@ -644,6 +701,8 @@ export function useChat(
         "uploading",
       progress:
         undefined,
+      stage:
+        null,
       documentId:
         null,
       error:
@@ -755,6 +814,9 @@ export function useChat(
             progress:
               document.processing_progress
               ?? undefined,
+
+            stage:
+              document.processing_stage,
 
             error:
               document.processing_error

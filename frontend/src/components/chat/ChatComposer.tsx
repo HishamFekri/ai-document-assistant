@@ -276,6 +276,17 @@ export default function ChatComposer({
                     )}
                   </span>
                 </div>
+
+                {attachment.status === "failed"
+                  && attachment.error
+                  && (
+                    <p
+                      dir="auto"
+                      className="mt-1 text-xs text-red-500"
+                    >
+                      {attachment.error}
+                    </p>
+                  )}
               </div>
             </div>
 

@@ -4,8 +4,10 @@ import { mergePageItems } from "@/lib/pagination";
 import { logoutSession } from "@/lib/logout";
 import UploadGuidance from "@/components/documents/UploadGuidance";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
+import { useDocumentStatusPolling } from "@/hooks/useDocumentStatusPolling";
+import { Document } from "@/types/chat";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -22,20 +24,6 @@ type User = {
   email: string;
   name: string | null;
   picture: string | null;
-  created_at: string;
-};
-
-
-type Document = {
-  id: number;
-  filename: string;
-  file_type: string | null;
-  pages_count: number | null;
-
-  processing_status: string;
-  processing_stage: string | null;
-  processing_progress: number;
-
   created_at: string;
 };
 
@@ -71,6 +59,28 @@ export default function DashboardPage() {
   const [documentCursor, setDocumentCursor] = useState<string | null>(null);
   const [loadingMoreDocuments, setLoadingMoreDocuments] = useState(false);
   const documentPageBusy = useRef(false);
+
+  const updatePolledDocuments = useCallback(
+    (updates: Document[]) => {
+      const updatesById = new Map(
+        updates.map((document) => [document.id, document])
+      );
+      setDocuments((current) =>
+        current.map((document) =>
+          updatesById.get(document.id) ?? document
+        )
+      );
+    },
+    []
+  );
+
+  useDocumentStatusPolling({
+    documentIds: documents
+      .filter((document) => document.processing_status === "processing")
+      .map((document) => document.id),
+    token: "__cookie__",
+    onDocuments: updatePolledDocuments,
+  });
 
   async function loadMoreDocuments() {
     if (!documentCursor || documentPageBusy.current) return;
