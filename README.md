@@ -159,7 +159,16 @@ http://localhost:8000
 
 ## Background Processing
 
-Document processing can run locally with FastAPI BackgroundTasks or through Celery and Redis.
+Document processing can run with FastAPI BackgroundTasks in an explicitly
+configured single-service deployment or through Celery and Redis. BackgroundTasks
+are not durable across web-process restarts; Celery remains recommended when a
+separate worker is available.
+
+For a single web service:
+
+```env
+TASK_QUEUE=background
+```
 
 For Celery:
 

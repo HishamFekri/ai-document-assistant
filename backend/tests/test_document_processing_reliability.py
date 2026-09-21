@@ -15,6 +15,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from threading import BoundedSemaphore
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -276,9 +277,77 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
     def test_pending_background_task_uses_common_entry_point(self):
         from fastapi import BackgroundTasks
         tasks = BackgroundTasks()
-        with patch.object(self.queue_module, "TASK_QUEUE", "background"):
+        with patch.object(self.queue_module, "TASK_QUEUE", "background"), \
+                patch.object(self.processing, "process_document") as process:
             self.queue_module.enqueue_document_processing(tasks, 1, "synthetic.txt")
         self.assertIs(tasks.tasks[0].func, self.queue_module._run_document_processing)
+        process.assert_not_called()
+
+    def test_first_background_document_processes_normally(self):
+        with patch.object(self.queue_module, "sleep") as sleep:
+            outcome = self.queue_module._run_document_processing(1)
+
+        self.assertEqual(outcome, "completed")
+        self.assertEqual(self.state.document.processing_status, "ready")
+        self.extract.assert_called_once()
+        self.embed.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_background_global_capacity_defers_then_processes(self):
+        capacity = BoundedSemaphore(1)
+        capacity.acquire()
+
+        def release_capacity(delay):
+            self.assertEqual(delay, 2)
+            capacity.release()
+
+        with patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", capacity), \
+                patch.object(self.queue_module, "sleep", side_effect=release_capacity) as sleep:
+            outcome = self.queue_module._run_document_processing(1)
+
+        self.assertEqual(outcome, "completed")
+        self.assertEqual(self.state.document.processing_status, "ready")
+        self.extract.assert_called_once()
+        sleep.assert_called_once_with(2)
+
+    def test_background_capacity_deferrals_do_not_consume_failure_budget(self):
+        retryable = self.failures.RetryableDocumentProcessingError("safe")
+        outcomes = ["deferred"] * 5 + [retryable] * 3 + ["completed"]
+        with patch.object(self.processing, "process_document", side_effect=outcomes) as process, \
+                patch.object(self.processing, "mark_processing_retries_exhausted") as exhausted, \
+                patch.object(self.queue_module, "sleep") as sleep:
+            result = self.queue_module._run_document_processing(1)
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(process.call_count, 9)
+        self.assertEqual(sleep.call_count, 8)
+        exhausted.assert_not_called()
+
+    def test_background_genuine_processing_retries_are_bounded(self):
+        with patch.object(
+            self.processing,
+            "process_document",
+            side_effect=self.failures.RetryableDocumentProcessingError("safe"),
+        ) as process, patch.object(
+            self.processing,
+            "mark_processing_retries_exhausted",
+        ) as exhausted, patch.object(self.queue_module, "sleep") as sleep:
+            result = self.queue_module._run_document_processing(1)
+
+        self.assertEqual(result, "retry_exhausted")
+        self.assertEqual(process.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
+        exhausted.assert_called_once_with(1)
+
+    def test_background_terminal_state_is_not_retried(self):
+        self.state.document.processing_status = "failed"
+        self.state.document.processing_stage = "retry_exhausted"
+        with patch.object(self.queue_module, "sleep") as sleep:
+            result = self.queue_module._run_document_processing(1)
+
+        self.assertEqual(result, "permanent_failure")
+        sleep.assert_not_called()
+        self.extract.assert_not_called()
 
     def test_failed_queue_wakeup_does_not_repeat_successful_processing(self):
         self.wake.side_effect = RuntimeError("synthetic secret wakeup error")
@@ -639,7 +708,12 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         tasks = BackgroundTasks()
         with patch.object(self.routes, "upload_quota_session", side_effect=quota), \
                 patch.object(self.routes, "store_original", return_value=stored), \
-                patch.object(self.routes, "enqueue_document_processing") as enqueue:
+                patch.object(self.queue_module, "TASK_QUEUE", "background"), \
+                patch.object(
+                    self.routes,
+                    "enqueue_document_processing",
+                    wraps=self.queue_module.enqueue_document_processing,
+                ) as enqueue, patch.object(self.processing, "process_document") as process:
             response = self.routes.upload_document(
                 tasks,
                 UploadFile(file=io.BytesIO(b"synthetic"), filename="synthetic.txt"),
@@ -653,6 +727,8 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(saved[0].file_size_bytes, 9)
         self.assertEqual(saved[0].file_sha256, "a" * 64)
         enqueue.assert_called_once_with(tasks, 1, None)
+        self.assertEqual(len(tasks.tasks), 1)
+        process.assert_not_called()
 
     def test_two_uploads_are_persisted_while_the_first_remains_processing(self):
         from fastapi import BackgroundTasks, UploadFile

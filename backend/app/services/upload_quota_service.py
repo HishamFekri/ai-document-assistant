@@ -2,6 +2,7 @@
 
 from contextlib import contextmanager
 from datetime import timedelta
+import os
 from pathlib import Path
 from stat import S_ISREG
 
@@ -27,12 +28,15 @@ def stale_processing_cutoff():
 
 def reconcile_stale_processing(db, user_id):
     """Fail old processing rows only while atomically proving no worker owns them."""
-    candidate_ids = db.scalars(select(Document.id).where(
+    conditions = [
         Document.user_id == user_id,
         Document.processing_status == "processing",
-        Document.processing_stage.is_distinct_from("queued"),
         Document.processing_updated_at <= stale_processing_cutoff(),
-    )).all()
+    ]
+    durable_queue = os.getenv("TASK_QUEUE", "background").lower() == "celery"
+    if durable_queue:
+        conditions.append(Document.processing_stage.is_distinct_from("queued"))
+    candidate_ids = db.scalars(select(Document.id).where(*conditions)).all()
     db.rollback()
 
     for document_id in candidate_ids:
@@ -44,13 +48,15 @@ def reconcile_stale_processing(db, user_id):
             if not acquired:
                 db.rollback()
                 continue
-            db.execute(update(Document).where(
+            update_conditions = [
                 Document.id == document_id,
                 Document.user_id == user_id,
                 Document.processing_status == "processing",
-                Document.processing_stage.is_distinct_from("queued"),
                 Document.processing_updated_at <= stale_processing_cutoff(),
-            ).values(
+            ]
+            if durable_queue:
+                update_conditions.append(Document.processing_stage.is_distinct_from("queued"))
+            db.execute(update(Document).where(*update_conditions).values(
                 processing_status="failed",
                 processing_stage="retry_exhausted",
                 processing_error=STALE_PROCESSING_ERROR,

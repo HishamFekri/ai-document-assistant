@@ -52,7 +52,7 @@ def set_progress(claim, document_id, stage, progress):
         document.processing_error = None
 
 
-def process_claimed_document(claim, document_id):
+def process_claimed_document(claim, document_id, processing_capacity=None):
     with claim.session() as db:
         document = processing_document(db, document_id)
         completeness = inspect_embeddings(db, [document_id])[0]
@@ -76,7 +76,18 @@ def process_claimed_document(claim, document_id):
     # A broker-delivered task remains healthy while it waits for the user's
     # bounded processing slot. This also refreshes stale-processing liveness.
     set_progress(claim, document_id, "queued", 5)
+    capacity_acquired = False
     try:
+        if processing_capacity is not None:
+            capacity_acquired = processing_capacity.acquire(blocking=False)
+            if not capacity_acquired:
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "document_background_capacity_queued",
+                    document_id=document_id,
+                )
+                return "deferred"
         with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
             set_progress(claim, document_id, "starting", 10)
             with materialize_original(
@@ -95,6 +106,9 @@ def process_claimed_document(claim, document_id):
             log_event(logger, logging.INFO, "document_processing_queued", document_id=document_id)
             return "deferred"
         raise RetryableDocumentProcessingError("Document processing admission unavailable") from None
+    finally:
+        if capacity_acquired:
+            processing_capacity.release()
 
 
 def validate_resumed_processing(claim, document_id, path, file_type):
@@ -191,7 +205,11 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
 
 
 @document_job
-def process_document(document_id: int, file_path: str | None = None):
+def process_document(
+    document_id: int,
+    file_path: str | None = None,
+    processing_capacity=None,
+):
     # Keep the old task signature compatible; the stored source path is authoritative.
     outcome = None
     try:
@@ -201,7 +219,11 @@ def process_document(document_id: int, file_path: str | None = None):
                 return "busy"
             log_event(logger, logging.INFO, "processing_claim_acquired", document_id=document_id)
             try:
-                outcome = process_claimed_document(claim, document_id)
+                outcome = process_claimed_document(
+                    claim,
+                    document_id,
+                    processing_capacity,
+                )
             except DocumentDeletedDuringProcessing:
                 log_event(logger, logging.INFO, "processing_deleted_document_skipped", document_id=document_id)
                 return "deleted"

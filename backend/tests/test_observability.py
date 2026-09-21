@@ -293,13 +293,40 @@ class ObservabilityTests(unittest.TestCase):
                   "JWT_SECRET_KEY": "synthetic-long-deployment-secret-" * 2}
         with patch.dict(os.environ, values):
             self.runtime.validate_runtime()
-            for name, value in [("TASK_QUEUE", "background"), ("DATABASE_URL", SECRET),
+            with patch.dict(os.environ, {
+                "TASK_QUEUE": "background",
+                "CELERY_BROKER_URL": "",
+                "CELERY_RESULT_BACKEND": "",
+                "RESOURCE_REDIS_URL": "redis://127.0.0.1/2",
+            }):
+                self.limits.resource_limits.cache_clear()
+                self.runtime.validate_runtime()
+            with patch.dict(os.environ, {
+                "TASK_QUEUE": "background",
+                "RESOURCE_REDIS_URL": "",
+                "CELERY_BROKER_URL": "",
+            }):
+                self.limits.resource_limits.cache_clear()
+                with self.assertRaises(ValueError):
+                    self.runtime.validate_runtime()
+            for name, value in [("DATABASE_URL", SECRET),
                                 ("CELERY_BROKER_URL", SECRET), ("CELERY_RESULT_BACKEND", ""),
                                 ("CLOUDINARY_URL", ""),
                                 ("JWT_SECRET_KEY", "short")]:
                 with patch.dict(os.environ, {name: value}), self.assertRaises(ValueError) as caught:
                     self.runtime.validate_runtime()
                 self.assertNotIn(SECRET, str(caught.exception))
+
+        without_queue = dict(os.environ)
+        without_queue.update(values)
+        without_queue.pop("TASK_QUEUE", None)
+        with patch.dict(os.environ, without_queue, clear=True), self.assertRaisesRegex(
+            ValueError,
+            "explicit TASK_QUEUE",
+        ):
+            self.config.auth_settings.cache_clear()
+            self.limits.resource_limits.cache_clear()
+            self.runtime.validate_runtime()
 
     def test_runtime_keeps_proxy_disabled_and_validates_port(self):
         with patch.dict(os.environ, {"PORT": "8123", "FORWARDED_ALLOW_IPS": "*"}):
@@ -323,7 +350,14 @@ class ObservabilityTests(unittest.TestCase):
                 self.limits.resource_limits.cache_clear()
                 self.assertTrue(self.config.auth_settings().secure)
                 self.runtime.validate_runtime()
-                for name, value in (("TASK_QUEUE", "background"), ("JWT_SECRET_KEY", "short"),
+                with patch.dict(os.environ, {
+                    "TASK_QUEUE": "background",
+                    "CELERY_RESULT_BACKEND": "",
+                    "RESOURCE_REDIS_URL": "redis://127.0.0.1/2",
+                }):
+                    self.limits.resource_limits.cache_clear()
+                    self.runtime.validate_runtime()
+                for name, value in (("JWT_SECRET_KEY", "short"),
                                     ("DATABASE_URL", SECRET), ("CELERY_RESULT_BACKEND", "")):
                     with patch.dict(os.environ, {name: value}), self.assertRaises(ValueError) as caught:
                         self.runtime.validate_runtime()

@@ -114,10 +114,20 @@ the old session lock, that retry can claim and resume its checkpoint. Whole-work
 or broker loss may still redeliver unacknowledged messages; the claim/completed
 guard applies. No claim is made that Celery provides exactly-once delivery.
 
-`TASK_QUEUE=background` remains the default development/single-process fallback.
-It uses the same claim and checkpoints, but has no durable delivery or automatic
-retry across web-process restarts. Use Celery for production dispatch. Unknown
-TASK_QUEUE values fail submission visibly rather than silently selecting fallback.
+`TASK_QUEUE=background` is supported for an explicitly configured single-process
+web deployment. FastAPI starts processing after the upload response, and a shared
+in-process semaphore caps heavy document work at
+`RESOURCE_PROCESSING_CONCURRENCY` (default one). Capacity deferrals retry with the
+same 2, 4, 8, 16, 32, then 60 second capped backoff as Celery without consuming
+the three-retry genuine-failure budget. Unknown values fail visibly rather than
+silently selecting a fallback.
+
+BackgroundTasks are not durable. A web-process restart, redeploy, crash or service
+suspension loses pending in-memory work. Background-mode queued rows therefore
+remain protected while their retry loop refreshes them, but become eligible for
+the existing 15-minute stale reconciliation after that loop disappears. The
+stored Cloudinary original and explicit retry endpoint remain available. Celery
+is recommended whenever a separate durable worker exists.
 
 ## Deletion and diagnostics
 
