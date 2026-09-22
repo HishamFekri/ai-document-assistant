@@ -8,6 +8,7 @@ Integration pytest safeguards in conftest.py are deliberately unchanged.
 import base64
 import copy
 import importlib
+import json
 import operator
 import os
 import subprocess
@@ -18,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 class MemoryQuery:
@@ -119,6 +120,10 @@ class PrivateImageTests(unittest.TestCase):
         cls.delivery = importlib.import_module("app.services.assets.image_delivery")
         cls.references = importlib.import_module("app.services.assets.image_references")
         cls.rag = importlib.import_module("app.services.rag_service")
+        cls.search = importlib.import_module("app.services.search_service")
+        cls.hybrid = importlib.import_module("app.services.hybrid_pdf_service")
+        cls.chunks = importlib.import_module("app.services.chunk_service")
+        cls.asset_extraction = importlib.import_module("app.services.assets.asset_extraction_service")
         cls.datalab = importlib.import_module("app.services.datalab_service")
         cls.asset_schema = importlib.import_module("app.schemas.document_asset_schemas")
         cls.stack.enter_context(patch.object(cls.auth, "decode_access_token", side_effect=lambda token: {"sub": token}))
@@ -452,6 +457,84 @@ class PrivateImageTests(unittest.TestCase):
         sources = self.rag.build_sources([{"chunk": self.chunk, "similarity": 0.9}])
         self.assertEqual(sources[0]["asset_url"], "/documents/7/image-chunks/21/file")
         self.assertNotIn("res.cloudinary.com", str(sources))
+
+    def test_page_27_fixture_flows_through_chunks_assets_search_and_private_delivery(self):
+        fixture_path = Path(__file__).parent / "fixtures" / "datalab" / "selected_pages.json"
+        payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+        protected_url = self.public_url.replace("/upload/", "/authenticated/")
+        blocks = self.hybrid.extract_datalab_blocks(
+            payload,
+            [1, 27, 30],
+            {"page_27_figure.png": protected_url},
+        )
+        chunk_payloads = self.chunks.create_chunks_from_content(blocks)
+        page_27_payloads = [
+            item for item in chunk_payloads
+            if item["metadata"].get("page") == 27
+        ]
+        self.assertIn("text", {item["content_type"] for item in page_27_payloads})
+        self.assertIn("image", {item["content_type"] for item in page_27_payloads})
+
+        rows = []
+        for chunk_id, item in enumerate(page_27_payloads, start=101):
+            rows.append(SimpleNamespace(
+                id=chunk_id,
+                document_id=7,
+                document=self.document,
+                content=item["content"],
+                content_type=item["content_type"],
+                location=item["location"],
+                chunk_metadata=copy.deepcopy(item["metadata"]),
+            ))
+
+        assets = self.asset_extraction.build_document_assets(7, blocks)
+        page_27_assets = [asset for asset in assets if asset.location == "Page 27"]
+        self.assertTrue(any(asset.asset_type == "image" for asset in page_27_assets))
+        for asset_id, asset in enumerate(page_27_assets, start=201):
+            asset.id = asset_id
+        self.rows[self.models.DocumentAsset] = page_27_assets
+
+        db = MagicMock()
+        query = db.query.return_value
+        query.filter.return_value = query
+        query.order_by.return_value = query
+        query.limit.return_value = query
+        query.all.return_value = rows
+        results = self.search.search_chunks_by_page(db, [7], 27)
+        self.assertIn("text", {result["chunk"].content_type for result in results})
+        self.assertIn("image", {result["chunk"].content_type for result in results})
+
+        sources = self.rag.build_sources(results)
+        image_source = next(source for source in sources if source["content_type"] == "image")
+        self.assertRegex(
+            image_source["asset_url"],
+            r"^/documents/7/image-chunks/[1-9]\d*/file$",
+        )
+        message = SimpleNamespace(
+            id=41,
+            chat_id=31,
+            role="assistant",
+            content="Page 27 answer",
+            status="completed",
+            error=None,
+            sources=sources,
+            documents=[],
+            created_at=datetime(2026, 1, 1),
+        )
+        self.rows[self.models.Message] = [message]
+        frontend_payload = self.get("/chats/31/messages").json()
+        frontend_image = next(
+            source for source in frontend_payload[0]["sources"]
+            if source["content_type"] == "image"
+        )
+        self.assertEqual(frontend_image["asset_url"], image_source["asset_url"])
+
+        image_chunk = next(row for row in rows if row.id == image_source["chunk_id"])
+        self.rows[self.models.DocumentChunk] = [image_chunk]
+        response = self.get(image_source["asset_url"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, self.image_bytes)
+        self.assert_private(response)
 
     def test_search_metadata_normalization(self):
         self.use_remote()

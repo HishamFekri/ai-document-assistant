@@ -1,6 +1,7 @@
 import logging
 from app.services.observability import submit_observed
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -20,6 +21,11 @@ from app.services.datalab_service import (
 
 
 logger = logging.getLogger(__name__)
+
+
+MARKER_BLOCK_ID = re.compile(
+    r"^/page/(0|[1-9]\d*)(?:/[A-Za-z][A-Za-z0-9_]*/(0|[1-9]\d*))?$"
+)
 
 
 from app.services.resource_limits import upload_limits
@@ -264,6 +270,90 @@ def resolve_original_page(page_number, complex_pages: list[int], convention: str
     return None
 
 
+def get_datalab_page_reference(
+    child: dict,
+    metadata: dict,
+    complex_pages: list[int],
+    inherited_reference: dict | None = None,
+) -> dict:
+    """Resolve page provenance from Marker IDs without guessing bare labels."""
+    provider_block_id = child.get("id")
+
+    if provider_block_id is not None:
+        match = (
+            MARKER_BLOCK_ID.fullmatch(provider_block_id)
+            if isinstance(provider_block_id, str)
+            else None
+        )
+        provider_page = int(match.group(1)) if match else None
+        original_page = resolve_original_page(
+            provider_page,
+            complex_pages,
+            "original_zero_based",
+        )
+        status = "resolved" if original_page is not None else "unknown"
+
+        inherited_page = (
+            inherited_reference.get("original_page")
+            if inherited_reference
+            else None
+        )
+        if (
+            original_page is not None
+            and inherited_page is not None
+            and original_page != inherited_page
+        ):
+            original_page = None
+            status = "unknown"
+
+        return {
+            "provider_page": provider_page,
+            "provider_block_id": provider_block_id,
+            "page_numbering": "original_zero_based" if match else "unknown",
+            "page_mapping_source": "marker_block_id" if match else "invalid_marker_block_id",
+            "page_mapping_status": status,
+            "original_page": original_page,
+        }
+
+    page_number = get_datalab_page_number(child, metadata)
+    if page_number is not None:
+        convention = os.getenv("DATALAB_PAGE_NUMBERING", "unknown").strip().lower()
+        original_page = resolve_original_page(page_number, complex_pages, convention)
+        inherited_page = (
+            inherited_reference.get("original_page")
+            if inherited_reference
+            else None
+        )
+        if (
+            original_page is not None
+            and inherited_page is not None
+            and original_page != inherited_page
+        ):
+            original_page = None
+
+        return {
+            "provider_page": page_number,
+            "provider_block_id": None,
+            "page_numbering": convention,
+            "page_mapping_source": "explicit_page_field",
+            "page_mapping_status": "resolved" if original_page is not None else "unknown",
+            "original_page": original_page,
+        }
+
+    if inherited_reference is not None:
+        return dict(inherited_reference)
+
+    original_page = resolve_original_page(None, complex_pages)
+    return {
+        "provider_page": None,
+        "provider_block_id": None,
+        "page_numbering": "single_page_batch" if original_page is not None else "unknown",
+        "page_mapping_source": "single_page_batch" if original_page is not None else "missing",
+        "page_mapping_status": "resolved" if original_page is not None else "unknown",
+        "original_page": original_page,
+    }
+
+
 def build_image_fallback_content(
     original_page,
     asset_filename,
@@ -396,6 +486,7 @@ def convert_datalab_child(
     complex_pages: list[int],
     image_assets: list[dict],
     image_state: dict,
+    page_reference: dict | None = None,
 ):
     if not isinstance(
         child,
@@ -423,18 +514,22 @@ def convert_datalab_child(
         metadata
     )
 
-    page_number = (
-        get_datalab_page_number(
-            child=child,
-            metadata=metadata,
+    if page_reference is None:
+        page_reference = (
+            get_datalab_page_reference(
+                child=child,
+                metadata=metadata,
+                complex_pages=complex_pages,
+            )
         )
-    )
 
-    convention = os.getenv("DATALAB_PAGE_NUMBERING", "unknown")
-    original_page = resolve_original_page(page_number, complex_pages, convention)
-    metadata["provider_page"] = page_number
-    metadata["page_numbering"] = convention
-    metadata["page_mapping_status"] = "resolved" if original_page is not None else "unknown"
+    original_page = page_reference["original_page"]
+    metadata["provider_page"] = page_reference["provider_page"]
+    metadata["page_numbering"] = page_reference["page_numbering"]
+    metadata["page_mapping_source"] = page_reference["page_mapping_source"]
+    metadata["page_mapping_status"] = page_reference["page_mapping_status"]
+    if page_reference.get("provider_block_id") is not None:
+        metadata["provider_block_id"] = page_reference["provider_block_id"]
     for key in ("page", "page_number", "page_id", "page_num", "location"):
         metadata.pop(key, None)
     metadata['parser'] = 'datalab'
@@ -527,7 +622,7 @@ def convert_datalab_children(
     complex_pages: list[int],
     image_assets: list[dict],
     image_state: dict,
-    inherited_page=None,
+    inherited_reference=None,
 ):
     blocks = []
 
@@ -549,11 +644,12 @@ def convert_datalab_children(
 
         child = dict(child)
         metadata = child.get('metadata')
-        reported_page = get_datalab_page_number(child, metadata if isinstance(metadata, dict) else {})
-        if reported_page is None:
-            reported_page = inherited_page
-            if reported_page is not None:
-                child['page'] = reported_page
+        page_reference = get_datalab_page_reference(
+            child=child,
+            metadata=metadata if isinstance(metadata, dict) else {},
+            complex_pages=complex_pages,
+            inherited_reference=inherited_reference,
+        )
 
         block = (
             convert_datalab_child(
@@ -561,6 +657,7 @@ def convert_datalab_children(
                 complex_pages=complex_pages,
                 image_assets=image_assets,
                 image_state=image_state,
+                page_reference=page_reference,
             )
         )
 
@@ -586,7 +683,7 @@ def convert_datalab_children(
                     complex_pages=complex_pages,
                     image_assets=image_assets,
                     image_state=image_state,
-                    inherited_page=reported_page,
+                    inherited_reference=page_reference,
                 )
             )
 
