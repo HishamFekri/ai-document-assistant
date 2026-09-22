@@ -12,20 +12,25 @@ description path. Historical rows are not rewritten.
 
 Normalized `metadata.page` and source `Page N` labels are one-based original
 document pages. PyPDF enumerates original pages starting at 1. The outbound
-Datalab `page_range` subtracts 1 from selected original pages. Outbound request
-numbering does not prove response numbering.
+Datalab `page_range` subtracts 1 from selected original pages.
 
-`DATALAB_PAGE_NUMBERING` defaults to `unknown`. Until a selected-page response
-fixture proves the contract, reported numeric pages remain unassigned. Content
-remains available to semantic retrieval; exact-page retrieval excludes it.
-Missing metadata on a single-page request can safely use that requested page;
-an explicit invalid value cannot. Nested blocks inherit parent page values only
-when their own value is absent. Raw values are retained as `provider_page`, with
-`page_numbering` and `page_mapping_status` provenance. Unresolved provider labels
-cannot override that status. Non-PDF unpaginated transcription retains virtual
-page 1 only when compatible with the selected scope.
+Current Marker JSON block IDs use `/page/{page_id}/{block_type}/{block_id}` where
+`page_id` is the zero-based original-document page. A live selected-page probe
+for pages `0,26,29` returned those same IDs (not batch positions), matching the
+provider's renderer and document-builder contract. The deterministic adapter
+therefore maps a strict Marker block ID to `page_id + 1`, provided that page is
+in the submitted batch. Nested blocks inherit a verified parent reference only
+when their own ID is absent. Malformed or conflicting IDs remain unassigned.
 
-Explicit adapter contracts available **after fixture verification**:
+Bare numeric page fields still require an explicit `DATALAB_PAGE_NUMBERING`
+contract; they are not guessed by default. Missing metadata on a single-page
+request can safely use that requested page. Raw values are retained as
+`provider_page`, with `provider_block_id`, `page_numbering`,
+`page_mapping_source`, and `page_mapping_status` provenance. Unresolved provider
+labels cannot override that status. Non-PDF unpaginated transcription retains
+virtual page 1 only when compatible with the selected scope.
+
+Explicit legacy numeric-field adapter contracts:
 
 | Setting | Reported value for original page 5 in selection `[2, 5, 9]` |
 | --- | --- |
@@ -34,19 +39,13 @@ Explicit adapter contracts available **after fixture verification**:
 | `batch_zero_based` | 1 |
 | `batch_one_based` | 2 |
 
-Use a synthetic nine-page PDF with a unique visible marker on every page. Under
-separate authorization for paid provider calls, capture full JSON for selections
-`[1]`, `[2]`, `[9]`, `[1,2,9]`, and `[2,5,9]`. Record endpoint, request options,
-provider/version if available, parent/child page fields and IDs, and which marker
-each block contains. Check first/second/last, nested blocks, images, and a single
-selected page. Do not infer a contract from one number. If numeric fields are
-missing and only block IDs encode pages, leave numbering unknown until that
-format has its own verified adapter. Commit sanitized fixtures and contract tests
-before configuring the matching setting. No provider calls were made in Batch 12.
+A sanitized provider-shape fixture covers first, middle, and last selected pages,
+nested text, and an image block. Keep genuinely ambiguous formats unknown rather
+than extending the Marker ID contract to unrelated numeric fields.
 
-Older rows may already contain incorrect pages from positional guessing. The
-repository cannot identify or repair those reliably; inspect representative
-staging rows against originals. No historical page data has been certified.
+Older rows with `page_mapping_status = 'unknown'` are not rewritten by this
+adapter. Reprocess their original documents through the current extraction
+pipeline after a scoped backup and representative staging check.
 
 ## Prompt and authorization boundaries
 

@@ -5,7 +5,9 @@ Harness blocks database engines, network, Redis and provider requests.
 
 import importlib
 import io
+import json
 import os
+from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
 from unittest.mock import MagicMock, patch
@@ -152,6 +154,49 @@ class RagCorrectnessTests(unittest.TestCase):
         self.assertEqual(blocks[0]['metadata']['page'], 5)
         self.assertEqual(blocks[0]['location'], 'Page 5')
 
+    def test_marker_fixture_maps_original_first_middle_last_and_nested_image(self):
+        fixture_path = Path(__file__).parent / 'fixtures' / 'datalab' / 'selected_pages.json'
+        payload = json.loads(fixture_path.read_text(encoding='utf-8'))
+        protected_image = (
+            'https://res.cloudinary.com/testcloud/image/authenticated/'
+            'v1/ai-document-assistant/document_7/page_27_figure.png'
+        )
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('DATALAB_PAGE_NUMBERING', None)
+            blocks = self.hybrid.extract_datalab_blocks(
+                payload,
+                [1, 27, 30],
+                {'page_27_figure.png': protected_image},
+            )
+
+        resolved = [block for block in blocks if block['metadata'].get('page')]
+        self.assertEqual({block['metadata']['page'] for block in resolved}, {1, 27, 30})
+        self.assertEqual(
+            {block['metadata']['provider_page'] for block in resolved},
+            {0, 26, 29},
+        )
+        self.assertTrue(all(block['metadata']['page_mapping_status'] == 'resolved' for block in resolved))
+        self.assertTrue(all(block['metadata']['page_mapping_source'] == 'marker_block_id' for block in resolved))
+        self.assertTrue(all(block['metadata']['page_numbering'] == 'original_zero_based' for block in resolved))
+        nested_text = next(block for block in blocks if 'page 27 nested text' in block['content'])
+        image = next(block for block in blocks if block['type'] == 'image')
+        self.assertEqual((nested_text['location'], image['location']), ('Page 27', 'Page 27'))
+        self.assertEqual(image['metadata']['asset_path'], protected_image)
+
+    def test_marker_child_conflict_and_malformed_id_remain_unknown(self):
+        payload = {'children': [
+            {'id': '/page/26/Page/26', 'block_type': 'Page', 'children': [
+                {'id': '/page/27/Text/1', 'block_type': 'Text', 'html': 'conflict'},
+                {'id': '/page/not-a-page/Text/2', 'block_type': 'Text', 'html': 'malformed'},
+            ]},
+        ]}
+        blocks = self.hybrid.extract_datalab_blocks(payload, [27, 28], {})
+        self.assertEqual(len(blocks), 2)
+        for block in blocks:
+            self.assertEqual(block['metadata']['page_mapping_status'], 'unknown')
+            self.assertNotIn('page', block['metadata'])
+            self.assertEqual(block['location'], 'Unknown location')
+
     def test_source_and_context_use_normalized_original_page(self):
         chunk = self.chunk(page=5)
         chunk.location = 'Page 2'
@@ -289,7 +334,7 @@ class RagCorrectnessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compare([1], [1], 0)
 
-    def test_outbound_range_is_zero_based_without_proving_response_contract(self):
+    def test_outbound_range_is_zero_based(self):
         self.assertEqual(self.hybrid.build_page_range([1, 2, 9]), '0-1,8')
 
     def test_summary_context_uses_normalized_source_label(self):

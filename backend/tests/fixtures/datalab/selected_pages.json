@@ -1,0 +1,70 @@
+{
+  "children": [
+    {
+      "id": "/page/0/Page/0",
+      "block_type": "Page",
+      "html": "",
+      "children": [
+        {
+          "id": "/page/0/Text/1",
+          "block_type": "Text",
+          "html": "<p>Sanitized first-page text.</p>",
+          "children": null,
+          "images": {}
+        }
+      ]
+    },
+    {
+      "id": "/page/26/Page/26",
+      "block_type": "Page",
+      "html": "",
+      "children": [
+        {
+          "id": "/page/26/ListGroup/2",
+          "block_type": "ListGroup",
+          "html": "",
+          "children": [
+            {
+              "id": "/page/26/Text/3",
+              "block_type": "Text",
+              "html": "<p>Sanitized page 27 nested text.</p>",
+              "children": null,
+              "images": {}
+            }
+          ]
+        },
+        {
+          "id": "/page/26/Picture/4",
+          "block_type": "Picture",
+          "html": "",
+          "children": null,
+          "images": {
+            "page_27_figure.png": "<sanitized>"
+          }
+        }
+      ]
+    },
+    {
+      "id": "/page/29/Page/29",
+      "block_type": "Page",
+      "html": "",
+      "children": [
+        {
+          "id": "/page/29/Text/5",
+          "block_type": "Text",
+          "html": "<p>Sanitized last-page text.</p>",
+          "children": null,
+          "images": {}
+        }
+      ]
+    }
+  ],
+  "block_type": "Document",
+  "metadata": {
+    "page_stats": [
+      {"page_id": 0},
+      {"page_id": 26},
+      {"page_id": 29}
+    ]
+  }
+}
