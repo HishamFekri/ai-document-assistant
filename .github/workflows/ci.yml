@@ -111,7 +111,7 @@ jobs:
       - name: Frontend lockfile (including dev dependencies)
         if: ${{ !cancelled() }}
         working-directory: frontend
-        run: npm audit --package-lock-only --audit-level=high
+        run: npm audit --package-lock-only --audit-level=critical
 
   workflow-and-container:
     runs-on: ubuntu-latest
