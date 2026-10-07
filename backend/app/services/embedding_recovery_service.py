@@ -2,8 +2,9 @@
 
 from dataclasses import asdict, dataclass
 
-from sqlalchemy import case, cast, func, or_, select, update
+from sqlalchemy import Integer, Text, case, cast, column, func, or_, select, update, values
 from sqlalchemy.dialects.postgresql import JSONB
+from pgvector.sqlalchemy import Vector
 
 from app.database.models import Document, DocumentChunk
 from app.services.embedding_completeness_service import (
@@ -93,6 +94,59 @@ def recovery_update_statement(chunk, vector, *, statuses=RECOVERABLE_STATUSES):
     )
 
 
+def recovery_bulk_update_statement(chunks, vectors, *, statuses=RECOVERABLE_STATUSES):
+    """Build one guarded PostgreSQL update for a complete embedding batch."""
+    chunks = list(chunks)
+    vectors = validate_embeddings(vectors, len(chunks))
+    if not chunks:
+        raise ValueError("Embedding persistence batch cannot be empty")
+    if len({chunk.id for chunk in chunks}) != len(chunks):
+        raise ValueError("Embedding persistence batch contains duplicate chunks")
+    document_ids = {chunk.document_id for chunk in chunks}
+    if len(document_ids) != 1:
+        raise ValueError("Embedding persistence batch must belong to one document")
+    if not statuses:
+        raise ValueError("Embedding persistence requires an allowed document status")
+
+    batch = values(
+        column("chunk_id", Integer()),
+        column("document_id", Integer()),
+        column("content", Text()),
+        column("embedding", Vector(EMBEDDING_DIMENSION)),
+        name="embedding_batch",
+    ).data([
+        (chunk.id, chunk.document_id, chunk.content, vector)
+        for chunk, vector in zip(chunks, vectors)
+    ])
+    metadata_type = func.jsonb_typeof(DocumentChunk.chunk_metadata)
+    metadata = case(
+        (metadata_type == "object", DocumentChunk.chunk_metadata),
+        else_=cast({}, JSONB),
+    )
+    # The advisory processing claim prevents a second worker from owning the
+    # document. These predicates additionally recheck every selected row and the
+    # document state atomically after the paid provider request.
+    return (
+        update(DocumentChunk)
+        .where(
+            DocumentChunk.id == batch.c.chunk_id,
+            DocumentChunk.document_id == batch.c.document_id,
+            DocumentChunk.content == batch.c.content,
+            needs_embedding(),
+            or_(metadata_type.is_(None), metadata_type.in_(("null", "object"))),
+            select(Document.id).where(
+                Document.id == DocumentChunk.document_id,
+                Document.processing_status.in_(statuses),
+            ).exists(),
+        )
+        .values(
+            embedding=batch.c.embedding,
+            chunk_metadata=metadata.op("||")(cast(with_embedding_generation(None), JSONB)),
+        )
+        .execution_options(synchronize_session=False)
+    )
+
+
 class PostgresRecoveryStore:
     """The caller supplies a dedicated session, never a request's pending work."""
 
@@ -115,9 +169,11 @@ class PostgresRecoveryStore:
         return [RecoveryChunk(**row) for row in rows]
 
     def persist_batch(self, chunks, vectors):
-        written = 0
-        for chunk, vector in zip(chunks, vectors):
-            written += self.db.execute(recovery_update_statement(chunk, vector)).rowcount
+        if not chunks:
+            return 0
+        written = self.db.execute(
+            recovery_bulk_update_statement(chunks, vectors)
+        ).rowcount
         self.db.commit()
         return written
 

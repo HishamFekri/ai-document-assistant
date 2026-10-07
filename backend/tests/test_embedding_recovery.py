@@ -140,6 +140,10 @@ class EmbeddingRecoveryTests(unittest.TestCase):
         kwargs.setdefault("embed", lambda texts: [vector() for _ in texts])
         return self.recovery.recover_embeddings(store, **kwargs)
 
+    def test_default_voyage_batch_size_remains_128(self):
+        self.assertEqual(self.provider.VOYAGE_BATCH_SIZE, 128)
+        self.assertEqual(self.processing.VOYAGE_BATCH_SIZE, 128)
+
     def test_four_completeness_states_and_empty_is_not_complete(self):
         for required, valid, state in [(2, 2, "fully_embedded"), (2, 1, "partially_embedded"),
                                        (2, 0, "no_valid_embeddings"), (0, 0, "no_embeddable_chunks")]:
@@ -363,12 +367,49 @@ class EmbeddingRecoveryTests(unittest.TestCase):
             self.assertIn(required, sql)
         self.assertNotIn("DELETE", sql)
         self.assertNotIn("processing_status=", sql)
+
+        second = self.recovery.RecoveryChunk(2, 2, "Second unchanged content", "null")
+        bulk = self.recovery.recovery_bulk_update_statement(
+            [selected, second], [vector(1), vector(2)]
+        )
+        compiled = bulk.compile(dialect=postgresql.dialect())
+        bulk_sql = str(compiled)
+        for required in (
+            "UPDATE document_chunks SET", "FROM (VALUES", "embedding_batch",
+            "document_chunks.id = embedding_batch.chunk_id",
+            "document_chunks.document_id = embedding_batch.document_id",
+            "document_chunks.content = embedding_batch.content",
+            "NOT coalesce", "EXISTS", "jsonb_typeof", " || ",
+        ):
+            self.assertIn(required, bulk_sql)
+        self.assertIn(["ready", "failed"], compiled.params.values())
+        self.assertNotIn("DELETE", bulk_sql)
+        self.assertNotIn("processing_status=", bulk_sql)
+
+        processing_compiled = self.recovery.recovery_bulk_update_statement(
+            [selected, second], [vector(1), vector(2)], statuses=("processing",),
+        ).compile(dialect=postgresql.dialect())
+        self.assertIn(["processing"], processing_compiled.params.values())
+
         db = MagicMock()
-        db.execute.return_value.rowcount = 1
+        db.execute.return_value.rowcount = 2
         store = self.recovery.PostgresRecoveryStore(db)
-        self.assertEqual(store.persist_batch([selected, selected], [vector(), vector()]), 2)
-        self.assertEqual(db.execute.call_count, 2)
+        self.assertEqual(store.persist_batch([selected, second], [vector(), vector()]), 2)
+        self.assertEqual(db.execute.call_count, 1)
         db.commit.assert_called_once()
+
+    def test_bulk_update_rejects_ambiguous_or_invalid_batches_before_sql(self):
+        selected = self.recovery.RecoveryChunk(1, 2, "Synthetic unchanged content", "object")
+        other_document = self.recovery.RecoveryChunk(2, 3, "Other document", "object")
+        for chunks, vectors in (
+            ([], []),
+            ([selected, selected], [vector(), vector()]),
+            ([selected, other_document], [vector(), vector()]),
+            ([selected], []),
+            ([selected], [[1.0] * 384]),
+        ):
+            with self.subTest(chunks=len(chunks), vectors=len(vectors)), self.assertRaises(ValueError):
+                self.recovery.recovery_bulk_update_statement(chunks, vectors)
 
     def test_search_all_null_returns_empty_without_query_provider_call(self):
         db = MagicMock()
