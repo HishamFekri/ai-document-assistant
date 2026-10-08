@@ -18,7 +18,7 @@ import tempfile
 from threading import BoundedSemaphore
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -198,6 +198,33 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(self.processing.process_document(1), "already_complete")
         self.assertEqual(len(self.state.chunks), 1)
         self.assertEqual(self.embed.call_count, 1)
+
+    def test_pdf_prepared_chunks_and_validated_page_count_are_reused(self):
+        class PreparedContent(list):
+            pass
+
+        content = PreparedContent([
+            {"type": "text", "content": "Original block", "metadata": {"page": 27}},
+        ])
+        content.prepared_chunks = [{
+            "content": "Prepared chunk",
+            "content_type": "text",
+            "location": "Page 27",
+            "metadata": {"page": 27},
+        }]
+        content.pages_count = 30
+        self.state.document.file_type = "pdf"
+        self.extract.side_effect = lambda **kwargs: content
+
+        with patch.object(self.processing, "create_chunks_from_content") as chunk, \
+             patch.object(self.processing, "PdfReader") as reader:
+            self.assertEqual(self.processing.process_document(1), "completed")
+
+        chunk.assert_not_called()
+        reader.assert_not_called()
+        self.assertEqual([item.content for item in self.state.chunks], ["Prepared chunk"])
+        self.assertEqual(self.state.document.pages_count, 30)
+        self.ensure_assets.assert_called_once_with(ANY, 1, content)
 
     def test_ready_complete_guard_skips_file_access_and_provider_calls(self):
         self.state.document.processing_status = "ready"

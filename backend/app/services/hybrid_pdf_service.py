@@ -5,8 +5,6 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from pypdf import PdfReader
-
 from app.services.retrieval_conventions import integer_page
 from app.services.page_classifier_service import (
     is_complex_page,
@@ -29,10 +27,19 @@ MARKER_BLOCK_ID = re.compile(
 
 
 from app.services.resource_limits import upload_limits
-from app.services.upload_validation import validate_document_source, check_pdf_pages, PDFTextBudget
+from app.services.upload_validation import validated_pdf_reader, PDFTextBudget
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.content_budget import ContentBudget, check_content
 from app.services.datalab_admission import AdvancedPageBudget
+
+
+class PreparedPDFContent(list):
+    """List-compatible extraction result carrying validated processing work."""
+
+    def __init__(self, blocks, *, pages_count, chunks):
+        super().__init__(blocks)
+        self.pages_count = pages_count
+        self.prepared_chunks = chunks
 
 
 def create_pypdf_block(
@@ -97,7 +104,7 @@ def build_page_range(
     )
 
 
-def classify_pdf_pages(reader: PdfReader):
+def classify_pdf_pages(reader):
     simple_blocks, advanced_pages = [], []
     budget = PDFTextBudget()
     limit = upload_limits().datalab_document_pages
@@ -699,6 +706,8 @@ def extract_datalab_blocks(
     document_json,
     complex_pages: list[int],
     saved_images: dict,
+    *,
+    include_provider_block_count: bool = False,
 ):
     if not isinstance(
         document_json,
@@ -738,6 +747,7 @@ def extract_datalab_blocks(
             image_state=image_state,
         )
     )
+    provider_block_count = len(blocks)
 
     used_indices = image_state[
         "used_indices"
@@ -812,6 +822,8 @@ def extract_datalab_blocks(
             unassigned_count,
         )
 
+    if include_provider_block_count:
+        return blocks, provider_block_count
     return blocks
 
 
@@ -845,33 +857,65 @@ def process_datalab_batch(*, path: Path, batch_number: int, batch_pages: list[in
         images = result.get("images") or {}
         if not document_json:
             raise ValueError("Datalab returned no document JSON")
-        # Validate provider text before any image upload. The image count is also
-        # included as a block reservation, since fallback image blocks may be added.
-        preliminary = extract_datalab_blocks(document_json, batch_pages, {})
-        check_content(preliminary)
-        if len(preliminary) + len(images) > upload_limits().blocks:
+        # Normalize and validate each provider result once, before any image upload.
+        preview = {name: "pending" for name, data in images.items()
+                   if data and Path(name).name}
+        blocks, provider_blocks = extract_datalab_blocks(
+            document_json,
+            batch_pages,
+            preview,
+            include_provider_block_count=True,
+        )
+        if provider_blocks + len(images) > upload_limits().blocks:
             raise DocumentResourceError("content_limit")
         return {"batch_number": batch_number, "batch_pages": batch_pages,
-                "document_json": document_json, "images": images}
+                "document_json": document_json, "images": images,
+                "preview": preview, "blocks": blocks}
     except DocumentResourceError:
         admission.stop()
         raise
 
 
+def bind_saved_image_paths(blocks: list[dict], preview: dict, saved: dict) -> bool:
+    """Replace preview paths only when every image upload preserved exact order."""
+    expected_names = [Path(name).name for name in preview]
+    if len(expected_names) != len(set(expected_names)):
+        return False
+    if expected_names != list(saved):
+        return False
+
+    assets = build_saved_image_list(saved)
+    updates = []
+    for block in blocks:
+        metadata = block.get("metadata") or {}
+        if block.get("type") != "image" or not metadata.get("has_asset"):
+            continue
+        image_index = metadata.get("image_index")
+        if not isinstance(image_index, int) or not 0 <= image_index < len(assets):
+            return False
+        asset = assets[image_index]
+        if metadata.get("asset_filename") != asset["filename"]:
+            return False
+        updates.append((metadata, asset["path"]))
+
+    for metadata, path in updates:
+        metadata["asset_path"] = path
+    return True
+
+
 def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
     path = Path(file_path)
-    validate_document_source(path, ".pdf")
-    reader = PdfReader(path)
-    try:
-        total_pages = check_pdf_pages(reader)
+    with validated_pdf_reader(path) as (reader, total_pages):
         simple_blocks, complex_pages = classify_pdf_pages(reader)
-    finally:
-        reader.close()
     validate_processing_cost(total_pages, complex_pages)
     from app.services.chunk_service import create_chunks_from_content
-    create_chunks_from_content(simple_blocks)
+    simple_chunks = create_chunks_from_content(simple_blocks)
     if not complex_pages:
-        return simple_blocks
+        return PreparedPDFContent(
+            simple_blocks,
+            pages_count=total_pages,
+            chunks=simple_chunks,
+        )
     limits = upload_limits()
     admission = AdvancedPageBudget(path, complex_pages)
     page_batches = split_page_batches(complex_pages, limits.datalab_batch_size)
@@ -893,20 +937,36 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
             raise
     results.sort(key=lambda result: result["batch_number"])
     all_blocks = list(simple_blocks)
+    content_budget = ContentBudget()
+    for block in simple_blocks:
+        content_budget.block(block)
     for result in results:
-        # Preview successful image references, including fallback descriptions,
-        # before creating remote assets. Failed image uploads can only remove
-        # these references, so they cannot expand the approved content budget.
-        preview = {name: "pending" for name, data in result["images"].items()
-                   if data and Path(name).name}
-        all_blocks.extend(extract_datalab_blocks(result["document_json"], result["batch_pages"], preview))
-        check_content(all_blocks)
+        # The per-batch conversion above checks structural limits. Account for
+        # the combined document incrementally instead of rescanning prior batches.
+        for block in result["blocks"]:
+            content_budget.block(block)
+        all_blocks.extend(result["blocks"])
+    all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
     # Also check chunk admission before creating remote image assets.
-    create_chunks_from_content(all_blocks)
-    all_blocks = list(simple_blocks)
+    prepared_chunks = create_chunks_from_content(all_blocks)
+    requires_rebuild = False
     for result in results:
         saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}") if result["images"] else {}
-        all_blocks.extend(extract_datalab_blocks(result["document_json"], result["batch_pages"], saved))
-    check_content(all_blocks)
-    all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
-    return all_blocks
+        if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
+            # Partial/ambiguous uploads retain the prior exact reassignment logic.
+            result["blocks"] = extract_datalab_blocks(
+                result["document_json"], result["batch_pages"], saved,
+            )
+            requires_rebuild = True
+    if requires_rebuild:
+        all_blocks = list(simple_blocks)
+        for result in results:
+            all_blocks.extend(result["blocks"])
+        check_content(all_blocks)
+        all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
+        prepared_chunks = create_chunks_from_content(all_blocks)
+    return PreparedPDFContent(
+        all_blocks,
+        pages_count=total_pages,
+        chunks=prepared_chunks,
+    )

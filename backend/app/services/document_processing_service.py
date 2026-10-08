@@ -137,7 +137,9 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
         content = extract_content(file_path=path, document_id=document_id)
         if not content:
             raise ValueError("No readable content found in file")
-        chunks = create_chunks_from_content(content)
+        chunks = getattr(content, "prepared_chunks", None)
+        if chunks is None:
+            chunks = create_chunks_from_content(content)
         if not chunks:
             raise ValueError("Could not create chunks from file")
         with claim.session() as db:
@@ -190,7 +192,13 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
         log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
 
     # Read source metadata outside the final transaction.
-    pages_count = len(PdfReader(path).pages) if file_type == "pdf" else None
+    pages_count = getattr(content, "pages_count", None) if not has_chunks else None
+    if file_type == "pdf" and pages_count is None:
+        reader = PdfReader(path)
+        try:
+            pages_count = len(reader.pages)
+        finally:
+            reader.close()
     with claim.session() as db:
         document = processing_document(db, document_id)
         db.flush()
