@@ -53,20 +53,40 @@ def check_pdf_pages(reader):
     return len(reader.pages)
 
 
-def validate_pdf_source(stream):
+def _open_validated_pdf_reader(stream):
+    reader = None
     try:
         if stream.read(5) != b"%PDF-":
             raise DocumentResourceError("invalid_pdf", 400)
         stream.seek(0)
         reader = PdfReader(stream)
-        try:
-            return check_pdf_pages(reader)
-        finally:
-            reader.close()
+        return reader, check_pdf_pages(reader)
     except DocumentResourceError:
+        if reader is not None:
+            reader.close()
         raise
     except Exception:
+        if reader is not None:
+            reader.close()
         raise DocumentResourceError("invalid_pdf", 400) from None
+
+
+@contextmanager
+def validated_pdf_reader(source):
+    """Yield the reader that performed deep PDF validation and its page count."""
+    with source_stream(source) as stream:
+        validate_source_size(stream)
+        reader, total_pages = _open_validated_pdf_reader(stream)
+        try:
+            yield reader, total_pages
+        finally:
+            reader.close()
+
+
+def validate_pdf_source(stream):
+    reader, total_pages = _open_validated_pdf_reader(stream)
+    reader.close()
+    return total_pages
 
 
 class PDFTextBudget:

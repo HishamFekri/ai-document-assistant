@@ -184,6 +184,72 @@ class UploadResourceTests(unittest.TestCase):
         self.assertTrue(any(block["metadata"].get("page") == 4 and block["content"] == "Readable standard text" for block in blocks))
         images.assert_not_called()
 
+    def test_hybrid_reuses_validated_reader_page_count_and_simple_chunks(self):
+        path = self.pdf_file(3)
+        reader_type = self.validation.PdfReader
+        with patch.object(self.validation, "PdfReader", wraps=reader_type) as reader, \
+             patch.object(self.validation.PDFTextBudget, "extract", return_value="Readable text"), \
+             patch.object(self.hybrid, "is_complex_page", return_value=False), \
+             patch.object(self.chunks, "create_chunks_from_content", wraps=self.chunks.create_chunks_from_content) as chunk:
+            blocks = self.hybrid.extract_content_from_hybrid_pdf(path)
+
+        self.assertEqual(reader.call_count, 1)
+        self.assertEqual(blocks.pages_count, 3)
+        self.assertEqual(chunk.call_count, 1)
+        self.assertEqual(blocks.prepared_chunks, self.chunks.create_chunks_from_content(list(blocks)))
+
+    def test_datalab_normalization_and_chunk_output_are_reused_on_success(self):
+        path = self.pdf_file()
+        document_json = {"children": [
+            {"id": "/page/0/Text/0", "block_type": "Text", "html": "<p>Page text</p>"},
+            {"id": "/page/0/Picture/1", "block_type": "Picture", "image": "figure.png"},
+        ]}
+        images = {"figure.png": "synthetic-base64"}
+        saved = {"figure.png": "https://synthetic.invalid/authenticated/figure.png"}
+        expected = self.hybrid.extract_datalab_blocks(document_json, [1], saved)
+        original_extract = self.hybrid.extract_datalab_blocks
+        original_chunks = self.chunks.create_chunks_from_content
+
+        with patch.object(self.hybrid, "classify_pdf_pages", return_value=([], [1])), \
+             patch.object(self.hybrid, "extract_content_with_datalab", return_value={
+                 "document_json": document_json, "images": images,
+             }), patch.object(self.hybrid, "save_datalab_images", return_value=saved), \
+             patch.object(self.hybrid, "extract_datalab_blocks", wraps=original_extract) as normalize, \
+             patch.object(self.chunks, "create_chunks_from_content", wraps=original_chunks) as chunk:
+            blocks = self.hybrid.extract_content_from_hybrid_pdf(path)
+
+        self.assertEqual(normalize.call_count, 1)
+        self.assertEqual(chunk.call_count, 2)  # simple preflight, then complete document
+        self.assertEqual(list(blocks), expected)
+        self.assertEqual(blocks.prepared_chunks, original_chunks(expected))
+        image = next(block for block in blocks if block["type"] == "image")
+        self.assertEqual(image["metadata"]["asset_path"], saved["figure.png"])
+        self.assertEqual(image["metadata"]["page"], 1)
+
+    def test_partial_image_upload_retains_exact_reassignment_and_revalidation(self):
+        path = self.pdf_file()
+        document_json = {"children": [
+            {"id": "/page/0/Picture/0", "block_type": "Picture"},
+            {"id": "/page/0/Picture/1", "block_type": "Picture"},
+        ]}
+        images = {"failed.png": "invalid", "saved.png": "valid"}
+        saved = {"saved.png": "https://synthetic.invalid/authenticated/saved.png"}
+        expected = self.hybrid.extract_datalab_blocks(document_json, [1], saved)
+        original_extract = self.hybrid.extract_datalab_blocks
+
+        with patch.object(self.hybrid, "classify_pdf_pages", return_value=([], [1])), \
+             patch.object(self.hybrid, "extract_content_with_datalab", return_value={
+                 "document_json": document_json, "images": images,
+             }), patch.object(self.hybrid, "save_datalab_images", return_value=saved), \
+             patch.object(self.hybrid, "extract_datalab_blocks", wraps=original_extract) as normalize, \
+             patch.object(self.hybrid, "check_content", wraps=self.hybrid.check_content) as validate:
+            blocks = self.hybrid.extract_content_from_hybrid_pdf(path)
+
+        self.assertEqual(normalize.call_count, 2)
+        validate.assert_called_once()
+        self.assertEqual(list(blocks), expected)
+        self.assertEqual(blocks.prepared_chunks, self.chunks.create_chunks_from_content(expected))
+
     def test_datalab_response_size_is_bounded_and_closed(self):
         self.configure(MAX_DATALAB_RESPONSE_BYTES=4)
         response = MagicMock()
@@ -199,6 +265,22 @@ class UploadResourceTests(unittest.TestCase):
              patch.object(self.hybrid, "extract_content_with_datalab", return_value=result), \
              patch.object(self.hybrid, "save_datalab_images") as save:
             self.assert_rejected("content_limit", lambda: self.hybrid.extract_content_from_hybrid_pdf(path))
+        save.assert_not_called()
+
+    def test_datalab_image_entries_keep_conservative_block_reservation(self):
+        path = self.pdf_file()
+        self.configure(MAX_EXTRACTED_BLOCKS=2)
+        result = {
+            "document_json": {"children": [{"type": "text", "text": "Readable"}]},
+            "images": {"empty-a.png": "", "empty-b.png": ""},
+        }
+        with patch.object(self.hybrid, "classify_pdf_pages", return_value=([], [1])), \
+             patch.object(self.hybrid, "extract_content_with_datalab", return_value=result), \
+             patch.object(self.hybrid, "save_datalab_images") as save:
+            self.assert_rejected(
+                "content_limit",
+                lambda: self.hybrid.extract_content_from_hybrid_pdf(path),
+            )
         save.assert_not_called()
 
     def test_zip_entry_count_rejected_before_zipinfo_allocation(self):

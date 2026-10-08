@@ -19,9 +19,8 @@ from app.services.document_processing_errors import (
 from app.services.embedding_completeness_service import (
     embeddable_chunk, inspect_embeddings, needs_embedding,
 )
-from app.services.embedding_contract import validate_embeddings
-from app.services.embedding_recovery_service import RecoveryChunk, recovery_update_statement
-from app.services.embedding_service import create_passage_embeddings
+from app.services.embedding_recovery_service import RecoveryChunk, recovery_bulk_update_statement
+from app.services.embedding_service import VOYAGE_BATCH_SIZE, create_passage_embeddings
 from app.services.error_service import log_generation_failure
 from app.services.file_service import extract_content
 from app.services.resource_admission import ResourceRejected, user_operation
@@ -33,7 +32,6 @@ from app.services.original_storage import materialize_original
 
 
 logger = logging.getLogger(__name__)
-PROCESSING_EMBEDDING_BATCH_SIZE = 32
 
 
 def processing_document(db, document_id):
@@ -139,7 +137,9 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
         content = extract_content(file_path=path, document_id=document_id)
         if not content:
             raise ValueError("No readable content found in file")
-        chunks = create_chunks_from_content(content)
+        chunks = getattr(content, "prepared_chunks", None)
+        if chunks is None:
+            chunks = create_chunks_from_content(content)
         if not chunks:
             raise ValueError("Could not create chunks from file")
         with claim.session() as db:
@@ -165,29 +165,40 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
                 select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.content,
                        func.jsonb_typeof(DocumentChunk.chunk_metadata).label("metadata_type"))
                 .where(DocumentChunk.document_id == document_id, embeddable_chunk(), needs_embedding())
-                .order_by(DocumentChunk.id).limit(PROCESSING_EMBEDDING_BATCH_SIZE)
+                .order_by(DocumentChunk.id).limit(VOYAGE_BATCH_SIZE)
             ).mappings()
             pending = [RecoveryChunk(**row) for row in rows]
         if not pending:
             break
         if any(chunk.metadata_type not in (None, "null", "object") for chunk in pending):
             raise ValueError("Chunk metadata requires explicit repair")
-        vectors = validate_embeddings(
-            create_passage_embeddings([chunk.content for chunk in pending], batch_size=PROCESSING_EMBEDDING_BATCH_SIZE),
-            len(pending),
+        vectors = create_passage_embeddings(
+            [chunk.content for chunk in pending],
+            batch_size=VOYAGE_BATCH_SIZE,
         )
         with claim.session() as db:
             processing_document(db, document_id)
-            for chunk, vector in zip(pending, vectors):
-                # Maintenance keeps its original eligible statuses; this claimed
-                # worker uses the same conditional update while processing.
-                result = db.execute(recovery_update_statement(chunk, vector, statuses=("processing",)))
-                if result.rowcount != 1:
-                    raise ValueError("Chunk changed during processing; explicit retry required")
+            # Maintenance keeps its original eligible statuses; this claimed
+            # worker uses the same guarded bulk update while processing.
+            result = db.execute(
+                recovery_bulk_update_statement(
+                    pending,
+                    vectors,
+                    statuses=("processing",),
+                )
+            )
+            if result.rowcount != len(pending):
+                raise ValueError("Chunk changed during processing; explicit retry required")
         log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
 
     # Read source metadata outside the final transaction.
-    pages_count = len(PdfReader(path).pages) if file_type == "pdf" else None
+    pages_count = getattr(content, "pages_count", None) if not has_chunks else None
+    if file_type == "pdf" and pages_count is None:
+        reader = PdfReader(path)
+        try:
+            pages_count = len(reader.pages)
+        finally:
+            reader.close()
     with claim.session() as db:
         document = processing_document(db, document_id)
         db.flush()

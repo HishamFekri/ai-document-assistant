@@ -18,7 +18,7 @@ import tempfile
 from threading import BoundedSemaphore
 from types import ModuleType, SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -45,6 +45,7 @@ class ProcessingState:
         self.owned = False
         self.sessions = 0
         self.vector_writes = 0
+        self.vector_persistence_calls = 0
 
     @contextmanager
     def claim(self, document_id):
@@ -62,11 +63,17 @@ class ProcessingState:
         assert not self.active
         self.active = True
         self.sessions += 1
-        before = copy.deepcopy((self.document, self.chunks, self.assets, self.vector_writes))
+        before = copy.deepcopy((
+            self.document, self.chunks, self.assets,
+            self.vector_writes, self.vector_persistence_calls,
+        ))
         try:
             yield self
         except Exception:
-            self.document, self.chunks, self.assets, self.vector_writes = before
+            (
+                self.document, self.chunks, self.assets,
+                self.vector_writes, self.vector_persistence_calls,
+            ) = before
             raise
         finally:
             self.active = False
@@ -83,16 +90,20 @@ class ProcessingState:
         assert self.active
         from sqlalchemy.sql.dml import Update
         if isinstance(statement, Update):
-            values = statement.compile().params
-            selected = next(item for item in self.chunks if item.id == values["id_1"])
-            if selected.embedding is not None:
+            self.vector_persistence_calls += 1
+            if self.document is None or self.document.processing_status != "processing":
                 return SimpleNamespace(rowcount=0)
-            selected.embedding = values["embedding"]
-            self.vector_writes += 1
-            return SimpleNamespace(rowcount=1)
+            selected = [
+                item for item in self.chunks
+                if item.embedding is None and item.content.strip()
+            ][:self.processing.VOYAGE_BATCH_SIZE]
+            for item in selected:
+                item.embedding = vector()
+            self.vector_writes += len(selected)
+            return SimpleNamespace(rowcount=len(selected))
         rows = [dict(id=item.id, document_id=1, content=item.content, metadata_type="object")
                 for item in self.chunks if item.embedding is None and item.content.strip()]
-        rows = rows[:self.processing.PROCESSING_EMBEDDING_BATCH_SIZE]
+        rows = rows[:self.processing.VOYAGE_BATCH_SIZE]
         return SimpleNamespace(mappings=lambda: rows)
 
     def add(self, item):
@@ -188,6 +199,33 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(len(self.state.chunks), 1)
         self.assertEqual(self.embed.call_count, 1)
 
+    def test_pdf_prepared_chunks_and_validated_page_count_are_reused(self):
+        class PreparedContent(list):
+            pass
+
+        content = PreparedContent([
+            {"type": "text", "content": "Original block", "metadata": {"page": 27}},
+        ])
+        content.prepared_chunks = [{
+            "content": "Prepared chunk",
+            "content_type": "text",
+            "location": "Page 27",
+            "metadata": {"page": 27},
+        }]
+        content.pages_count = 30
+        self.state.document.file_type = "pdf"
+        self.extract.side_effect = lambda **kwargs: content
+
+        with patch.object(self.processing, "create_chunks_from_content") as chunk, \
+             patch.object(self.processing, "PdfReader") as reader:
+            self.assertEqual(self.processing.process_document(1), "completed")
+
+        chunk.assert_not_called()
+        reader.assert_not_called()
+        self.assertEqual([item.content for item in self.state.chunks], ["Prepared chunk"])
+        self.assertEqual(self.state.document.pages_count, 30)
+        self.ensure_assets.assert_called_once_with(ANY, 1, content)
+
     def test_ready_complete_guard_skips_file_access_and_provider_calls(self):
         self.state.document.processing_status = "ready"
         self.state.document.file_path = None
@@ -206,7 +244,7 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
     def test_timeout_keeps_checkpoint_and_retry_only_processes_remaining_vectors(self):
         self.extract.side_effect = lambda **kwargs: [
             {"type": "text", "content": "First synthetic block"}, {"type": "text", "content": "Second synthetic block"}]
-        self.patches.enter_context(patch.object(self.processing, "PROCESSING_EMBEDDING_BATCH_SIZE", 1))
+        self.patches.enter_context(patch.object(self.processing, "VOYAGE_BATCH_SIZE", 1))
         self.embed.side_effect = [[vector()], TimeoutError("secret synthetic provider body")]
         with self.assertRaises(self.failures.RetryableDocumentProcessingError) as failure:
             self.processing.process_document(1)
@@ -223,6 +261,57 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.ensure_assets.assert_called_once()
         self.embed.assert_called_once_with(["Second synthetic block"], batch_size=1)
         self.assertEqual([item.id for item in self.state.chunks], ids)
+
+    def test_ingestion_uses_configured_embedding_batch_size(self):
+        for index in range(65):
+            self.existing_chunk(text=f"Synthetic chunk {index}")
+        self.patches.enter_context(patch.object(self.processing, "VOYAGE_BATCH_SIZE", 64))
+
+        self.assertEqual(self.processing.process_document(1), "completed")
+
+        self.assertEqual(self.embed.call_count, 2)
+        self.assertEqual([len(call.args[0]) for call in self.embed.call_args_list], [64, 1])
+        self.assertTrue(all(call.kwargs["batch_size"] == 64 for call in self.embed.call_args_list))
+        self.assertEqual(self.state.vector_persistence_calls, 2)
+        self.assertEqual(self.state.vector_writes, 65)
+
+    def test_128_chunks_use_one_provider_and_one_persistence_batch(self):
+        for index in range(128):
+            self.existing_chunk(text=f"Synthetic chunk {index}")
+        self.patches.enter_context(patch.object(self.processing, "VOYAGE_BATCH_SIZE", 128))
+
+        self.assertEqual(self.processing.process_document(1), "completed")
+
+        self.embed.assert_called_once()
+        self.assertEqual(len(self.embed.call_args.args[0]), 128)
+        self.assertEqual(self.embed.call_args.kwargs["batch_size"], 128)
+        self.assertEqual(self.state.vector_persistence_calls, 1)
+        self.assertEqual(self.state.vector_writes, 128)
+
+    def test_invalid_provider_batch_never_reaches_bulk_persistence(self):
+        self.existing_chunk()
+        for invalid in ([], [[1.0] * 384]):
+            with self.subTest(result_length=len(invalid), vector_length=len(invalid[0]) if invalid else 0):
+                self.embed.side_effect = lambda texts, result=invalid, **kwargs: result
+                self.assertEqual(self.processing.process_document(1), "permanent_failure")
+                self.assertEqual(self.state.vector_writes, 0)
+                self.assertEqual(self.state.vector_persistence_calls, 0)
+                self.state.document.processing_status = "processing"
+                self.state.document.processing_stage = "uploaded"
+                self.state.document.processing_error = None
+                self.embed.reset_mock()
+
+    def test_bulk_persistence_conflict_preserves_concurrent_valid_vector(self):
+        self.existing_chunk()
+
+        def concurrent_embedding(texts, **kwargs):
+            self.state.chunks[0].embedding = vector(7)
+            return [vector(8)]
+
+        self.embed.side_effect = concurrent_embedding
+        self.assertEqual(self.processing.process_document(1), "permanent_failure")
+        self.assertEqual(self.state.chunks[0].embedding, vector(7))
+        self.assertEqual(self.state.vector_writes, 0)
 
     def test_provider_timeout_never_erases_previously_valid_vectors(self):
         self.existing_chunk(vector(3))
