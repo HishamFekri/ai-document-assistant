@@ -3,6 +3,7 @@ from fastapi import FastAPI, Request
 from app.services.observability import configure_logging, RequestObservabilityMiddleware
 from app.services.runtime_config import validate_runtime
 from app.services.readiness import readiness_status
+from app.services.security_headers import SecurityHeadersMiddleware
 
 configure_logging()
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,8 +29,9 @@ async def lifespan(app):
 
 class ObservedFastAPI(FastAPI):
     def build_middleware_stack(self):
-        # Outside ServerErrorMiddleware so generated 500s also carry a request ID.
-        return RequestObservabilityMiddleware(super().build_middleware_stack())
+        # Outside ServerErrorMiddleware so generated 500s also carry a request ID
+        # and security headers.
+        return SecurityHeadersMiddleware(RequestObservabilityMiddleware(super().build_middleware_stack()))
 
 
 app = ObservedFastAPI(

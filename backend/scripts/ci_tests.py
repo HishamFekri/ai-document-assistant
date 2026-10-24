@@ -14,7 +14,7 @@ SUITES = (
     "database_safety", "private_images", "public_generation_errors", "embedding_recovery",
     "document_processing_reliability", "summary_concurrency", "resource_admission",
     "upload_resource_limits", "auth_hardening", "rag_correctness", "database_scalability",
-    "observability", "provider_timeouts",
+    "observability", "provider_timeouts", "security_headers",
 )
 
 
