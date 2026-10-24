@@ -3,7 +3,8 @@ import logging
 from app.services.observability import log_exception
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+from app.services.llm_client import deepseek_client
 
 
 load_dotenv()
@@ -29,13 +30,6 @@ MODEL_NAME = os.getenv(
     "deepseek-v4-flash",
 )
 
-
-LLM_TIMEOUT_SECONDS = float(
-    os.getenv(
-        "LLM_TIMEOUT_SECONDS",
-        "90",
-    )
-)
 
 LLM_MAX_OUTPUT_TOKENS = int(
     os.getenv(
@@ -73,11 +67,10 @@ LLM_MAX_TOTAL_HISTORY_CHARS = int(
 )
 
 
-client = OpenAI(
+client = deepseek_client(
+    "answer",
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
-    timeout=LLM_TIMEOUT_SECONDS,
-    max_retries=2,
 )
 
 

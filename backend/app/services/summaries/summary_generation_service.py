@@ -8,12 +8,12 @@ from types import SimpleNamespace
 from contextlib import contextmanager
 
 from fastapi import HTTPException
-from openai import OpenAI
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.services.document_prompt_boundary import DOCUMENT_DATA_RULE, document_data
 from app.services.error_service import log_generation_failure
+from app.services.llm_client import deepseek_client
 from app.services.resource_admission import user_operation
 
 from app.database.models import (
@@ -162,7 +162,8 @@ SummaryMode = Literal[
 ]
 
 
-client = OpenAI(
+client = deepseek_client(
+    "summary",
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
 )

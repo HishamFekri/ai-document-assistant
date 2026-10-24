@@ -6,8 +6,9 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
+
+from app.services.llm_client import deepseek_client
 
 from app.database.models import (
     Chat,
@@ -67,7 +68,8 @@ def get_deepseek_client():
     if not DEEPSEEK_API_KEY:
         return None
 
-    return OpenAI(
+    return deepseek_client(
+        "title",
         api_key=DEEPSEEK_API_KEY,
         base_url=DEEPSEEK_BASE_URL,
     )
