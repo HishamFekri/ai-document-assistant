@@ -140,7 +140,9 @@ def recovery_bulk_update_statement(chunks, vectors, *, statuses=RECOVERABLE_STAT
             ).exists(),
         )
         .values(
-            embedding=batch.c.embedding,
+            # VALUES columns of untyped parameters resolve to text, which has no
+            # assignment cast to vector; cast explicitly.
+            embedding=cast(batch.c.embedding, Vector(EMBEDDING_DIMENSION)),
             chunk_metadata=metadata.op("||")(cast(with_embedding_generation(None), JSONB)),
         )
         .execution_options(synchronize_session=False)
