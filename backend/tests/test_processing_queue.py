@@ -81,22 +81,49 @@ class ProcessingQueueTests(unittest.TestCase):
             thread.join(timeout=30)
         return results
 
+    def slot_ready_events(self):
+        """Documents woken by a released slot (not by a wait timeout)."""
+        events = []
+        original = self.queue.log_event
+
+        def record(target, level, event, **fields):
+            if event == "document_processing_slot_ready":
+                events.append(fields["document_id"])
+            return original(target, level, event, **fields)
+        self.stack.enter_context(patch.object(self.queue, "log_event", side_effect=record))
+        return events
+
     def test_concurrent_uploads_hand_the_slot_over_without_idle_time(self):
         self.processing.process_document = self.realistic_process(0.3)
+        woken = self.slot_ready_events()
         with patch.object(self.queue, "sleep") as sleep:
-            started = time.monotonic()
             results = self.run_concurrently([1, 2, 3])
-            elapsed = time.monotonic() - started
         self.assertEqual(results, {1: "completed", 2: "completed", 3: "completed"})
         self.assertEqual(self.max_active, 1)          # concurrency limit preserved
         sleep.assert_not_called()                     # no blind backoff for capacity
-        self.assertLess(elapsed, 0.9 + 0.6)           # 3 x 0.3s of work; old minimum was 0.3 + 2 + 4
+        # Each waiter was woken by the release itself, not by its 2s wait timeout.
+        self.assertEqual(len(woken), 2)
         self.assert_slot_free()
 
     def test_waiters_are_served_in_arrival_order(self):
         self.processing.process_document = self.realistic_process(0.15)
         self.slots.acquire()                          # an earlier document holds the slot
-        threading.Timer(0.4, self.slots.release).start()
+        waiting = []
+        acquire = self.slots.acquire
+
+        def recording_acquire(blocking=True, timeout=None):
+            if timeout is not None:
+                waiting.append(threading.get_ident())
+            return acquire(blocking, timeout)
+        self.stack.enter_context(patch.object(self.slots, "acquire", side_effect=recording_acquire))
+
+        def release_when_all_wait():
+            deadline = time.monotonic() + 20
+            while len(waiting) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            time.sleep(0.05)                          # let the last waiter block
+            self.slots.release()
+        threading.Thread(target=release_when_all_wait).start()
         with patch.object(self.queue, "sleep"):
             results = self.run_concurrently([1, 2, 3], stagger=0.08)
         self.assertEqual(set(results.values()), {"completed"})
@@ -164,12 +191,13 @@ class ProcessingQueueTests(unittest.TestCase):
     def test_wait_times_out_and_retries_on_the_existing_schedule(self):
         self.processing.process_document = self.realistic_process(0.0)
         self.slots.acquire()
-        threading.Timer(0.35, self.slots.release).start()
         attempts = []
         original = self.processing.process_document
 
         def counting(document_id, processing_capacity=None, **timing):
             attempts.append(time.monotonic())
+            if len(attempts) == 3:
+                self.slots.release()                  # free only after two timed-out waits
             return original(document_id, processing_capacity=processing_capacity, **timing)
         self.processing.process_document = counting
         with patch.object(self.queue, "retry_delay", lambda retries: 0.1), \
@@ -177,7 +205,7 @@ class ProcessingQueueTests(unittest.TestCase):
             self.assertEqual(self.queue._run_document_processing(10), "completed")
         sleep.assert_not_called()
         # Each timed-out wait led to a normal attempt (which refreshes liveness).
-        self.assertGreaterEqual(len(attempts), 3)
+        self.assertEqual(len(attempts), 3)
         self.assert_slot_free()
 
     def test_genuine_processing_failures_keep_their_bounded_retries(self):

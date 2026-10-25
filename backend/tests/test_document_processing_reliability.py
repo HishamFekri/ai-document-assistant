@@ -386,21 +386,21 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         # P1: a capacity deferral waits on the slot itself and proceeds as soon as it
         # is released, instead of sleeping a fixed backoff.
         import threading
-        import time
         capacity = BoundedSemaphore(1)
         capacity.acquire()
         threading.Timer(0.2, capacity.release).start()
 
-        started = time.monotonic()
         with patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", capacity), \
-                patch.object(self.queue_module, "sleep") as sleep:
+                patch.object(self.queue_module, "sleep") as sleep, \
+                patch.object(self.queue_module, "log_event", wraps=self.queue_module.log_event) as events:
             outcome = self.queue_module._run_document_processing(1)
 
         self.assertEqual(outcome, "completed")
         self.assertEqual(self.state.document.processing_status, "ready")
         self.extract.assert_called_once()
         sleep.assert_not_called()
-        self.assertLess(time.monotonic() - started, 1.5)  # previously a 2 second sleep
+        # Woken by the release itself (handoff), not by the 2 second wait timeout.
+        self.assertIn("document_processing_slot_ready", [call.args[2] for call in events.call_args_list])
         self.assertTrue(capacity.acquire(blocking=False))  # slot returned, not leaked
         capacity.release()
 
