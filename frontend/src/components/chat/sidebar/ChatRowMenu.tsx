@@ -343,6 +343,7 @@ export default function ChatRowMenu({
           position.left,
       }}
       className="
+        aura
         fixed
         z-[9999]
         w-44

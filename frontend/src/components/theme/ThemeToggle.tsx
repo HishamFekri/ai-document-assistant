@@ -122,7 +122,7 @@ export default function ThemeToggle() {
         justify-center
         rounded-lg
         transition
-        hover:bg-neutral-200/60
+        hover:bg-[var(--surface-hover)]
       "
     >
       {theme === "dark" ? (

@@ -132,8 +132,8 @@ export default function SourceImage({
 
   if (loading) {
     return (
-      <div className="mt-3 flex h-44 w-full items-center justify-center rounded-xl border border-neutral-200 bg-neutral-50">
-        <div className="flex items-center gap-2 text-xs text-neutral-400">
+      <div className="mt-3 flex h-44 w-full items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]">
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
           <Loader2
             size={18}
             className="animate-spin"
@@ -151,8 +151,8 @@ export default function SourceImage({
     || !blobUrl
   ) {
     return (
-      <div className="mt-3 flex h-28 w-full items-center justify-center rounded-xl border border-neutral-200 bg-neutral-50">
-        <div className="flex items-center gap-2 text-xs text-neutral-400">
+      <div className="mt-3 flex h-28 w-full items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]">
+        <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
           <ImageIcon
             size={16}
           />
@@ -165,7 +165,7 @@ export default function SourceImage({
 
 
   return (
-    <div className="mt-3 overflow-hidden rounded-xl border border-neutral-200 bg-neutral-50">
+    <div className="mt-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-secondary)]">
       <img
         src={
           blobUrl

@@ -77,14 +77,14 @@ function FileIcon({
           items-center
           justify-center
           rounded-xl
-          bg-red-500/10
+          bg-[var(--surface-hover)]
         "
       >
         <FileText
           size={20}
           strokeWidth={1.8}
           className="
-            text-red-500
+            text-[var(--text-secondary)]
           "
         />
       </div>
@@ -106,14 +106,14 @@ function FileIcon({
           items-center
           justify-center
           rounded-xl
-          bg-blue-500/10
+          bg-[var(--surface-hover)]
         "
       >
         <FileType2
           size={20}
           strokeWidth={1.8}
           className="
-            text-blue-500
+            text-[var(--text-secondary)]
           "
         />
       </div>
@@ -135,14 +135,14 @@ function FileIcon({
           items-center
           justify-center
           rounded-xl
-          bg-emerald-500/10
+          bg-[var(--surface-hover)]
         "
       >
         <FileSpreadsheet
           size={20}
           strokeWidth={1.8}
           className="
-            text-emerald-500
+            text-[var(--text-secondary)]
           "
         />
       </div>
@@ -161,14 +161,14 @@ function FileIcon({
           items-center
           justify-center
           rounded-xl
-          bg-violet-500/10
+          bg-[var(--surface-hover)]
         "
       >
         <FileText
           size={20}
           strokeWidth={1.8}
           className="
-            text-violet-500
+            text-[var(--text-secondary)]
           "
         />
       </div>

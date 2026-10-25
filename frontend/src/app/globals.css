@@ -37,6 +37,8 @@
 
   --danger: #ef4444;
 
+  --on-primary: #ffffff;
+
   --ambient-blue: rgba(65, 105, 225, 0.07);
   --ambient-blue-soft: rgba(83, 121, 235, 0.05);
   --ambient-blue-deep: rgba(48, 78, 190, 0.06);
@@ -80,6 +82,8 @@ html.dark {
   --scrollbar-hover: #666666;
 
   --danger: #ff5d5d;
+
+  --on-primary: #ffffff;
 
   --ambient-blue: rgba(62, 92, 255, 0.11);
   --ambient-blue-soft: rgba(73, 120, 255, 0.09);
@@ -637,5 +641,388 @@ html:not(.dark) .ambient-noise {
   .ambient-orb,
   .hero-title-accent {
     animation: none;
+  }
+}
+
+/* =========================
+   AURA: AUTHENTICATED WORKSPACE
+   Scoped to .aura so the landing page keeps its own palette.
+========================= */
+
+.aura {
+  --background: #fbfbfc;
+  --foreground: #0b0b0c;
+
+  --sidebar: #f3f3f5;
+
+  --surface: #ffffff;
+  --surface-secondary: #f1f1f3;
+  --surface-hover: #ebebee;
+  --surface-active: #e3e3e7;
+
+  --border: #e2e2e6;
+  --border-soft: #ebebee;
+
+  --text-primary: #0b0b0c;
+  --text-secondary: #55555c;
+  --text-muted: #6f6f77;
+
+  --primary: #111113;
+  --primary-hover: #000000;
+  --primary-soft: rgba(17, 17, 19, 0.06);
+  --on-primary: #ffffff;
+
+  --composer: #ffffff;
+  --composer-border: #dedee3;
+  --composer-focus: #b9b9c0;
+  --composer-glow: 0 8px 30px -10px rgba(0, 0, 0, 0.18);
+
+  --menu: #ffffff;
+  --menu-hover: #f1f1f3;
+
+  --chat-user: #ededf0;
+
+  --scrollbar: #c9c9ce;
+  --scrollbar-hover: #a5a5ac;
+
+  --mode-track: #ececef;
+  --mode-thumb: #ffffff;
+  --mode-thumb-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.08),
+    0 4px 14px -6px rgba(0, 0, 0, 0.18);
+
+  --focus-ring: rgba(17, 17, 19, 0.45);
+  --aura-light: rgba(0, 0, 0, 0.045);
+  --aura-light-active: rgba(0, 0, 0, 0.08);
+
+  color: var(--foreground);
+
+  font-family:
+    var(--font-geist),
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+
+html.dark .aura {
+  --background: #08090a;
+  --foreground: #f5f5f7;
+
+  --sidebar: #0f1012;
+
+  --surface: #17181b;
+  --surface-secondary: #0f1012;
+  --surface-hover: #1b1c20;
+  --surface-active: #232428;
+
+  --border: #222327;
+  --border-soft: #1a1b1e;
+
+  --text-primary: #f5f5f7;
+  --text-secondary: #a1a1a8;
+  --text-muted: #7f7f87;
+
+  --primary: #f5f5f7;
+  --primary-hover: #ffffff;
+  --primary-soft: rgba(255, 255, 255, 0.07);
+  --on-primary: #08090a;
+
+  --composer: #111214;
+  --composer-border: #26272b;
+  --composer-focus: #3a3b41;
+  --composer-glow:
+    0 0 0 1px rgba(255, 255, 255, 0.03),
+    0 10px 40px -12px rgba(255, 255, 255, 0.12);
+
+  --menu: #17181b;
+  --menu-hover: #212226;
+
+  --chat-user: #1b1c20;
+
+  --scrollbar: #2c2d32;
+  --scrollbar-hover: #44454b;
+
+  --mode-track: #0f1012;
+  --mode-thumb: #212226;
+  --mode-thumb-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.07),
+    0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 6px 22px -8px rgba(255, 255, 255, 0.22);
+
+  --focus-ring: rgba(245, 245, 247, 0.55);
+  --aura-light: rgba(255, 255, 255, 0.05);
+  --aura-light-active: rgba(255, 255, 255, 0.1);
+}
+
+
+html:has(.aura),
+html:has(.aura) body {
+  background: #fbfbfc;
+}
+
+
+html.dark:has(.aura),
+html.dark:has(.aura) body {
+  background: #08090a;
+}
+
+
+/* The global `button { color: inherit }` above is unlayered, so it outranks
+   every text-colour utility on buttons. Inside Aura, defer to the utilities. */
+.aura button {
+  color: revert-layer;
+}
+
+
+.aura ::selection {
+  background: var(--surface-active);
+}
+
+
+/* Text fields are excluded: the composer shows focus with its own glow. */
+.aura :is(a, button, select, summary, [role="button"]):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+
+/* Mode switcher: one track, one gliding thumb. */
+
+.aura-modes {
+  position: relative;
+
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+
+  width: 100%;
+  padding: 3px;
+
+  border: 1px solid var(--border);
+  border-radius: 999px;
+
+  background: var(--mode-track);
+}
+
+
+.aura-modes-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+
+  width: calc((100% - 6px) / 3);
+
+  border-radius: 999px;
+
+  background: var(--mode-thumb);
+  box-shadow: var(--mode-thumb-shadow);
+
+  transform: translateX(calc(var(--mode-index, 0) * 100%));
+
+  transition: transform 420ms cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+
+
+.aura .aura-mode {
+  position: relative;
+  z-index: 1;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+
+  border-radius: 999px;
+
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+
+  color: var(--text-muted);
+
+  transition: color 200ms ease;
+}
+
+
+.aura .aura-mode:hover {
+  color: var(--text-secondary);
+}
+
+
+.aura .aura-mode[aria-pressed="true"] {
+  color: var(--text-primary);
+}
+
+
+.aura-mode svg {
+  flex: none;
+  opacity: 0.85;
+}
+
+
+@media (min-width: 768px) {
+  .aura-modes {
+    width: 408px;
+  }
+
+  .aura .aura-mode {
+    height: 32px;
+    padding: 0 14px;
+  }
+}
+
+
+/* View change: a short rise and fade, no layout shift. */
+
+.aura-view {
+  animation: aura-view-enter 340ms cubic-bezier(0.2, 0.9, 0.2, 1);
+}
+
+
+@keyframes aura-view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+
+/* Ambient light behind the composer; brighter while answering. */
+
+/* Kept inside the composer's box horizontally and at the bottom, so it never
+   adds scrollable overflow; it only spills upward behind the thread. */
+.aura-ambient {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+
+  height: 240px;
+
+  pointer-events: none;
+
+  background:
+    radial-gradient(
+      ellipse 46% 62% at 50% 100%,
+      var(--aura-light),
+      transparent
+    );
+
+  transition:
+    opacity 600ms ease,
+    background 600ms ease;
+}
+
+
+.aura-ambient.is-active {
+  background:
+    radial-gradient(
+      ellipse 46% 62% at 50% 100%,
+      var(--aura-light-active),
+      transparent
+    );
+
+  animation: aura-ambient-pulse 2.8s ease-in-out infinite;
+}
+
+
+@keyframes aura-ambient-pulse {
+  0%,
+  100% {
+    opacity: 0.75;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+
+/* Luminous orb: product mark and assistant avatar. */
+
+.aura-orb {
+  display: inline-block;
+  flex: none;
+
+  width: 22px;
+  height: 22px;
+
+  border-radius: 999px;
+
+  background:
+    radial-gradient(
+      circle at 34% 28%,
+      #ffffff 0%,
+      #dcdce1 32%,
+      #8b8b93 72%,
+      #45454b 100%
+    );
+
+  box-shadow:
+    0 0 16px -2px rgba(255, 255, 255, 0.32);
+}
+
+
+html:not(.dark) .aura .aura-orb {
+  background:
+    radial-gradient(
+      circle at 34% 28%,
+      #8c8c94 0%,
+      #3a3a40 45%,
+      #0b0b0c 100%
+    );
+
+  box-shadow:
+    0 2px 10px -3px rgba(0, 0, 0, 0.4);
+}
+
+
+.aura-orb.is-thinking {
+  animation: aura-breathe 1.8s ease-in-out infinite;
+}
+
+
+@keyframes aura-breathe {
+  0%,
+  100% {
+    transform: scale(0.94);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.04);
+    opacity: 1;
+  }
+}
+
+
+@media (
+  prefers-reduced-motion:
+  reduce
+) {
+  .aura-view,
+  .aura-ambient.is-active,
+  .aura-orb.is-thinking {
+    animation: none;
+  }
+
+  .aura-modes-thumb {
+    transition: none;
   }
 }

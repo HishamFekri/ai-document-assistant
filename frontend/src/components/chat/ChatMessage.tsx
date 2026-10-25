@@ -7,7 +7,6 @@ import {
   FileText,
   Loader2,
   RefreshCw,
-  Sparkles,
   TriangleAlert,
 } from "lucide-react";
 
@@ -852,13 +851,13 @@ export default function ChatMessage({
                   whitespace-pre-wrap
                   rounded-[22px]
                   rounded-br-[7px]
-                  bg-[var(--primary)]
+                  bg-[var(--chat-user)]
                   px-4
                   py-2.5
                   text-start
                   text-[15px]
                   leading-6
-                  text-white
+                  text-[var(--text-primary)]
                 "
               >
                 {message.content}
@@ -1017,6 +1016,7 @@ export default function ChatMessage({
         "
       >
         <div
+          aria-hidden="true"
           className="
             mt-0.5
             flex
@@ -1025,13 +1025,14 @@ export default function ChatMessage({
             shrink-0
             items-center
             justify-center
-            rounded-full
-            bg-[var(--primary-soft)]
-            text-[var(--primary)]
           "
         >
-          <Sparkles
-            size={14}
+          <span
+            className={`aura-orb ${
+              assistantContent
+                ? ""
+                : "is-thinking"
+            }`}
           />
         </div>
 

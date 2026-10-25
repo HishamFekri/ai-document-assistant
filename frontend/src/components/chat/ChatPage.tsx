@@ -3,6 +3,7 @@ import UploadGuidance from "@/components/documents/UploadGuidance";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
+  type CSSProperties,
   useEffect,
   useRef,
   useState,
@@ -14,9 +15,13 @@ import {
 } from "next/navigation";
 
 import {
+  AlignLeft,
   ArrowDown,
   Loader2,
   Menu,
+  MessageCircle,
+  ScrollText,
+  type LucideIcon,
 } from "lucide-react";
 
 import ChatSidebar from "@/components/chat/ChatSidebar";
@@ -698,6 +703,7 @@ function ChatWorkspace({
     return (
       <main
         className="
+          aura
           flex
           min-h-screen
           items-center
@@ -738,6 +744,7 @@ function ChatWorkspace({
     return (
       <main
         className="
+          aura
           flex
           min-h-screen
           items-center
@@ -847,9 +854,47 @@ function ChatWorkspace({
   }
 
 
+  const viewTabs: {
+    view: ActiveView;
+    label: string;
+    Icon: LucideIcon;
+    open: () => void;
+  }[] = [
+    {
+      view: "chat",
+      label: "Chat",
+      Icon: MessageCircle,
+      open: openChatView,
+    },
+    {
+      view: "summary",
+      label: "Summary",
+      Icon: AlignLeft,
+      open: () => {
+        void openSummaryView();
+      },
+    },
+    {
+      view: "transcription",
+      label: "Transcription",
+      Icon: ScrollText,
+      open: () => {
+        void openTranscriptionView();
+      },
+    },
+  ];
+
+  const activeViewIndex =
+    viewTabs.findIndex(
+      (tab) =>
+        tab.view === activeView
+    );
+
+
   return (
     <main
       className="
+        aura
         flex
         h-[100dvh]
         overflow-hidden
@@ -1051,15 +1096,22 @@ function ChatWorkspace({
           <header
             className="
               relative
-              flex
-              min-h-14
+              grid
               shrink-0
+              grid-cols-[auto_minmax(0,1fr)_auto]
               items-center
-              border-b
-              border-transparent
+              gap-x-1
+              gap-y-2
               px-2
+              pb-2
+              pt-2
               sm:px-4
-              md:px-6
+              md:min-h-14
+              md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]
+              md:gap-x-4
+              md:py-0
+              md:pl-6
+              md:pr-4
             "
           >
             <button
@@ -1069,7 +1121,6 @@ function ChatWorkspace({
                 setMobileSidebarOpen(true)
               }
               className="
-                mr-1
                 inline-flex
                 h-10
                 w-10
@@ -1086,162 +1137,75 @@ function ChatWorkspace({
               <Menu size={21} />
             </button>
 
+            <p
+              className="
+                min-w-0
+                truncate
+                px-1
+                text-[14px]
+                font-medium
+                tracking-[-0.01em]
+                text-[var(--text-primary)]
+                md:px-0
+              "
+            >
+              {workspaceChat?.title || "New chat"}
+            </p>
+
             <nav
               aria-label="Chat workspace views"
               className="
+                order-last
+                col-span-3
                 min-w-0
-                flex-1
-                overflow-x-auto
-                [scrollbar-width:none]
-                [&::-webkit-scrollbar]:hidden
-                md:absolute
-                md:left-1/2
-                md:top-0
-                md:h-full
-                md:-translate-x-1/2
+                md:order-none
+                md:col-span-1
               "
             >
               <div
-                className="
-                  flex
-                  h-14
-                  w-max
-                  min-w-full
-                  items-stretch
-                  justify-start
-                  gap-5
-                  px-1
-                  md:h-full
-                  md:min-w-0
-                  md:justify-center
-                  md:gap-7
-                "
+                className="aura-modes"
+                style={{
+                  "--mode-index": activeViewIndex,
+                } as CSSProperties}
               >
-                <button
-                  type="button"
-                  onClick={openChatView}
-                  className={`
-                    relative
-                    flex
-                    h-full
-                    shrink-0
-                    items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
+                <span
+                  aria-hidden="true"
+                  className="aura-modes-thumb"
+                />
 
-                    ${
-                      activeView === "chat"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+                {viewTabs.map(({
+                  view,
+                  label,
+                  Icon,
+                  open,
+                }) => (
+                  <button
+                    key={view}
+                    type="button"
+                    onClick={open}
+                    aria-pressed={
+                      activeView === view
                     }
-                  `}
-                >
-                  Chat
-
-                  {activeView === "chat" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
+                    className="aura-mode"
+                  >
+                    <Icon
+                      size={15}
+                      strokeWidth={1.8}
+                      aria-hidden="true"
                     />
-                  )}
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    void openSummaryView();
-                  }}
-                  className={`
-                    relative
-                    flex
-                    h-full
-                    shrink-0
-                    items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
-
-                    ${
-                      activeView === "summary"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    }
-                  `}
-                >
-                  Summary
-
-                  {activeView === "summary" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
-                    />
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    void openTranscriptionView();
-                  }}
-                  className={`
-                    relative
-                    flex
-                    h-full
-                    shrink-0
-                    items-center
-                    px-0.5
-                    text-sm
-                    transition-colors
-                    duration-150
-
-                    ${
-                      activeView === "transcription"
-                        ? "font-semibold text-[var(--text-primary)]"
-                        : "font-medium text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
-                    }
-                  `}
-                >
-                  Transcription
-
-                  {activeView === "transcription" && (
-                    <span
-                      className="
-                        absolute
-                        bottom-0
-                        left-0
-                        right-0
-                        h-0.5
-                        rounded-full
-                        bg-[var(--text-primary)]
-                      "
-                    />
-                  )}
-                </button>
+                    <span className="truncate">
+                      {label}
+                    </span>
+                  </button>
+                ))}
               </div>
             </nav>
 
             <div
               className="
-                ml-1
                 shrink-0
-                md:ml-auto
+                justify-self-end
               "
             >
               {workspaceChat && (
@@ -1269,6 +1233,18 @@ function ChatWorkspace({
               )}
             </div>
           </header>
+
+
+          <div
+            key={activeView}
+            className="
+              aura-view
+              flex
+              min-h-0
+              flex-1
+              flex-col
+            "
+          >
 
 
           {activeView === "chat" ? (
@@ -1464,7 +1440,7 @@ function ChatWorkspace({
                   onClick={scrollToBottom}
                   title="Scroll to latest message"
                   aria-label="Scroll to latest message"
-                  className="absolute bottom-[calc(6rem+env(safe-area-inset-bottom))] left-1/2 z-20 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-lg transition hover:bg-[var(--surface-hover)]"
+                  className="absolute bottom-[calc(7.75rem+env(safe-area-inset-bottom))] left-1/2 sm:bottom-[calc(7rem+env(safe-area-inset-bottom))] z-20 flex h-10 w-10 -translate-x-1/2 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-[var(--text-primary)] shadow-lg transition hover:bg-[var(--surface-hover)]"
                 >
                   <ArrowDown size={18} />
                 </button>
@@ -1729,7 +1705,7 @@ function ChatWorkspace({
                             py-2.5
                             text-sm
                             font-medium
-                            text-white
+                            text-[var(--on-primary)]
                             transition
                             hover:opacity-90
                             disabled:cursor-not-allowed
@@ -1765,7 +1741,7 @@ function ChatWorkspace({
                           py-2.5
                           text-sm
                           font-medium
-                          text-white
+                          text-[var(--on-primary)]
                           transition
                           hover:opacity-90
                         "
@@ -1779,6 +1755,7 @@ function ChatWorkspace({
               )}
             </>
           )}
+          </div>
         </div>
 
 

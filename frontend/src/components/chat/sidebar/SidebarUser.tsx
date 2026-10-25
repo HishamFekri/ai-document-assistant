@@ -264,7 +264,7 @@ export default function SidebarUser({
               bg-[var(--primary)]
               text-xs
               font-medium
-              text-white
+              text-[var(--on-primary)]
             "
           >
             {user?.name
@@ -330,7 +330,7 @@ export default function SidebarUser({
               bg-[var(--primary)]
               text-xs
               font-medium
-              text-white
+              text-[var(--on-primary)]
             "
           >
             {user?.name

@@ -38,6 +38,11 @@ export default function SidebarHeader({
         "
       >
         <span
+          aria-hidden="true"
+          className="aura-orb mr-2 !h-3.5 !w-3.5"
+        />
+
+        <span
           className="
             whitespace-nowrap
             text-[14px]

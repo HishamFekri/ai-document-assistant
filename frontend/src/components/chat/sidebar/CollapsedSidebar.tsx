@@ -93,13 +93,17 @@ export default function CollapsedSidebar({
   return (
     <aside
       className="
+        my-2
+        ml-2
         flex
-        h-screen
+        h-[calc(100dvh-1rem)]
         w-[64px]
         shrink-0
         flex-col
-        border-r
-        border-[var(--border)]
+        overflow-hidden
+        rounded-[18px]
+        border
+        border-[var(--border-soft)]
         bg-[var(--sidebar)]
         text-[var(--text-primary)]
       "

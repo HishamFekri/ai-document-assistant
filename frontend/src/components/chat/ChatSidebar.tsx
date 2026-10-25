@@ -435,14 +435,12 @@ export default function ChatSidebar({
         flex
         shrink-0
         flex-col
-        border-r
-        border-[var(--border)]
         bg-[var(--sidebar)]
 
         ${
           mobile
-            ? "h-full w-[min(86vw,320px)] max-w-[320px]"
-            : "h-screen w-[250px]"
+            ? "h-full w-[min(86vw,320px)] max-w-[320px] border-r border-[var(--border)]"
+            : "my-2 ml-2 h-[calc(100dvh-1rem)] w-[250px] overflow-hidden rounded-[18px] border border-[var(--border-soft)]"
         }
       `}
     >

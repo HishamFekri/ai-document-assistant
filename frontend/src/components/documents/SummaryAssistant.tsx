@@ -264,8 +264,8 @@ export default function SummaryAssistant({
             shadow-[0_4px_18px_rgba(0,0,0,0.14)]
             transition-all
             duration-200
-            focus-within:border-[var(--primary)]
-            focus-within:shadow-[0_6px_24px_rgba(65,105,225,0.14)]
+            focus-within:border-[var(--composer-focus)]
+            focus-within:shadow-[var(--composer-glow)]
           "
         >
           {fileInputRef
@@ -435,7 +435,7 @@ export default function SummaryAssistant({
                   justify-center
                   rounded-full
                   bg-[var(--primary)]
-                  text-white
+                  text-[var(--on-primary)]
                   transition
                   hover:opacity-90
                   active:scale-95
@@ -478,7 +478,7 @@ export default function SummaryAssistant({
                   px-4
                   text-xs
                   font-medium
-                  text-white
+                  text-[var(--on-primary)]
                   transition
                   hover:opacity-90
                   active:scale-95

@@ -2,10 +2,22 @@ import type {
   Metadata,
 } from "next";
 
+import {
+  Geist,
+} from "next/font/google";
+
 import "./globals.css";
 
 import Providers from "@/components/providers";
 import BackendWarmup from "@/components/chat/BackendWarmup";
+
+
+// Exposed as a CSS variable only; the chat workspace opts in through `.aura`.
+const geist = Geist({
+  subsets: ["latin"],
+  variable: "--font-geist",
+  display: "swap",
+});
 
 
 export const metadata: Metadata = {
@@ -143,7 +155,7 @@ export default function RootLayout({
         />
       </head>
 
-      <body>
+      <body className={geist.variable}>
         <Providers>
           <BackendWarmup />
 

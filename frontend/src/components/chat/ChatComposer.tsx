@@ -175,16 +175,27 @@ export default function ChatComposer({
   return (
     <div
       className="
+        relative
         bg-[var(--background)]
         px-4
-        pb-5
+        pb-[max(1.25rem,env(safe-area-inset-bottom))]
         transition-colors
         duration-200
         sm:px-6
       "
     >
       <div
+        aria-hidden="true"
+        className={`aura-ambient ${
+          sending
+            ? "is-active"
+            : ""
+        }`}
+      />
+
+      <div
         className="
+          relative
           mx-auto
           w-full
           max-w-3xl
@@ -346,17 +357,17 @@ export default function ChatComposer({
             onSubmit
           }
           className="
-            rounded-[24px]
+            rounded-[26px]
             border
             border-[var(--composer-border)]
             bg-[var(--composer)]
             px-2
             py-1.5
-            shadow-[0_4px_18px_rgba(0,0,0,0.14)]
+            shadow-[0_4px_18px_rgba(0,0,0,0.10)]
             transition-all
-            duration-200
-            focus-within:border-[var(--primary)]
-            focus-within:shadow-[0_6px_24px_rgba(65,105,225,0.14)]
+            duration-300
+            focus-within:border-[var(--composer-focus)]
+            focus-within:shadow-[var(--composer-glow)]
           "
         >
           <input
@@ -537,7 +548,7 @@ export default function ChatComposer({
                   justify-center
                   rounded-full
                   bg-[var(--primary)]
-                  text-white
+                  text-[var(--on-primary)]
                   transition
                   hover:opacity-90
                   active:scale-95
@@ -568,7 +579,7 @@ export default function ChatComposer({
                   justify-center
                   rounded-full
                   bg-[var(--primary)]
-                  text-white
+                  text-[var(--on-primary)]
                   transition
                   hover:opacity-90
                   active:scale-95
