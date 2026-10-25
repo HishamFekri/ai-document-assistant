@@ -171,13 +171,16 @@ migration execution.
   standalone regression suites through `scripts/ci_tests.py`.
 * **Backend PostgreSQL:** Python 3.11 against a disposable `pgvector/pgvector:0.8.1-pg17`
   service container (pinned by digest, bound to 127.0.0.1, trust auth inside the
-  runner only). Runs all six `tests/*_postgres.py` suites (listed explicitly in the
+  runner only). Runs all seven `tests/*_postgres.py` suites (listed explicitly in the
 workflow; add new ones there) through conftest's isolated
   per-run database (created and dropped by the fixture, migrated to head), then
   the processing benchmark in its own process: determinism across two runs and
   equality with `tests/fixtures/processing_baseline.json`, so any change to
   extracted text, chunk order, metadata, asset mapping, embeddings or status
-  fails CI. Providers are mocked or simulated with non-loopback sockets refused;
+  fails CI. The same process runs the missing-image suite: a two-batch document
+  with rejected uploads (count, placeholders, API field) and a real Alembic
+  downgrade/upgrade around a pre-migration document.
+  Providers are mocked or simulated with non-loopback sockets refused;
   provider settings are fixed offline placeholders, and no Redis is used.
 * **Frontend:** Node 22; `npm ci`; all `tests/*.test.mjs`; TypeScript no-emit;
   ESLint (zero errors, maximum 19 existing warnings); production build.

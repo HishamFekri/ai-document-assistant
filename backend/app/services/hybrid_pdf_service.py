@@ -36,10 +36,12 @@ from app.services.datalab_admission import AdvancedPageBudget
 class PreparedPDFContent(list):
     """List-compatible extraction result carrying validated processing work."""
 
-    def __init__(self, blocks, *, pages_count, chunks):
+    def __init__(self, blocks, *, pages_count, chunks, missing_images=0):
         super().__init__(blocks)
         self.pages_count = pages_count
         self.prepared_chunks = chunks
+        # Extracted image occurrences left without a stored asset (all batches).
+        self.missing_images = missing_images
 
 
 def create_pypdf_block(
@@ -964,12 +966,13 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
     requires_rebuild = False
     # Scoped to this document's processing job: identical images upload once across batches.
     upload_cache = {}
+    image_report = {"missing_images": 0}
     with timed_stage("extraction.images", batches=len(results)) as totals:
         for result in results:
             with timed_stage("extraction.image_upload", batch=result["batch_number"],
                              images=len(result["images"] or {})):
                 saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}",
-                                            upload_cache=upload_cache) if result["images"] else {}
+                                            upload_cache=upload_cache, report=image_report) if result["images"] else {}
             if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
                 # Partial/ambiguous uploads retain the prior exact reassignment logic.
                 result["blocks"] = extract_datalab_blocks(
@@ -984,8 +987,10 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
             all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
             prepared_chunks = create_chunks_from_content(all_blocks)
         totals["images"] = sum(len(result["images"] or {}) for result in results)
+        totals["missing"] = image_report["missing_images"]
     return PreparedPDFContent(
         all_blocks,
         pages_count=total_pages,
         chunks=prepared_chunks,
+        missing_images=image_report["missing_images"],
     )

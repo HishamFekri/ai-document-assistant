@@ -319,7 +319,8 @@ class ImageUploadTests(unittest.TestCase):
         self.assertEqual(cloud.attempts[broken], 3)                 # IMAGE_UPLOAD_MAX_ATTEMPTS, once per distinct image
         recorded = dict(events)
         self.assertEqual(recorded["datalab_images_uploaded"]["failed"], 1)
-        self.assertEqual(recorded["datalab_images_upload_incomplete"], {"failed": 1, "images": 1})
+        # One distinct failure, two missing occurrences (the image and its copy).
+        self.assertEqual(recorded["datalab_images_upload_incomplete"], {"failed": 1, "missing": 2, "images": 1})
         retries = [fields for event, fields in events if event == "datalab_image_upload_retry"]
         self.assertEqual(retries, [{"failure_category": "server_error", "retry": 1},
                                    {"failure_category": "server_error", "retry": 2}])
@@ -357,6 +358,37 @@ class ImageUploadTests(unittest.TestCase):
         self.assertEqual(list(result), ["ok.png"])
         self.assertEqual(cloud.attempts[url_less], 1)
         self.assertEqual(dict(events)["datalab_images_uploaded"]["failed"], 1)
+
+    def test_missing_occurrences_are_counted_across_batches_and_duplicates(self):
+        logo = encode(image("logo"))
+        cloud = FakeCloudinary(fail=lambda digest, attempt: 400 if digest == digest_of("logo") else None)
+        cache, report = {}, {}
+        first = self.save(cloud, {"p1_logo.png": logo, "p1_fig.png": encode(image("f1")), "p2_logo.png": logo},
+                          upload_cache=cache, report=report)
+        self.assertEqual(report, {"missing_images": 2})
+        second = self.save(cloud, {"p3_logo.png": logo, "p3_fig.png": encode(image("f3"))},
+                           upload_cache=cache, report=report)
+        self.assertEqual(report, {"missing_images": 3})          # occurrences, not distinct failures
+        self.assertEqual((list(first), list(second)), (["p1_fig.png"], ["p3_fig.png"]))
+
+    def test_missing_count_includes_undecodable_and_url_less_but_not_non_images(self):
+        cloud = FakeCloudinary(missing_url=[digest_of("no-url")])
+        report = {"missing_images": 5}                           # accumulates onto earlier batches
+        images = {"empty.png": "", "/": encode(image(1)), "bad.png": "not base64!!",
+                  "no_url.png": encode(image("no-url")), "ok.png": encode(image("ok"))}
+        self.assertEqual(list(self.save(cloud, images, report=report)), ["ok.png"])
+        self.assertEqual(report, {"missing_images": 5 + 2})
+        self.assertEqual(self.save(FakeCloudinary(), {"a.png": encode(image("a"))}, report=report), {
+            "a.png": "https://res.cloudinary.com/demo/image/authenticated/v1/ai-document-assistant/document_7/"
+                     f"img_{digest_of('a')[:40]}.png"})
+        self.assertEqual(report, {"missing_images": 7})
+
+    def test_recovered_and_cached_images_are_not_missing(self):
+        cache, report = {}, {}
+        flaky = FakeCloudinary(fail=lambda digest, attempt: 503 if attempt == 1 else None)
+        self.save(flaky, {"a.png": encode(image("a")), "b.png": encode(image("a"))}, upload_cache=cache, report=report)
+        self.save(FakeCloudinary(), {"c.png": encode(image("a"))}, upload_cache=cache, report=report)
+        self.assertEqual(report, {"missing_images": 0})
 
     def test_backoff_is_exponential_jittered_and_capped(self):
         rng_state = random.getstate()

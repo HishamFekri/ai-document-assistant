@@ -34,6 +34,9 @@ class DocumentResponse(BaseModel):
     processing_stage: str | None
     processing_progress: int
     processing_error: str | None = Field(default=None, max_length=500)
+    # Ready documents with a positive count are shown with a warning; NULL means
+    # not tracked (processed before this field existed).
+    missing_image_count: int | None = None
 
     created_at: datetime
 

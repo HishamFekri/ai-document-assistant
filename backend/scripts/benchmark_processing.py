@@ -68,6 +68,10 @@ class DocumentSpec:
     complex_pages: int = 0
     images_per_complex_page: int = 0
     duplicate_images: bool = False
+    # One identical image (SHARED_IMAGE_SEED) on every complex page, e.g. a logo.
+    shared_image: bool = False
+    # png_bytes seeds the simulated Cloudinary rejects permanently (JSON 400).
+    rejected_image_seeds: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -85,7 +89,13 @@ SCENARIOS = {
     "duplicate_images": Scenario("duplicate_images", (DocumentSpec("duplicate_images", 2, 10, 3, True),)),
     "concurrent_queue": Scenario("concurrent_queue", tuple(
         DocumentSpec(f"queued_{index}", 8, 2, 1) for index in range(1, 4)), concurrent=True),
+    # Not part of the output baseline: two Datalab batches (20 + 2 complex pages);
+    # the shared image (22 occurrences) and the first page's figure (seed 10) are
+    # rejected, so 23 image occurrences end without a stored asset.
+    "missing_images": Scenario("missing_images", (DocumentSpec(
+        "missing_images", 4, 22, 1, shared_image=True, rejected_image_seeds=(999, 10)),)),
 }
+SHARED_IMAGE_SEED = 999
 # Fast subset used by the determinism test.
 DETERMINISM_SCENARIOS = ("small_text", "mixed", "duplicate_images")
 
@@ -222,6 +232,7 @@ class SimulatedProviders:
                       "datalab_poll": 0, "image_upload": 0, "voyage": 0}
         self.image_uploads_in_flight = 0
         self.peak_image_uploads = 0
+        self.rejected_images = set()
 
     def wait(self, base_key, size=0, rate_key=None):
         seconds = self.latency[base_key]
@@ -237,6 +248,8 @@ class SimulatedProviders:
     def register(self, sha256, spec):
         with self.lock:
             self.specs[sha256] = spec
+            self.rejected_images |= {hashlib.sha256(png_bytes(seed)).hexdigest()
+                                     for seed in spec.rejected_image_seeds}
 
     # Cloudinary originals
     def upload_large(self, stream, public_id=None, **options):
@@ -258,8 +271,11 @@ class SimulatedProviders:
 
     # Cloudinary images
     def upload_image(self, file, folder=None, public_id=None, **options):
-        file.read()
+        data = file.read()
         self.count("image_upload")
+        if hashlib.sha256(data).hexdigest() in self.rejected_images:
+            # The SDK's return_error=True shape for a permanent rejection.
+            return {"error": {"message": "Invalid image file", "http_code": 400}}
         with self.lock:
             self.image_uploads_in_flight += 1
             self.peak_image_uploads = max(self.peak_image_uploads, self.image_uploads_in_flight)
@@ -331,6 +347,12 @@ class SimulatedProviders:
                 images[name] = encoded
                 blocks.append({"id": f"/page/{zero_page}/Picture/{image + 3}", "block_type": "Picture",
                                "html": "", "children": None, "images": {name: encoded}})
+            if spec.shared_image:
+                name = f"page_{page}_logo.png"
+                encoded = base64.b64encode(png_bytes(SHARED_IMAGE_SEED)).decode()
+                images[name] = encoded
+                blocks.append({"id": f"/page/{zero_page}/Picture/{spec.images_per_complex_page + 3}",
+                               "block_type": "Picture", "html": "", "children": None, "images": {name: encoded}})
             children.append({"id": f"/page/{zero_page}/Page/{zero_page}", "block_type": "Page",
                              "html": "", "children": blocks})
         return {"status": "complete", "json": {"block_type": "Document", "children": children,
@@ -583,6 +605,11 @@ def run_scenario(app, engine, providers, scenario, user_offset):
         result.timings = [event for event in capture.events if event.get("request_id") == result.request_id]
     with engine.connect() as connection:
         fingerprints = {result.label: document_fingerprint(connection, result.document_id) for result in results}
+        # Reported beside (not inside) the fingerprint, so the committed baseline is unchanged.
+        from sqlalchemy import text
+        missing = {result.label: connection.scalar(text(
+            "SELECT missing_image_count FROM documents WHERE id = :id"), {"id": result.document_id})
+            for result in results}
     report = {"scenario": scenario.name, "concurrent": scenario.concurrent,
               "wall_seconds": round(scenario_wall, 3), "sql_statements": sql["statements"],
               "queue_events": dict(capture.queue_events), "queue_idle_ms": queue_idle_ms(results),
@@ -591,7 +618,8 @@ def run_scenario(app, engine, providers, scenario, user_offset):
         stages = summarize_stages(result.timings)
         top_level = round(sum(stages.get(name, {}).get("total_ms", 0.0) for name in TOP_LEVEL_STAGES), 3)
         report["documents"].append({
-            "label": result.label, "status_code": result.status_code,
+            "label": result.label, "document_id": result.document_id, "status_code": result.status_code,
+            "missing_image_count": missing[result.label],
             "request_to_ready_wall_ms": round(result.wall_seconds * 1000, 3),
             "instrumented_request_to_ready_ms": stages.get("request_to_ready", {}).get("total_ms"),
             "top_level_stage_sum_ms": top_level,

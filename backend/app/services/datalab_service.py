@@ -696,6 +696,7 @@ def save_datalab_images(
     images: dict,
     output_directory,
     upload_cache: dict | None = None,
+    report: dict | None = None,
 ):
     """
     Upload newly extracted images with authenticated Cloudinary delivery.
@@ -712,6 +713,11 @@ def save_datalab_images(
     image that still fails is left out for every occurrence in this batch.
     upload_cache (scoped to one document's processing job) reuses URLs from
     earlier batches; failures are never cached, so a later batch tries again.
+
+    report (optional) accumulates report["missing_images"]: image occurrences
+    with data and a usable name that end without a stored asset (undecodable,
+    upload failed, or no URL returned). Every occurrence of a failed duplicate
+    counts, across all batches that share the dict.
 
     Return shape and order remain:
         {original_filename: cloudinary_secure_url}
@@ -733,6 +739,7 @@ def save_datalab_images(
     # Decode in input order, skipping exactly what was skipped before.
     entries = []
     unique_images = {}
+    undecodable = 0
 
     for (
         filename,
@@ -761,6 +768,7 @@ def save_datalab_images(
             ValueError,
         ):
             log_exception(logger, "datalab_image_decode")
+            undecodable += 1
 
             continue
 
@@ -825,14 +833,23 @@ def save_datalab_images(
     for image_hash, secure_url in urls.items():
         cache[(cloudinary_folder, image_hash)] = secure_url
 
+    missing = undecodable + sum(
+        1
+        for _, image_hash in entries
+        if image_hash not in urls
+    )
+
+    if report is not None:
+        report["missing_images"] = report.get("missing_images", 0) + missing
+
     log_event(logger, logging.INFO, "datalab_images_uploaded",
               images=len(saved_images), count=len(pending),
-              failed=failed, retry=retries)
+              failed=failed, missing=missing, retry=retries)
 
-    if failed:
+    if missing:
         # Visible, ID-free signal that this batch's output lacks image assets.
         log_event(logger, logging.WARNING, "datalab_images_upload_incomplete",
-                  failed=failed, images=len(saved_images))
+                  failed=failed, missing=missing, images=len(saved_images))
 
     logger.info(
         "Uploaded %s Datalab images "

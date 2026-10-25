@@ -23,7 +23,7 @@ _NUMBERS = {
     "document_id", "summary_id", "chat_id", "message_id", "status_code",
     "duration_ms", "response_bytes", "retry", "delay_seconds", "chunks",
     "count", "pages", "images", "tables", "equations",
-    "batch", "batches", "bytes", "complex_pages", "failed",
+    "batch", "batches", "bytes", "complex_pages", "failed", "missing",
 }
 _NAMES = {"event", "operation", "exception_type", "failure_category", "dependency", "outcome", "stage"}
 _IDS = {"request_id", "correlation_id", "job_id"}

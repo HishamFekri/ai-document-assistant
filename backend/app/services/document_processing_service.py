@@ -198,7 +198,12 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
                     ))
                 document.processing_stage = "chunks_saved"
                 document.processing_progress = 72
-        log_event(logger, logging.INFO, "processing_checkpoint_saved", document_id=document_id, chunks=len(chunks))
+                # Part of the checkpoint, so resumed attempts (which skip extraction)
+                # keep it. Extracted image occurrences without a stored asset.
+                missing_images = int(getattr(content, "missing_images", 0) or 0)
+                document.missing_image_count = missing_images
+        log_event(logger, logging.INFO, "processing_checkpoint_saved", document_id=document_id,
+                  chunks=len(chunks), missing=missing_images)
 
     with timed_stage("embeddings", batches=0, chunks=0) as totals:
         set_progress(claim, document_id, "creating_embeddings", 78)

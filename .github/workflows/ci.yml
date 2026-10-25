@@ -113,9 +113,12 @@ jobs:
           tests/test_summary_concurrency_postgres.py
           tests/test_resource_admission_postgres.py
 
-      - name: Processing benchmark determinism and output baseline (simulated providers)
+      - name: Processing benchmark baseline and missing-image tracking (simulated providers)
         # Own process: the benchmark configures its environment at collection.
-        run: python -m pytest -p no:cacheprovider -q tests/test_processing_benchmark_postgres.py
+        run: >-
+          python -m pytest -p no:cacheprovider -q
+          tests/test_processing_benchmark_postgres.py
+          tests/test_missing_images_postgres.py
 
   frontend:
     runs-on: ubuntu-latest

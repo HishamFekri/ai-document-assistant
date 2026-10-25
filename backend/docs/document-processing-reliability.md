@@ -90,11 +90,26 @@ A distinct image that still fails is omitted for every occurrence in the
 batch; failures are never cached, so a later batch tries it again. Image blocks
 are then re-derived from the uploads that succeeded, so no block references a
 missing asset; an omitted image becomes the text "Image extracted from the
-document on page N". The document still becomes `ready`. Each such batch logs
-`datalab_images_upload_incomplete` (WARNING, `failed`/`images` counts) besides
-`datalab_images_uploaded` (`count`, `failed`, `retry`) and one
+document on page N". Each such batch logs `datalab_images_upload_incomplete`
+(WARNING, `failed`/`missing`/`images` counts) besides `datalab_images_uploaded`
+(`count`, `failed`, `missing`, `retry`) and one
 `operation_failed`/`datalab_image_upload` with a `failure_category` per failed
 image; no URLs, filenames or provider messages are logged.
+
+The document still becomes `ready` (chat, search and summaries stay available),
+but `documents.missing_image_count` records how many extracted image
+**occurrences** ended without a stored asset: every copy of a failed duplicate,
+across all Datalab batches, plus undecodable images and uploads that returned no
+URL. It is written in the chunk checkpoint transaction, so attempts that resume
+from saved chunks keep it, and a failure before the checkpoint records nothing
+(the next attempt counts afresh). Every newly processed document gets a value
+(0 when nothing is missing, including non-PDF formats); documents processed
+before revision `5c1e8f2a9b47` keep NULL ("not tracked") and are shown as
+before. The API returns the field on every document payload, and the frontend
+shows "Ready with warnings: N image(s) could not be processed. Some information
+may be missing from AI responses." instead of a plain "Ready" when it is
+positive. Missing images are not re-attempted after processing; an explicit
+retry of a ready document remains a no-op.
 
 The SDK's urllib3 pool keeps one idle connection per host and cannot be sized
 through supported configuration. Measured with the real SDK against a loopback
