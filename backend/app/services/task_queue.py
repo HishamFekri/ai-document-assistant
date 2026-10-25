@@ -1,7 +1,7 @@
 import os
 import logging
 from threading import BoundedSemaphore
-from time import sleep
+from time import perf_counter, sleep
 
 from fastapi import BackgroundTasks
 from app.services.document_processing_errors import RetryableDocumentProcessingError
@@ -10,7 +10,7 @@ from app.services.document_processing_retry import (
     retry_delay,
 )
 from app.services.error_service import log_generation_failure
-from app.services.observability import log_event
+from app.services.observability import log_event, request_started_at
 from app.services.resource_limits import resource_limits
 
 
@@ -40,11 +40,17 @@ def enqueue_document_processing(
     background_tasks.add_task(
         _run_document_processing,
         document_id,
+        # Timing only: when this request arrived and when processing was queued.
+        queued_at=perf_counter(),
+        accepted_at=request_started_at(),
     )
 
 
 def _run_document_processing(
     document_id: int,
+    *,
+    queued_at: float | None = None,
+    accepted_at: float | None = None,
 ) -> str:
     from app.services.document_processing_service import (
         mark_processing_retries_exhausted,
@@ -58,6 +64,8 @@ def _run_document_processing(
             outcome = process_document(
                 document_id,
                 processing_capacity=_BACKGROUND_PROCESSING_SLOTS,
+                queued_at=queued_at,
+                accepted_at=accepted_at,
             )
         except RetryableDocumentProcessingError:
             if processing_failures >= MAX_PROCESSING_RETRIES:

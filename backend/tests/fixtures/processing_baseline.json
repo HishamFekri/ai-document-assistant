@@ -1,0 +1,174 @@
+{
+  "concurrent_queue": {
+    "queued_1": {
+      "asset_mapping": "3020b09e7420b51daccda0045a90abaa18b25b04248a95a4189a0ce86c7285d6",
+      "counts": {
+        "assets": 3,
+        "chunks": 21,
+        "mapped_assets": 2,
+        "pages_with_chunks": 10
+      },
+      "embeddings": "e4056b8fb56f1889f0d869c80612f445dc9a897b879bab1ed181ddb88455932f",
+      "metadata_and_pages": "2a81e92c6e0d35b6ef6fac7437ad3d956c85b9f73b0adb5079680a4dc1944357",
+      "source": "3621b1aa554b806745f3c52136eebecdc0126537bae30331ed968f1e408c970f",
+      "status": {
+        "pages_count": 10,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "fd9e2443f35e1a778e362835eabd098e901dc3d747b77260de5217ca8e349c33"
+    },
+    "queued_2": {
+      "asset_mapping": "3020b09e7420b51daccda0045a90abaa18b25b04248a95a4189a0ce86c7285d6",
+      "counts": {
+        "assets": 3,
+        "chunks": 21,
+        "mapped_assets": 2,
+        "pages_with_chunks": 10
+      },
+      "embeddings": "e4056b8fb56f1889f0d869c80612f445dc9a897b879bab1ed181ddb88455932f",
+      "metadata_and_pages": "2a81e92c6e0d35b6ef6fac7437ad3d956c85b9f73b0adb5079680a4dc1944357",
+      "source": "f8809ce0429d71f3b8a3144e900e75f379eb8bae8b20612727e730c6da3a427e",
+      "status": {
+        "pages_count": 10,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "fd9e2443f35e1a778e362835eabd098e901dc3d747b77260de5217ca8e349c33"
+    },
+    "queued_3": {
+      "asset_mapping": "3020b09e7420b51daccda0045a90abaa18b25b04248a95a4189a0ce86c7285d6",
+      "counts": {
+        "assets": 3,
+        "chunks": 21,
+        "mapped_assets": 2,
+        "pages_with_chunks": 10
+      },
+      "embeddings": "e4056b8fb56f1889f0d869c80612f445dc9a897b879bab1ed181ddb88455932f",
+      "metadata_and_pages": "2a81e92c6e0d35b6ef6fac7437ad3d956c85b9f73b0adb5079680a4dc1944357",
+      "source": "6d361dcb8ba6fbfef2224176ec73d94d0bd128f6da93496dd74f2b651d2dcbd0",
+      "status": {
+        "pages_count": 10,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "fd9e2443f35e1a778e362835eabd098e901dc3d747b77260de5217ca8e349c33"
+    }
+  },
+  "duplicate_images": {
+    "duplicate_images": {
+      "asset_mapping": "3842d052f9f574dae0c3916d79c4d04b6411e0f89de0c09ba88e1895f4435bfd",
+      "counts": {
+        "assets": 32,
+        "chunks": 46,
+        "mapped_assets": 30,
+        "pages_with_chunks": 12
+      },
+      "embeddings": "b69fa895d996b0b65eea9600cd99e997e0694626851c62ddae06d510e594ad07",
+      "metadata_and_pages": "95a71082fabd822572dd4e336f07f41b74ce8a1c5e112ee8f6c4c1e396d50bb7",
+      "source": "d8e8bb2e640b574cd31260f3a990d7e1037f2a717f9753890fbba403a4147926",
+      "status": {
+        "pages_count": 12,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "7f92dd9e2c7df8ab8184682eed0d6e1097f7795b2da0b52fc256e2b134dc3b29"
+    }
+  },
+  "image_heavy": {
+    "image_heavy": {
+      "asset_mapping": "18d817c2cb3df027b8ca1a4fca9d76fcfef819fc8565d8d8a8832942f974d88a",
+      "counts": {
+        "assets": 93,
+        "chunks": 141,
+        "mapped_assets": 80,
+        "pages_with_chunks": 44
+      },
+      "embeddings": "acce1f91afe8cdabab0e6d58380bde93924f8ca144c2c5fb60b65dfabf787c53",
+      "metadata_and_pages": "34c58953d33942c1ba378c4f236cb2984303e861844147b410ab027b030c65b0",
+      "source": "ed9f2469ebd99eec79bfa63844030060be393a62558ff547e38a07f1bbf43ee2",
+      "status": {
+        "pages_count": 44,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "b02822ffb4179ec0bbb99334111f3b58f03543e9dff689aa1c135038c0d1f5fc"
+    }
+  },
+  "large_text": {
+    "large_text": {
+      "asset_mapping": "05e4fb54338f8dee47ebf48a7c5efb17d7e67ed2b17f499b828d2b1420f5569f",
+      "counts": {
+        "assets": 0,
+        "chunks": 300,
+        "mapped_assets": 0,
+        "pages_with_chunks": 150
+      },
+      "embeddings": "ccf8ea452bb5263f41cb6d950e1e906ea1a58933718ffab15899e66f218235e0",
+      "metadata_and_pages": "1f3f905be1ac804dbca7efccb0b3790e1d72ae99e5bb928800540213d84a1e3a",
+      "source": "144e89d132a3ffde6d11adae7358ed8fb55fe6bbb43e59173bece10e05a3b216",
+      "status": {
+        "pages_count": 150,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "c87bc47ef1fdfaf43ae92e8f3768051d7d5f76a8471401e42efab9bb6a9d3966"
+    }
+  },
+  "mixed": {
+    "mixed": {
+      "asset_mapping": "572a44a1f55c961eed90249b0657fad65ff1fa7bc38a8cb8e15c100f13039ef7",
+      "counts": {
+        "assets": 8,
+        "chunks": 62,
+        "mapped_assets": 6,
+        "pages_with_chunks": 30
+      },
+      "embeddings": "e0f4cf6c3563b3f950c61c3ae7a445b9fe5be6407375d0a09ce057c0d54b5413",
+      "metadata_and_pages": "aa70e4c74b2cbf5cf2e52c123310947fe74eb80b489c31e252edb8d495561d31",
+      "source": "c64a263b11c29f0e05eadaa5f6189f50387d08fac16de5dc000021c36766562c",
+      "status": {
+        "pages_count": 30,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "2af8eae942ea889393f32f76c6f0001d44002b165b0cde3291b538680250de19"
+    }
+  },
+  "small_text": {
+    "small_text": {
+      "asset_mapping": "05e4fb54338f8dee47ebf48a7c5efb17d7e67ed2b17f499b828d2b1420f5569f",
+      "counts": {
+        "assets": 0,
+        "chunks": 6,
+        "mapped_assets": 0,
+        "pages_with_chunks": 3
+      },
+      "embeddings": "317875d34369a47f2a579191ad44f3308209fdb849d8a3369d7a296aa681e3e6",
+      "metadata_and_pages": "599a252dc3f6ff4802b12d1e5562f9d6adbcc08d35be3dd34196d015240d6391",
+      "source": "490430db763fef90f64e61f91991e947c5fd15921f944497aa92ccaed145d565",
+      "status": {
+        "pages_count": 3,
+        "processing_error": null,
+        "processing_progress": 100,
+        "processing_stage": "ready",
+        "processing_status": "ready"
+      },
+      "text_and_order": "95ec7a6fc6772ec62e1de5778bdc3afe98f2f6b0a519af7551781b3c487ba420"
+    }
+  }
+}

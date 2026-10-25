@@ -1,8 +1,11 @@
 """Claimed processing with short transactions and durable chunk checkpoints."""
 
+from contextlib import ExitStack
+from dataclasses import dataclass
 import logging
-from app.services.observability import document_job, log_event
+from app.services.observability import document_job, log_event, log_stage, timed_stage
 from pathlib import Path
+from time import perf_counter
 
 from pypdf import PdfReader
 from sqlalchemy import func, select
@@ -50,7 +53,36 @@ def set_progress(claim, document_id, stage, progress):
         document.processing_error = None
 
 
-def process_claimed_document(claim, document_id, processing_capacity=None):
+@dataclass(frozen=True)
+class AttemptTiming:
+    """Timing-only context for one processing attempt; never affects control flow.
+
+    All values are perf_counter() readings in this process. queued_at and
+    accepted_at (arrival of the HTTP request that queued processing) are only
+    known for in-process background tasks; Celery tasks omit them.
+    """
+    started: float
+    queued_at: float | None = None
+    accepted_at: float | None = None
+
+
+def log_wait_stages(timing, acquired):
+    # queue_wait (before this attempt) + slot_acquisition (this attempt) are additive.
+    if timing.queued_at is not None and timing.started >= timing.queued_at:
+        log_stage("queue_wait", (timing.started - timing.queued_at) * 1000)
+    log_stage("slot_acquisition", (acquired - timing.started) * 1000)
+
+
+def log_completion_stages(timing, acquired):
+    finished = perf_counter()
+    log_stage("processing_active", (finished - acquired) * 1000)
+    if timing.accepted_at is not None:
+        # From arrival of the HTTP request that queued processing (upload or retry).
+        log_stage("request_to_ready", (finished - timing.accepted_at) * 1000)
+
+
+def process_claimed_document(claim, document_id, processing_capacity=None, timing=None):
+    timing = timing or AttemptTiming(perf_counter())
     with claim.session() as db:
         document = processing_document(db, document_id)
         completeness = inspect_embeddings(db, [document_id])[0]
@@ -87,18 +119,25 @@ def process_claimed_document(claim, document_id, processing_capacity=None):
                 )
                 return "deferred"
         with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
+            acquired = perf_counter()
+            log_wait_stages(timing, acquired)
             set_progress(claim, document_id, "starting", 10)
-            with materialize_original(
-                file_path=file_path,
-                storage_key=storage_key,
-                file_type=file_type,
-                expected_size=file_size_bytes,
-                checksum=file_sha256,
-                max_size=upload_limits().file_bytes,
-            ) as processing_path:
-                return process_admitted_document(
+            with ExitStack() as originals:
+                with timed_stage("materialize_original", bytes=file_size_bytes or 0):
+                    processing_path = originals.enter_context(materialize_original(
+                        file_path=file_path,
+                        storage_key=storage_key,
+                        file_type=file_type,
+                        expected_size=file_size_bytes,
+                        checksum=file_sha256,
+                        max_size=upload_limits().file_bytes,
+                    ))
+                outcome = process_admitted_document(
                     claim, document_id, processing_path, file_type, has_chunks,
                 )
+            if outcome == "completed":
+                log_completion_stages(timing, acquired)
+            return outcome
     except ResourceRejected as error:
         if error.code == "concurrency_limit":
             log_event(logger, logging.INFO, "document_processing_queued", document_id=document_id)
@@ -129,88 +168,102 @@ def process_admitted_document(claim, document_id, file_path, file_type, has_chun
     if not path.is_file():
         raise FileNotFoundError("Document source is unavailable")
     if has_chunks:
-        validate_resumed_processing(claim, document_id, path, file_type)
+        with timed_stage("resume_validation"):
+            validate_resumed_processing(claim, document_id, path, file_type)
 
     if not has_chunks:
-        set_progress(claim, document_id, "analyzing_document", 20)
-        # No ORM session or transaction spans extraction / Datalab / Cloudinary.
-        content = extract_content(file_path=path, document_id=document_id)
-        if not content:
-            raise ValueError("No readable content found in file")
-        chunks = getattr(content, "prepared_chunks", None)
-        if chunks is None:
-            chunks = create_chunks_from_content(content)
-        if not chunks:
-            raise ValueError("Could not create chunks from file")
-        with claim.session() as db:
-            document = processing_document(db, document_id)
-            # All assets and chunks form one checkpoint. Never delete prior work.
-            ensure_document_assets(db, document_id, content)
-            for chunk in chunks:
-                db.add(DocumentChunk(
-                    document_id=document_id,
-                    content=chunk["content"], content_type=chunk["content_type"],
-                    location=chunk["location"], chunk_metadata=chunk["metadata"],
-                    embedding=None,
-                ))
-            document.processing_stage = "chunks_saved"
-            document.processing_progress = 72
+        with timed_stage("extraction") as metrics:
+            set_progress(claim, document_id, "analyzing_document", 20)
+            # No ORM session or transaction spans extraction / Datalab / Cloudinary.
+            content = extract_content(file_path=path, document_id=document_id)
+            if not content:
+                raise ValueError("No readable content found in file")
+            chunks = getattr(content, "prepared_chunks", None)
+            if chunks is None:
+                chunks = create_chunks_from_content(content)
+            if not chunks:
+                raise ValueError("Could not create chunks from file")
+            metrics["chunks"] = len(chunks)
+        with timed_stage("checkpoint_save", chunks=len(chunks)):
+            with claim.session() as db:
+                document = processing_document(db, document_id)
+                # All assets and chunks form one checkpoint. Never delete prior work.
+                ensure_document_assets(db, document_id, content)
+                for chunk in chunks:
+                    db.add(DocumentChunk(
+                        document_id=document_id,
+                        content=chunk["content"], content_type=chunk["content_type"],
+                        location=chunk["location"], chunk_metadata=chunk["metadata"],
+                        embedding=None,
+                    ))
+                document.processing_stage = "chunks_saved"
+                document.processing_progress = 72
         log_event(logger, logging.INFO, "processing_checkpoint_saved", document_id=document_id, chunks=len(chunks))
 
-    set_progress(claim, document_id, "creating_embeddings", 78)
-    while True:
-        with claim.session() as db:
-            processing_document(db, document_id)
-            rows = db.execute(
-                select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.content,
-                       func.jsonb_typeof(DocumentChunk.chunk_metadata).label("metadata_type"))
-                .where(DocumentChunk.document_id == document_id, embeddable_chunk(), needs_embedding())
-                .order_by(DocumentChunk.id).limit(VOYAGE_BATCH_SIZE)
-            ).mappings()
-            pending = [RecoveryChunk(**row) for row in rows]
-        if not pending:
-            break
-        if any(chunk.metadata_type not in (None, "null", "object") for chunk in pending):
-            raise ValueError("Chunk metadata requires explicit repair")
-        vectors = create_passage_embeddings(
-            [chunk.content for chunk in pending],
-            batch_size=VOYAGE_BATCH_SIZE,
-        )
-        with claim.session() as db:
-            processing_document(db, document_id)
-            # Maintenance keeps its original eligible statuses; this claimed
-            # worker uses the same guarded bulk update while processing.
-            result = db.execute(
-                recovery_bulk_update_statement(
-                    pending,
-                    vectors,
-                    statuses=("processing",),
+    with timed_stage("embeddings", batches=0, chunks=0) as totals:
+        set_progress(claim, document_id, "creating_embeddings", 78)
+        while True:
+            batch = totals["batches"] + 1
+            with timed_stage("embeddings.select", batch=batch) as selected:
+                with claim.session() as db:
+                    processing_document(db, document_id)
+                    rows = db.execute(
+                        select(DocumentChunk.id, DocumentChunk.document_id, DocumentChunk.content,
+                               func.jsonb_typeof(DocumentChunk.chunk_metadata).label("metadata_type"))
+                        .where(DocumentChunk.document_id == document_id, embeddable_chunk(), needs_embedding())
+                        .order_by(DocumentChunk.id).limit(VOYAGE_BATCH_SIZE)
+                    ).mappings()
+                    pending = [RecoveryChunk(**row) for row in rows]
+                selected["chunks"] = len(pending)
+            if not pending:
+                break
+            if any(chunk.metadata_type not in (None, "null", "object") for chunk in pending):
+                raise ValueError("Chunk metadata requires explicit repair")
+            with timed_stage("embeddings.provider", batch=batch, chunks=len(pending)):
+                vectors = create_passage_embeddings(
+                    [chunk.content for chunk in pending],
+                    batch_size=VOYAGE_BATCH_SIZE,
                 )
-            )
-            if result.rowcount != len(pending):
-                raise ValueError("Chunk changed during processing; explicit retry required")
-        log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
+            with timed_stage("embeddings.update", batch=batch, chunks=len(pending)):
+                with claim.session() as db:
+                    processing_document(db, document_id)
+                    # Maintenance keeps its original eligible statuses; this claimed
+                    # worker uses the same guarded bulk update while processing.
+                    result = db.execute(
+                        recovery_bulk_update_statement(
+                            pending,
+                            vectors,
+                            statuses=("processing",),
+                        )
+                    )
+                    if result.rowcount != len(pending):
+                        raise ValueError("Chunk changed during processing; explicit retry required")
+            totals["batches"] = batch
+            totals["chunks"] += len(pending)
+            log_event(logger, logging.INFO, "processing_embedding_batch_committed", document_id=document_id, chunks=len(pending))
 
-    # Read source metadata outside the final transaction.
-    pages_count = getattr(content, "pages_count", None) if not has_chunks else None
-    if file_type == "pdf" and pages_count is None:
-        reader = PdfReader(path)
-        try:
-            pages_count = len(reader.pages)
-        finally:
-            reader.close()
-    with claim.session() as db:
-        document = processing_document(db, document_id)
-        db.flush()
-        completeness = inspect_embeddings(db, [document_id])[0]
-        if not completeness.complete:
-            raise ValueError("Document embeddings are incomplete")
-        if pages_count is not None:
-            document.pages_count = pages_count
-        document.processing_status = "ready"
-        document.processing_stage = "ready"
-        document.processing_progress = 100
-        document.processing_error = None
+    with timed_stage("finalize") as metrics:
+        # Read source metadata outside the final transaction.
+        pages_count = getattr(content, "pages_count", None) if not has_chunks else None
+        if file_type == "pdf" and pages_count is None:
+            reader = PdfReader(path)
+            try:
+                pages_count = len(reader.pages)
+            finally:
+                reader.close()
+        with claim.session() as db:
+            document = processing_document(db, document_id)
+            db.flush()
+            completeness = inspect_embeddings(db, [document_id])[0]
+            if not completeness.complete:
+                raise ValueError("Document embeddings are incomplete")
+            if pages_count is not None:
+                document.pages_count = pages_count
+            document.processing_status = "ready"
+            document.processing_stage = "ready"
+            document.processing_progress = 100
+            document.processing_error = None
+        metrics["pages"] = pages_count or 0
     log_event(logger, logging.INFO, "processing_completed", document_id=document_id)
     return "completed"
 
@@ -220,8 +273,13 @@ def process_document(
     document_id: int,
     file_path: str | None = None,
     processing_capacity=None,
+    *,
+    queued_at: float | None = None,
+    accepted_at: float | None = None,
 ):
     # Keep the old task signature compatible; the stored source path is authoritative.
+    # queued_at/accepted_at are timing-only (see AttemptTiming).
+    timing = AttemptTiming(perf_counter(), queued_at, accepted_at)
     outcome = None
     try:
         with claim_document_processing(document_id) as claim:
@@ -234,6 +292,7 @@ def process_document(
                     claim,
                     document_id,
                     processing_capacity,
+                    timing,
                 )
             except DocumentDeletedDuringProcessing:
                 log_event(logger, logging.INFO, "processing_deleted_document_skipped", document_id=document_id)

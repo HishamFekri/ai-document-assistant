@@ -173,6 +173,8 @@ def post_with_retry(
                 MAX_UPLOAD_RETRIES,
                 wait_time,
             )
+            log_event(logger, logging.INFO, "datalab_retry", operation="datalab_upload",
+                      retry=attempt, delay_seconds=wait_time)
 
             time.sleep(
                 wait_time
@@ -232,6 +234,8 @@ def get_with_retry(
                 MAX_POLL_RETRIES,
                 wait_time,
             )
+            log_event(logger, logging.INFO, "datalab_retry", operation="datalab_poll",
+                      retry=attempt, delay_seconds=wait_time)
 
             time.sleep(
                 wait_time
