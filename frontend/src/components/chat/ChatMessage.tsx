@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import {
+  memo,
   useMemo,
   useState,
 } from "react";
@@ -651,7 +652,7 @@ function AssistantVisuals({
 }
 
 
-export default function ChatMessage({
+function ChatMessage({
   message,
   onRetry,
   retryDisabled = false,
@@ -1240,3 +1241,8 @@ export default function ChatMessage({
     </div>
   );
 }
+
+
+// Streaming replaces only the answer being written; the rest of the thread keeps
+// its message objects, so memoising skips re-rendering (and re-parsing) them.
+export default memo(ChatMessage);

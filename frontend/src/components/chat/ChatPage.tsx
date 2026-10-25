@@ -45,6 +45,11 @@ import {
   useChatStream,
 } from "@/hooks/useChatStream";
 
+import {
+  retitleChatListItem,
+  upsertChatListItem,
+} from "@/lib/chat-list";
+
 type ActiveView =
   | "chat"
   | "summary"
@@ -508,6 +513,7 @@ function ChatWorkspace({
     onChatTitleGenerated:
       ({
         title,
+        chatId: titledChatId,
       }) => {
         const nextTitle =
           title.trim();
@@ -516,10 +522,11 @@ function ChatWorkspace({
           return;
         }
 
+        // Keyed by the streaming chat, which for a new chat is not yet in the URL params.
         setChat(
           (current) =>
             current
-            && current.id === chatId
+            && current.id === titledChatId
               ? {
                   ...current,
                   title: nextTitle,
@@ -529,14 +536,32 @@ function ChatWorkspace({
 
         setChats(
           (current) =>
-            current.map(
+            retitleChatListItem(
+              current,
+              titledChatId,
+              nextTitle
+            )
+        );
+      },
+
+    onChatCreated:
+      (createdChat) => {
+        setChats(
+          (current) =>
+            upsertChatListItem(
+              current,
+              createdChat
+            )
+        );
+      },
+
+    onChatDiscarded:
+      (discardedChatId) => {
+        setChats(
+          (current) =>
+            current.filter(
               (item) =>
-                item.id === chatId
-                  ? {
-                      ...item,
-                      title: nextTitle,
-                    }
-                  : item
+                item.id !== discardedChatId
             )
         );
       },
@@ -544,6 +569,13 @@ function ChatWorkspace({
 
 
   const previousMessageView = useRef<{ chatId: number | null; firstId?: number; height: number; top: number } | null>(null);
+
+  // True while the reader is at (or near) the bottom of the thread.
+  const followingRef = useRef(true);
+  const previousMessageCount = useRef(0);
+
+  // Scroll events from our own smooth scroll must not count as the reader leaving.
+  const autoScrollUntil = useRef(0);
 
   useEffect(() => {
     if (
@@ -563,15 +595,43 @@ function ChatWorkspace({
         && messages.some((message) => message.id === previous.firstId);
       if (olderPage) container.scrollTop = previous.top + container.scrollHeight - previous.height;
       previousMessageView.current = { chatId, firstId, height: container.scrollHeight, top: container.scrollTop };
-      if (olderPage) return;
+      if (olderPage) {
+        previousMessageCount.current = messages.length;
+        return;
+      }
     }
 
-    messagesEndRef
-      .current
-      ?.scrollIntoView({
-        behavior:
-          "smooth",
-      });
+    const appended =
+      messages.length
+      > previousMessageCount.current;
+
+    previousMessageCount.current =
+      messages.length;
+
+    // A new message (sent, received or loaded): glide to it.
+    if (appended) {
+      followingRef.current = true;
+      autoScrollUntil.current = performance.now() + 700;
+
+      messagesEndRef
+        .current
+        ?.scrollIntoView({
+          behavior:
+            "smooth",
+        });
+
+      return;
+    }
+
+    // Streamed text: stay pinned to the bottom without a per-token animation,
+    // and leave the reader alone once they have scrolled up.
+    if (
+      container
+      && followingRef.current
+    ) {
+      container.scrollTop =
+        container.scrollHeight;
+    }
 
   }, [
     messages,
@@ -607,6 +667,11 @@ function ChatWorkspace({
 
       const nearBottom =
         distanceFromBottom <= 24;
+
+      if (performance.now() >= autoScrollUntil.current) {
+        followingRef.current =
+          distanceFromBottom <= 120;
+      }
 
       setShowScrollToBottom(
         hasScrollableContent
@@ -960,7 +1025,7 @@ function ChatWorkspace({
         }
 
         activeChatId={
-          chatId ?? 0
+          chatId ?? chat?.id ?? 0
         }
 
         creatingChat={
@@ -1066,7 +1131,7 @@ function ChatWorkspace({
         }
 
         activeChatId={
-          chatId ?? 0
+          chatId ?? chat?.id ?? 0
         }
 
         creatingChat={

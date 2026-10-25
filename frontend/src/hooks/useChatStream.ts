@@ -1,5 +1,6 @@
 "use client";
 import { readNDJSON } from "@/lib/ndjson";
+import { createFrameBatcher } from "@/lib/frame-batcher";
 import { useRequestScope } from "@/hooks/useRequestScope";
 
 import {
@@ -34,6 +35,7 @@ export type SummaryGeneratedEvent = {
 
 export type ChatTitleGeneratedEvent = {
   title: string;
+  chatId: number;
 };
 
 
@@ -77,6 +79,16 @@ type Params = {
   onChatTitleGenerated?: (
     event: ChatTitleGeneratedEvent
   ) => void | Promise<void>;
+
+  // A draft chat now exists on the backend.
+  onChatCreated?: (
+    chat: Chat
+  ) => void;
+
+  // The send failed or stopped before the backend accepted the first message.
+  onChatDiscarded?: (
+    chatId: number
+  ) => void;
 };
 
 
@@ -165,6 +177,8 @@ export function useChatStream({
   clearComposerAttachment,
   onSummaryGenerated,
   onChatTitleGenerated,
+  onChatCreated,
+  onChatDiscarded,
 }: Params) {
   const scope = useRequestScope(String(chatId));
   const stopRunRef = useRef<(() => void) | null>(null);
@@ -475,12 +489,34 @@ export function useChatStream({
     let createdChatId:
       number | null = null;
 
+    let createdChat:
+      Chat | null = null;
+
     let streamRequestStarted =
       false;
     let streamResponseAccepted = false;
 
+    // Tokens can arrive faster than the screen refreshes; render the latest
+    // answer at most once per frame instead of once per token.
+    const answerBatcher = createFrameBatcher(() => {
+      setMessages(current => current.map(message => message.id === temporaryAssistantId
+        ? { ...message, content: fullAnswer }
+        : message));
+    });
+
+    // Undo the early Recent entry and URL when the first message never reached
+    // the backend; it lists only chats that have messages.
+    const discardCreatedChat = () => {
+      if (!createdChat || streamResponseAccepted) return;
+      onChatDiscarded?.(createdChat.id);
+      window.history?.replaceState(null, "", "/chat");
+      createdChat = null;
+    };
+
     stopRunRef.current = () => {
       if (!request.current()) return;
+      answerBatcher.cancel();
+      discardCreatedChat();
       if (!terminalReceived) setMessages(current => current.map(message => message.id === temporaryUserId
         ? { ...message, status: "completed", error: null }
         : message.id === temporaryAssistantId
@@ -576,6 +612,14 @@ export function useChatStream({
 
         createdChatId =
           newChat.id;
+
+        createdChat =
+          newChat;
+
+        // Show the chat in Recent and give it its URL right away, without
+        // remounting the page mid-send.
+        onChatCreated?.(newChat);
+        window.history?.replaceState(null, "", `/chat/${newChat.id}`);
 
         setMessages(
           (current) =>
@@ -701,6 +745,7 @@ export function useChatStream({
         );
       }
 
+      // The backend stores the first message before it starts streaming.
       streamResponseAccepted = true;
       /*
         Only remove the attachment from the composer after the
@@ -732,6 +777,7 @@ export function useChatStream({
             ) {
               await onChatTitleGenerated({
                 title,
+                chatId: activeChatId,
               });
             }
 
@@ -838,21 +884,7 @@ export function useChatStream({
             fullAnswer +=
               content;
 
-            setMessages(
-              (current) =>
-                current.map(
-                  (message) =>
-                    message.id
-                    === temporaryAssistantId
-                      ? {
-                          ...message,
-
-                          content:
-                            fullAnswer,
-                        }
-                      : message
-                )
-            );
+            answerBatcher.request();
 
             return;
           }
@@ -908,6 +940,7 @@ export function useChatStream({
           ) {
             if (!Array.isArray(streamEvent.sources)) throw new Error("Invalid chat completion");
             terminalReceived = true;
+            answerBatcher.cancel();
             const sources:
               Source[] =
                 Array.isArray(
@@ -974,6 +1007,8 @@ export function useChatStream({
       setComposerError(null);
 
     } catch (error) {
+      answerBatcher.cancel();
+      discardCreatedChat();
       if (!request.current()) return;
       console.error(
         "[CHAT STREAM ERROR]",
@@ -1049,6 +1084,8 @@ export function useChatStream({
       );
 
     } finally {
+      answerBatcher.cancel();
+
       if (
         abortControllerRef.current
         === controller

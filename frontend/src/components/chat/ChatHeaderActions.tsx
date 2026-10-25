@@ -5,7 +5,6 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
-  X,
 } from "lucide-react";
 
 import {
@@ -73,63 +72,6 @@ export default function ChatHeaderActions({
 
   return (
     <div className="flex items-center gap-1">
-      <button
-        type="button"
-        onClick={
-          onToggleFiles
-        }
-        title={
-          filesOpen
-            ? "Close files"
-            : "View files in chat"
-        }
-        className={`
-          flex
-          h-9
-          items-center
-          gap-2
-          rounded-full
-          px-3
-          text-sm
-          transition-all
-          duration-200
-          active:scale-95
-
-          ${
-            filesOpen
-              ? "bg-[var(--primary-soft)] text-[var(--primary)]"
-              : "text-[var(--text-primary)] hover:bg-[var(--surface-hover)]"
-          }
-        `}
-      >
-        {filesOpen ? (
-          <X
-            size={16}
-            className="
-              text-[var(--primary)]
-            "
-          />
-        ) : (
-          <FileText
-            size={16}
-            className="
-              text-[var(--text-primary)]
-            "
-          />
-        )}
-
-        <span
-          className="
-            hidden
-            sm:inline
-            text-[var(--text-primary)]
-          "
-        >
-          Files
-        </span>
-      </button>
-
-
       <div
         ref={
           menuRef
@@ -214,7 +156,9 @@ export default function ChatHeaderActions({
                 size={16}
               />
 
-              View files in chat
+              {filesOpen
+                ? "Hide files"
+                : "View files in chat"}
             </button>
 
 
