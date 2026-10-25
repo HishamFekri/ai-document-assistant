@@ -220,6 +220,8 @@ class SimulatedProviders:
         self.specs = {}
         self.calls = {"original_upload": 0, "original_download": 0, "datalab_submit": 0,
                       "datalab_poll": 0, "image_upload": 0, "voyage": 0}
+        self.image_uploads_in_flight = 0
+        self.peak_image_uploads = 0
 
     def wait(self, base_key, size=0, rate_key=None):
         seconds = self.latency[base_key]
@@ -258,7 +260,14 @@ class SimulatedProviders:
     def upload_image(self, file, folder=None, public_id=None, **options):
         file.read()
         self.count("image_upload")
-        self.wait("image_upload")
+        with self.lock:
+            self.image_uploads_in_flight += 1
+            self.peak_image_uploads = max(self.peak_image_uploads, self.image_uploads_in_flight)
+        try:
+            self.wait("image_upload")
+        finally:
+            with self.lock:
+                self.image_uploads_in_flight -= 1
         return {"secure_url": f"https://res.cloudinary.com/benchcloud/image/authenticated/v1/{folder}/{public_id}.png",
                 "public_id": f"{folder}/{public_id}", "resource_type": "image", "type": "authenticated"}
 
@@ -612,6 +621,7 @@ def run_benchmark(scenario_names, latency="realistic", scale=1.0):
             results["scenarios"].append(run_scenario(main.app, database.engine, providers,
                                                      SCENARIOS[name], offset * 10))
     results["provider_calls"] = dict(providers.calls)
+    results["peak_image_uploads"] = providers.peak_image_uploads
     return results
 
 

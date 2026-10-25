@@ -1,5 +1,6 @@
-from app.services.observability import log_event, log_exception
+from app.services.observability import log_event, log_exception, submit_observed
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import binascii
 import hashlib
 import io
@@ -90,6 +91,19 @@ MAX_POLLS = int(
         "300",
     )
 )
+
+# Simultaneous Cloudinary uploads of extracted images per batch (bounded).
+IMAGE_UPLOAD_CONCURRENCY = int(
+    os.getenv(
+        "DATALAB_IMAGE_UPLOAD_CONCURRENCY",
+        "4",
+    )
+)
+
+if not 1 <= IMAGE_UPLOAD_CONCURRENCY <= 16:
+    raise RuntimeError(
+        "DATALAB_IMAGE_UPLOAD_CONCURRENCY must be between 1 and 16"
+    )
 
 
 if not DATALAB_API_KEY:
@@ -495,9 +509,57 @@ def extract_content_with_datalab(
     }
 
 
+def _upload_image(
+    image_bytes: bytes,
+    cloudinary_folder: str,
+    public_id: str,
+):
+    """One authenticated Cloudinary upload; None on failure (logged, as before)."""
+    try:
+        upload_result = (
+            cloudinary.uploader.upload(
+                io.BytesIO(
+                    image_bytes
+                ),
+                folder=(
+                    cloudinary_folder
+                ),
+                public_id=(
+                    public_id
+                ),
+                resource_type="image",
+                type="authenticated",
+                overwrite=False,
+                unique_filename=False,
+                use_filename=False,
+            )
+        )
+
+    except Exception:
+        log_exception(logger, "datalab_image_upload")
+
+        return None
+
+    secure_url = (
+        upload_result.get(
+            "secure_url"
+        )
+    )
+
+    if not secure_url:
+        log_event(logger, logging.WARNING, "datalab_image_url_missing")
+
+        return None
+
+    return str(
+        secure_url
+    )
+
+
 def save_datalab_images(
     images: dict,
     output_directory,
+    upload_cache: dict | None = None,
 ):
     """
     Upload newly extracted images with authenticated Cloudinary delivery.
@@ -508,11 +570,17 @@ def save_datalab_images(
     separate assets only because their filenames differ. Existing objects are
     never overwritten; legacy public objects are left in their original type.
 
-    Return shape remains:
+    Each distinct image is uploaded once, with at most
+    IMAGE_UPLOAD_CONCURRENCY uploads in flight. upload_cache (scoped to one
+    document's processing job) reuses URLs from earlier batches. A failed
+    upload is never reused: the next occurrence of the same bytes gets its
+    own attempt, as when every image was uploaded individually.
+
+    Return shape and order remain:
         {original_filename: cloudinary_secure_url}
     """
-    output_path = Path(
-        output_directory
+    output_path = (
+        Path(output_directory)
     )
 
     document_folder = (
@@ -525,7 +593,9 @@ def save_datalab_images(
         f"{document_folder}"
     )
 
-    saved_images = {}
+    # Decode in input order, skipping exactly what was skipped before.
+    entries = []
+    unique_images = {}
 
     for (
         filename,
@@ -563,51 +633,73 @@ def save_datalab_images(
             ).hexdigest()
         )
 
-        public_id = (
-            f"img_{image_hash[:40]}"
-        )
+        entries.append((safe_filename, image_hash))
+        unique_images.setdefault(image_hash, image_bytes)
 
-        try:
-            upload_result = (
-                cloudinary.uploader.upload(
-                    io.BytesIO(
-                        image_bytes
-                    ),
-                    folder=(
-                        cloudinary_folder
-                    ),
-                    public_id=(
-                        public_id
-                    ),
-                    resource_type="image",
-                    type="authenticated",
-                    overwrite=False,
-                    unique_filename=False,
-                    use_filename=False,
+    cache = {} if upload_cache is None else upload_cache
+    urls = {
+        image_hash: cache[(cloudinary_folder, image_hash)]
+        for image_hash in unique_images
+        if (cloudinary_folder, image_hash) in cache
+    }
+    pending = [
+        image_hash
+        for image_hash in unique_images
+        if image_hash not in urls
+    ]
+    upload_calls = len(pending)
+
+    if pending:
+        workers = min(IMAGE_UPLOAD_CONCURRENCY, len(pending))
+        # The executor joins every upload before results are read; no thread outlives this call.
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                image_hash: submit_observed(
+                    executor,
+                    _upload_image,
+                    unique_images[image_hash],
+                    cloudinary_folder,
+                    f"img_{image_hash[:40]}",
                 )
+                for image_hash in pending
+            }
+
+        for image_hash, future in futures.items():
+            secure_url = future.result()
+
+            if secure_url:
+                urls[image_hash] = secure_url
+
+    # Assemble in input order, independent of upload completion order.
+    saved_images = {}
+    attempted = set(pending)
+
+    for safe_filename, image_hash in entries:
+        if image_hash in attempted:
+            attempted.discard(image_hash)
+
+        elif image_hash not in urls:
+            # A later occurrence of an image whose upload failed: retry it.
+            upload_calls += 1
+            secure_url = _upload_image(
+                unique_images[image_hash],
+                cloudinary_folder,
+                f"img_{image_hash[:40]}",
             )
 
-        except Exception:
-            log_exception(logger, "datalab_image_upload")
+            if secure_url:
+                urls[image_hash] = secure_url
 
-            continue
+        if image_hash in urls:
+            saved_images[
+                safe_filename
+            ] = urls[image_hash]
 
-        secure_url = (
-            upload_result.get(
-                "secure_url"
-            )
-        )
+    for image_hash, secure_url in urls.items():
+        cache[(cloudinary_folder, image_hash)] = secure_url
 
-        if not secure_url:
-            log_event(logger, logging.WARNING, "datalab_image_url_missing")
-
-            continue
-
-        saved_images[
-            safe_filename
-        ] = str(
-            secure_url
-        )
+    log_event(logger, logging.INFO, "datalab_images_uploaded",
+              images=len(saved_images), count=upload_calls)
 
     logger.info(
         "Uploaded %s Datalab images "
@@ -616,4 +708,3 @@ def save_datalab_images(
     )
 
     return saved_images
-

@@ -962,11 +962,14 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
         prepared_chunks = create_chunks_from_content(all_blocks)
         metrics["chunks"] = len(prepared_chunks)
     requires_rebuild = False
+    # Scoped to this document's processing job: identical images upload once across batches.
+    upload_cache = {}
     with timed_stage("extraction.images", batches=len(results)) as totals:
         for result in results:
             with timed_stage("extraction.image_upload", batch=result["batch_number"],
                              images=len(result["images"] or {})):
-                saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}") if result["images"] else {}
+                saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}",
+                                            upload_cache=upload_cache) if result["images"] else {}
             if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
                 # Partial/ambiguous uploads retain the prior exact reassignment logic.
                 result["blocks"] = extract_datalab_blocks(
