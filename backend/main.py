@@ -12,6 +12,7 @@ from app.services.resource_admission import ResourceRejected, resource_error_res
 from app.services.document_resource_errors import DocumentResourceError, resource_validation_response
 from app.services.upload_ingress import UploadBodyLimitMiddleware
 from app.services.auth_config import auth_settings
+from app.services.request_origin import rejects_request_origin
 
 from app.routes.documents import router as documents_router
 from app.routes.chats import router as chats_router
@@ -64,21 +65,18 @@ async def validate_request_origin(
     request: Request,
     call_next,
 ):
-    if request.method in {
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-    }:
-        origin = request.headers.get("origin")
-
-        if origin and origin not in ALLOWED_ORIGINS:
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "detail": "Request origin is not allowed"
-                },
-            )
+    if rejects_request_origin(
+        request.method,
+        request.headers,
+        request.cookies,
+        ALLOWED_ORIGINS,
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Request origin is not allowed"
+            },
+        )
 
     return await call_next(request)
 

@@ -228,10 +228,12 @@ class AuthHardeningTests(unittest.TestCase):
     def test_missing_mismatched_or_non_ascii_state_rejected_and_cleared(self):
         client = self.client()
         with patch.object(self.auth, "exchange_google_code") as exchange:
+            # State is validated before an error parameter is honoured.
             for query in ("code=x", "code=x&state=mismatch", "code=x&state=%C3%A9", "error=denied"):
                 client.get("/auth/google/start", follow_redirects=False)
                 response = client.get("/auth/google/callback?" + query, follow_redirects=False)
-                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=expired")
                 self.assertEqual(self.cookie(response, "google_oauth_state")["max-age"], "0")
             exchange.assert_not_called()
 
@@ -239,11 +241,13 @@ class AuthHardeningTests(unittest.TestCase):
         client = self.client()
         with patch.object(self.auth, "exchange_google_code") as exchange:
             response = client.get("/auth/google/callback?code=x&state=synthetic", follow_redirects=False)
-            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=expired")
             start = client.get("/auth/google/start", follow_redirects=False)
             state = self.cookie(start, "google_oauth_state").value
             response = client.get("/auth/google/callback", params={"state": state}, follow_redirects=False)
-            self.assertEqual(response.status_code, 400)
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=failed")
             self.assertEqual(self.cookie(response, "google_oauth_state")["max-age"], "0")
             exchange.assert_not_called()
 
@@ -267,9 +271,11 @@ class AuthHardeningTests(unittest.TestCase):
             state = self.cookie(start, "google_oauth_state").value
             with patch.object(self.auth, "exchange_google_code", side_effect=ValueError("private-provider-detail")) as exchange:
                 response = client.get("/auth/google/callback", params={"state": state, **({"error": "denied"} if cancelled else {"code": "x"})}, follow_redirects=False)
-                self.assertEqual(response.status_code, 302 if cancelled else 401)
+                self.assertEqual(response.status_code, 302)
+                reason = "cancelled" if cancelled else "failed"
+                self.assertEqual(response.headers["location"], f"http://localhost:3000/?google_login={reason}")
                 if cancelled: exchange.assert_not_called()
-                self.assertNotIn("private", response.text)
+                self.assertNotIn("private", response.text + response.headers["location"])
             self.assertEqual(self.cookie(response, "google_oauth_state")["max-age"], "0")
 
     def test_google_signature_verifier_receives_configured_audience(self):
@@ -339,7 +345,8 @@ class AuthHardeningTests(unittest.TestCase):
     def test_auth_failures_consume_auth_rate_and_forwarded_headers_do_not_change_cookie_policy(self):
         client = self.client()
         response = client.get("/auth/google/callback?code=x", follow_redirects=False)
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=expired")
         self.assertEqual(self.rates.calls, 1)
         response = client.get("/auth/google/start", headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "untrusted.test"}, follow_redirects=False)
         self.assertFalse(self.cookie(response, "google_oauth_state")["secure"])
@@ -354,6 +361,100 @@ class AuthHardeningTests(unittest.TestCase):
             self.user = user
         self.db.add.side_effect = add
         self.old_tests.test_auth_me_accepts_valid_token(client, self.db)
+
+    # ---- CSRF: Origin/Referer checks on state-changing requests (main app) ----
+
+    def app_client(self, *, cookie=False):
+        client = self.client(app=importlib.import_module("main").app)
+        if cookie:
+            client.cookies.set("access_token", self.service.create_access_token(self.user))
+        return client
+
+    def test_cookie_requests_with_allowed_origin_or_referer_are_accepted(self):
+        client = self.app_client(cookie=True)
+        self.assertEqual(client.post("/auth/logout", headers={"Origin": "http://localhost:3000"}).status_code, 200)
+        client = self.app_client(cookie=True)
+        self.assertEqual(client.post("/auth/logout", headers={"Referer": "http://localhost:3000/chat/7?x=1"}).status_code, 200)
+
+    def test_untrusted_or_null_origin_is_blocked_with_or_without_credentials(self):
+        for cookie in (True, False):
+            for origin in ("https://untrusted.example.test", "null", "http://localhost:3000.evil.test"):
+                with self.subTest(cookie=cookie, origin=origin):
+                    response = self.app_client(cookie=cookie).post("/auth/logout", headers={"Origin": origin})
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(response.json(), {"detail": "Request origin is not allowed"})
+                    self.assertNotIn("set-cookie", response.headers)
+
+    def test_cookie_request_without_origin_needs_an_allowed_referer(self):
+        for headers in ({}, {"Referer": "https://untrusted.example.test/page"},
+                        {"Referer": "http://localhost:3000.evil.test/"}, {"Referer": "not a url"},
+                        {"Referer": "javascript:alert(1)"}):
+            with self.subTest(headers=headers):
+                response = self.app_client(cookie=True).post("/auth/logout", headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn("set-cookie", response.headers)
+
+    def test_authorization_header_only_and_anonymous_requests_without_origin_are_unchanged(self):
+        token = self.service.create_access_token(self.user)
+        self.assertEqual(self.app_client().post("/auth/logout", headers={"Authorization": f"Bearer {token}"}).status_code, 200)
+        # A Bearer token takes precedence over the cookie, so the cookie cannot be forged into use.
+        self.assertEqual(self.app_client(cookie=True).post("/auth/logout", headers={"Authorization": f"Bearer {token}"}).status_code, 200)
+        self.assertEqual(self.app_client().post("/auth/logout").status_code, 200)
+
+    def test_safe_methods_are_never_origin_checked(self):
+        response = self.app_client(cookie=True).get("/auth/me", headers={"Origin": "https://untrusted.example.test"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_referer_origin_normalization(self):
+        origin = importlib.import_module("app.services.request_origin")
+        cases = {
+            "http://localhost:3000/chat?x=1#y": "http://localhost:3000",
+            "HTTPS://App.Example.Test/path": "https://app.example.test",
+            "https://user:pass@app.example.test:8443/": "https://app.example.test:8443",
+            "http://[::1]:3000/": "http://[::1]:3000",
+            "ftp://app.example.test/": None, "/relative/path": None, "http://": None, "http://host:99999/": None,
+        }
+        for referer, expected in cases.items():
+            with self.subTest(referer=referer):
+                self.assertEqual(origin.referer_origin(referer), expected)
+        self.assertFalse(origin.rejects_request_origin("POST", {"referer": "HTTP://LOCALHOST:3000/x"},
+                                                       {"access_token": "t"}, {"http://localhost:3000"}))
+
+    # ---- OAuth failures: safe redirect to the frontend with a fixed reason ----
+
+    def test_oauth_failures_redirect_to_frontend_with_fixed_reason_and_clear_state(self):
+        client = self.client()
+        def callback(params, **patches):
+            start = client.get("/auth/google/start", follow_redirects=False)
+            state = self.cookie(start, "google_oauth_state").value
+            with patch.object(self.auth, "exchange_google_code", **patches), \
+                 patch.object(self.auth, "get_or_create_user", return_value=self.user):
+                return client.get("/auth/google/callback", params={"state": state, **params}, follow_redirects=False)
+
+        cases = [
+            ("failed", callback({"code": "x"}, side_effect=ValueError("private-provider-detail"))),
+            ("unavailable", callback({"code": "x"}, side_effect=RuntimeError("private-database-detail"))),
+            ("failed", callback({}, return_value=self.google)),
+            ("expired", client.get("/auth/google/callback", params={"state": "wrong", "code": "x"}, follow_redirects=False)),
+        ]
+        for reason, response in cases:
+            with self.subTest(reason=reason):
+                self.assertEqual(response.status_code, 302)
+                self.assertEqual(response.headers["location"], f"http://localhost:3000/?google_login={reason}")
+                self.assertEqual(self.cookie(response, "google_oauth_state")["max-age"], "0")
+                self.assertNotIn("private", response.text + response.headers["location"])
+                self.assertNotIn("access_token", response.headers.get("set-cookie", ""))
+
+    def test_oauth_start_without_configuration_redirects_instead_of_raw_json(self):
+        with patch.object(self.auth, "GOOGLE_REDIRECT_URI", None):
+            response = self.client().get("/auth/google/start", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=unavailable")
+        self.assertEqual(self.cookie(response, "google_oauth_state")["max-age"], "0")
+
+    def test_oauth_failure_reason_is_allowlisted(self):
+        response = self.auth.oauth_failure("<script>alert(1)</script>")
+        self.assertEqual(response.headers["location"], "http://localhost:3000/?google_login=failed")
 
 
 def test_auth_hardening_in_isolated_process():

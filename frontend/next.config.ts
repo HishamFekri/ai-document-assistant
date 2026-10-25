@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 
+import { backendProxyRewrite } from "./src/lib/backend-proxy";
 import { securityHeaders } from "./src/lib/security-headers";
 
 const nextConfig: NextConfig = {
@@ -15,13 +16,7 @@ const nextConfig: NextConfig = {
   },
 
   async rewrites() {
-    return [
-      {
-        source: "/api/backend/:path*",
-        destination:
-          "https://ai-document-assistant-5k8d.onrender.com/:path*",
-      },
-    ];
+    return [backendProxyRewrite(process.env)];
   },
 };
 
