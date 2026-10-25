@@ -784,6 +784,8 @@ class ResourceAdmissionTests(unittest.TestCase):
                 answer = self.answer_generator(provider)
                 db, stream_db = MagicMock(), MagicMock()
                 db.refresh.side_effect = lambda row: setattr(row, "id", 13)
+                # The stored activity time read back after the user message commits.
+                db.scalar.return_value = datetime(2026, 10, 1, 9, 0)
                 future = Future()
                 future.set_result(None)
                 events = []
@@ -823,6 +825,8 @@ class ResourceAdmissionTests(unittest.TestCase):
                 stream_db.close.assert_called_once_with()
                 self.assertEqual(self.permits.slots, {})
                 self.assertEqual(any(e["type"] == "done" for e in events), mode == "complete")
+                self.assertEqual(events[0], {"type": "chat_activity", "chat_id": 1,
+                                             "last_activity_at": "2026-10-01T09:00:00"})
                 self.assertNotIn("private provider", str(events))
                 if mode == "provider_failure":
                     self.assertEqual(events[-1]["type"], "error")

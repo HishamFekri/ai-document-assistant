@@ -77,8 +77,11 @@ class DatabaseScalabilityTests(unittest.TestCase):
 
     def chats_fixture(self, count=13):
         documents = self.docs(2)
+        # Explicit activity: SQLite's CURRENT_TIMESTAMP default drops microseconds and
+        # would not compare equal to bound cursor values (PostgreSQL compares natively).
         chats = [self.models.Chat(user_id=self.owner.id, title=f'Chat {i}', created_at=self.now,
-                 is_archived=i % 3 == 0, is_pinned=i % 2 == 0, documents=documents) for i in range(count)]
+                 last_activity_at=self.now, is_archived=i % 3 == 0, is_pinned=i % 2 == 0,
+                 documents=documents) for i in range(count)]
         self.db.add_all(chats); self.db.flush()
         self.db.add_all([self.models.Message(chat_id=c.id, role='user', content='question',
                          created_at=self.now, documents=documents) for c in chats])

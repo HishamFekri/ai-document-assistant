@@ -11,12 +11,13 @@ export function toChatListItem(
     is_pinned: chat.is_pinned,
     is_archived: chat.is_archived,
     created_at: chat.created_at,
+    last_activity_at: chat.last_activity_at,
   };
 }
 
 
 // Adds or refreshes one chat in the sidebar list, keeping the backend's order
-// (archived last, pinned first, newest first) and never duplicating an id.
+// (archived last, pinned first, then latest activity) and never duplicating an id.
 export function upsertChatListItem(
   chats: ChatListItem[],
   chat: Chat | ChatListItem

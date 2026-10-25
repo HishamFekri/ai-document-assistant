@@ -314,3 +314,30 @@ the build reports the existing unset `metadataBase` warning. ESLint retains the
 same **4 errors / 20 warnings**, with no new findings. Changed Python files passed
 Python 3.11 grammar validation and compile checks under local Python 3.14.7;
 execution on a Python 3.11 runtime and actual PostgreSQL remains a staging check.
+
+
+## Recent chats by latest activity (revision `4b8d2e6f1a93`)
+
+`chats.last_activity_at` records the time of the chat's latest user message. Both
+ask endpoints set it in the same transaction that stores the message, using the
+transaction time (the value the message's `created_at` default receives), and an
+earlier concurrent send can never move it backwards. Opening or reading a chat
+does not change it.
+
+`GET /chats` orders by `is_archived ASC, is_pinned DESC, list_sort_at DESC, id DESC`,
+where `list_sort_at` is `created_at` for pinned or archived chats and
+`last_activity_at` for the others, so pinned and archived ordering is unchanged.
+Cursors use the new scope `chats:activity`; a cursor issued before the upgrade is
+rejected with 400 rather than paging under the old order.
+
+| Index | Columns |
+| --- | --- |
+| `ix_chats_user_archive_pin_activity_id` | `user_id, is_archived ASC, is_pinned DESC, (CASE WHEN (is_pinned OR is_archived) THEN created_at ELSE last_activity_at END) DESC, id DESC` |
+
+Upgrade adds the column `NOT NULL DEFAULT now()` (no table rewrite on PostgreSQL
+11+), backfills it from each chat's latest user message or its creation time, and
+commits; it then builds the index concurrently in an autocommit block. If the
+build is interrupted, the revision stays at `8e4a1d7c3f25`: drop the invalid
+index after inspecting it as described above and re-run the upgrade (the column
+step is idempotent). Downgrade drops the index concurrently, then the column.
+`ix_chats_user_archive_pin_created_id` is kept.

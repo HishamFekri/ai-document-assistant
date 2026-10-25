@@ -523,6 +523,9 @@ export function useChat(
 
             created_at:
               chat.created_at,
+
+            last_activity_at:
+              chat.last_activity_at,
           },
 
           ...current,

@@ -39,6 +39,12 @@ export type ChatTitleGeneratedEvent = {
 };
 
 
+export type ChatActivityEvent = {
+  chatId: number;
+  lastActivityAt: string;
+};
+
+
 type Params = {
   chatId: number;
 
@@ -88,6 +94,11 @@ type Params = {
   // The send failed or stopped before the backend accepted the first message.
   onChatDiscarded?: (
     chatId: number
+  ) => void;
+
+  // The backend stored the user message and its chat activity time.
+  onChatActivity?: (
+    event: ChatActivityEvent
   ) => void;
 };
 
@@ -179,6 +190,7 @@ export function useChatStream({
   onChatTitleGenerated,
   onChatCreated,
   onChatDiscarded,
+  onChatActivity,
 }: Params) {
   const scope = useRequestScope(String(chatId));
   const stopRunRef = useRef<(() => void) | null>(null);
@@ -761,6 +773,24 @@ export function useChatStream({
 
       await readNDJSON(response.body, async (streamEvent) => {
         checkCurrent();
+          if (
+            streamEvent.type
+            === "chat_activity"
+          ) {
+            if (
+              streamEvent.chat_id === activeChatId
+              && typeof streamEvent.last_activity_at === "string"
+            ) {
+              onChatActivity?.({
+                chatId: activeChatId,
+                lastActivityAt: streamEvent.last_activity_at,
+              });
+            }
+
+            return;
+          }
+
+
           if (
             streamEvent.type
             === "chat_title"

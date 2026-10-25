@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.services.database_queries import release_read_transaction
 from fastapi import Response
 from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import selectinload
 from app.services.admission_dependencies import admit_chat, admit_search
 from app.services.resource_admission import (
@@ -295,10 +296,30 @@ def get_chats(response: Response, limit: int = Query(DEFAULT_PAGE_SIZE, ge=1, le
     query = db.query(Chat).options(selectinload(Chat.documents)).filter(
         Chat.user_id == current_user.id,
         db.query(Message.id).filter(Message.chat_id == Chat.id).exists())
+    # Recent chats by latest message; pinned and archived keep creation order.
+    # A new cursor scope rejects cursors issued under the old creation order.
     return paginated(query, [(Chat.is_archived, False), (Chat.is_pinned, True),
-                             (Chat.created_at, True), (Chat.id, True)],
-                     owner=current_user.id, scope='chats', response=response,
+                             (Chat.list_sort_at, True), (Chat.id, True)],
+                     owner=current_user.id, scope='chats:activity', response=response,
                      limit=limit, cursor=cursor, offset=offset)
+
+
+def record_chat_activity(db: Session, chat_id: int):
+    """Stamp the chat with the time of a new user message.
+
+    Runs in the caller's transaction, so it commits or rolls back together with
+    the message. now() is the transaction time, the same value the message's
+    created_at default receives; a concurrent, earlier send cannot move it back.
+    """
+    db.execute(
+        update(Chat)
+        .where(Chat.id == chat_id)
+        .values(last_activity_at=case(
+            (Chat.last_activity_at > func.now(), Chat.last_activity_at),
+            else_=func.now(),
+        ))
+        .execution_options(synchronize_session=False)
+    )
 
 
 @router.get(
@@ -832,6 +853,7 @@ def ask_chat(
     )
 
     db.add(user_message)
+    record_chat_activity(db, chat_id)
     db.commit()
     db.refresh(user_message)
 
@@ -1249,6 +1271,8 @@ def ask_chat_stream(
         user_message
     )
 
+    record_chat_activity(db, chat_id)
+
     db.commit()
 
     db.refresh(
@@ -1257,6 +1281,10 @@ def ask_chat_stream(
 
     user_message_id = (
         user_message.id
+    )
+
+    last_activity_at = db.scalar(
+        select(Chat.last_activity_at).where(Chat.id == chat_id)
     )
 
     release_read_transaction(db)
@@ -1357,6 +1385,23 @@ def ask_chat_stream(
 
 
         try:
+            # First event: the stored activity time, so the sidebar can move this
+            # chat to the top of Recent before the answer starts.
+            yield (
+                json.dumps(
+                    {
+                        "type": "chat_activity",
+                        "chat_id": chat_id,
+                        "last_activity_at": (
+                            last_activity_at.isoformat()
+                            if last_activity_at
+                            else None
+                        ),
+                    }
+                )
+                + "\n"
+            )
+
             if message_document_ids:
                 wait_started = (
                     time.monotonic()

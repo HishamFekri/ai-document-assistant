@@ -112,6 +112,7 @@ jobs:
           tests/test_document_processing_claim_postgres.py
           tests/test_summary_concurrency_postgres.py
           tests/test_resource_admission_postgres.py
+          tests/test_chat_activity_postgres.py
 
       - name: Processing benchmark baseline, missing images and job recovery (simulated providers)
         # Own process: the benchmark configures its environment at collection.

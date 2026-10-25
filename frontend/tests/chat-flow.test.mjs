@@ -220,3 +220,55 @@ test("stopping after the chat is created but before the answer starts removes it
   assert.deepEqual(plain(draft.calls.discarded), [9], "discarded only once");
   draft.app.unmount();
 });
+
+
+// Recent chats follow their latest message, as GET /chats orders them.
+const activitySidebar = () => [
+  item(1, "2026-10-25T09:00:00", { is_pinned: true, title: "Pinned old", last_activity_at: "2026-10-30T09:00:00" }),
+  item(5, "2026-10-26T09:00:00", { is_pinned: true, title: "Pinned new", last_activity_at: "2026-10-26T09:00:00" }),
+  item(2, "2026-10-20T09:00:00", { title: "Created first, active last", last_activity_at: "2026-10-28T09:00:00" }),
+  item(3, "2026-10-24T09:00:00", { title: "Created last, idle", last_activity_at: "2026-10-24T09:00:00" }),
+  item(9, "2026-10-01T09:00:00", { is_archived: true, title: "Archived", last_activity_at: "2026-10-31T09:00:00" }),
+];
+
+
+test("Recent is ordered by latest activity; pinned and archived keep creation order", () => {
+  const { mergePageItems } = load("src/lib/pagination.ts");
+  const shuffled = [...activitySidebar()].reverse();
+  assert.deepEqual(plain(mergePageItems([], shuffled, "chats").map((chat) => chat.id)), [5, 1, 2, 3, 9]);
+  // Responses without the field (older API) fall back to creation time.
+  const legacy = activitySidebar().map((chat) => { const copy = { ...chat }; delete copy.last_activity_at; return copy; });
+  assert.deepEqual(plain(mergePageItems([], legacy, "chats").map((chat) => chat.id)), [5, 1, 3, 2, 9]);
+});
+
+
+test("a new message moves only a Recent chat to the top", () => {
+  const bump = (list, id, at) => upsertChatListItem(list, { ...list.find((chat) => chat.id === id), last_activity_at: at });
+  const moved = bump(activitySidebar(), 3, "2026-11-01T10:00:00");
+  assert.deepEqual(plain(moved.map((chat) => chat.id)), [5, 1, 3, 2, 9]);
+  const pinned = bump(activitySidebar(), 1, "2026-11-01T10:00:00");
+  assert.deepEqual(plain(pinned.map((chat) => chat.id)), [5, 1, 2, 3, 9], "pinned order unchanged");
+  const archived = bump(activitySidebar(), 9, "2026-11-01T10:00:00");
+  assert.equal(archived.at(-1).id, 9, "archived chats stay archived and last");
+  assert.equal(archived.at(-1).is_archived, true);
+});
+
+
+test("the stream reports the stored activity time for its own chat only", async () => {
+  const source = streamBody();
+  const app = runtime({ fetch: async () => new Response(source.body) });
+  let messages = [];
+  const activity = [];
+  const props = { chatId: 4, chat: { id: 4, documents: [] }, messages,
+    setMessages: (next) => { messages = typeof next === "function" ? next(messages) : next; },
+    refreshMessages: async () => {}, getToken: () => "__cookie__", attachment: null, clearComposerAttachment() {},
+    onChatActivity: (event) => activity.push(event) };
+  const pending = app.render("src/hooks/useChatStream.ts", "useChatStream", props).sendQuestionText("Again?");
+  source.send('{"type":"chat_activity","chat_id":99,"last_activity_at":"2026-11-01T10:00:00"}\n'
+    + '{"type":"chat_activity","chat_id":4,"last_activity_at":"2026-11-01T10:00:00.250000"}\n'
+    + '{"type":"token","content":"Yes."}\n{"type":"done","sources":[]}\n');
+  source.end();
+  await pending;
+  assert.deepEqual(plain(activity), [{ chatId: 4, lastActivityAt: "2026-11-01T10:00:00.250000" }]);
+  app.unmount();
+});

@@ -13,12 +13,15 @@ from sqlalchemy import (
     BigInteger,
     String,
     Text,
+    case,
+    or_,
 )
 
 from sqlalchemy.dialects.postgresql import JSONB
 
 from sqlalchemy.orm import (
     Mapped,
+    column_property,
     mapped_column,
     relationship,
 )
@@ -429,6 +432,15 @@ class Chat(Base):
         server_default=func.now(),
     )
 
+    # Time of the latest user message, set in the transaction that stores it.
+    last_activity_at: Mapped[
+        datetime
+    ] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )
+
     owner: Mapped[
         "User | None"
     ] = relationship(
@@ -448,6 +460,17 @@ class Chat(Base):
         back_populates="chat",
         cascade="all, delete-orphan",
     )
+
+
+# Sidebar order key: Recent chats follow their latest message, while pinned and
+# archived chats keep their creation order. A mapped column so keyset cursors
+# can read and compare it like any other field.
+CHAT_LIST_SORT_AT = case(
+    (or_(Chat.__table__.c.is_pinned, Chat.__table__.c.is_archived), Chat.__table__.c.created_at),
+    else_=Chat.__table__.c.last_activity_at,
+)
+
+Chat.list_sort_at = column_property(CHAT_LIST_SORT_AT)
 
 
 class Message(Base):
@@ -535,6 +558,9 @@ from app.database.document_asset_models import (
 # Keep metadata aligned with the five approved Batch 11 migration indexes.
 Index("ix_documents_user_created_id", Document.user_id, Document.created_at.desc(), Document.id.desc())
 Index("ix_chats_user_archive_pin_created_id", Chat.user_id, Chat.is_archived.asc(), Chat.is_pinned.desc(), Chat.created_at.desc(), Chat.id.desc())
+# Matches GET /chats ordering since revision 4b8d2e6f1a93.
+Index("ix_chats_user_archive_pin_activity_id", Chat.user_id, Chat.is_archived.asc(), Chat.is_pinned.desc(),
+      CHAT_LIST_SORT_AT.desc(), Chat.id.desc())
 Index("ix_messages_chat_created_id", Message.chat_id, Message.created_at.asc(), Message.id.asc())
 Index("ix_document_chunks_document_id_id", DocumentChunk.document_id, DocumentChunk.id)
 Index("ix_chat_documents_document_chat", chat_documents.c.document_id, chat_documents.c.chat_id)

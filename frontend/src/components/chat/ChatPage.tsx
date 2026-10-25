@@ -47,6 +47,7 @@ import {
 
 import {
   retitleChatListItem,
+  toChatListItem,
   upsertChatListItem,
 } from "@/lib/chat-list";
 
@@ -552,6 +553,38 @@ function ChatWorkspace({
               current,
               createdChat
             )
+        );
+      },
+
+    // Move the chat to its new place in Recent as soon as the message is stored.
+    onChatActivity:
+      ({
+        chatId: activeChatId,
+        lastActivityAt,
+      }) => {
+        setChats(
+          (current) => {
+            const listed =
+              current.find(
+                (item) =>
+                  item.id === activeChatId
+              )
+              ?? (
+                chat?.id === activeChatId
+                  ? toChatListItem(chat)
+                  : null
+              );
+
+            return listed
+              ? upsertChatListItem(
+                  current,
+                  {
+                    ...listed,
+                    last_activity_at: lastActivityAt,
+                  }
+                )
+              : current;
+          }
         );
       },
 

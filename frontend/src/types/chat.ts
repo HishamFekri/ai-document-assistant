@@ -50,6 +50,9 @@ export type Chat = {
 
   created_at: string;
 
+  // Time of the latest user message; older API responses may omit it.
+  last_activity_at?: string;
+
   documents: Document[];
 };
 
@@ -63,6 +66,8 @@ export type ChatListItem = {
   is_archived: boolean;
 
   created_at: string;
+
+  last_activity_at?: string;
 };
 
 

@@ -61,6 +61,7 @@ class ChatResponse(BaseModel):
     is_pinned: bool
     is_archived: bool
     created_at: datetime
+    last_activity_at: datetime
     documents: list[DocumentResponse]
 
     model_config = ConfigDict(
