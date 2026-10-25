@@ -10,8 +10,10 @@ def validate_runtime():
     from app.services.auth_config import auth_settings
     from app.database.pool_config import pool_options
     from app.services.resource_limits import resource_limits, upload_limits
+    from app.services.client_ip import client_ip_policy
 
     auth_settings()
+    client_ip_policy()
     pool_options()
     limits = resource_limits()
     upload_limits()
