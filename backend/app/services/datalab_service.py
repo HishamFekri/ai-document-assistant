@@ -17,6 +17,7 @@ import cloudinary.exceptions
 import cloudinary.uploader
 import requests
 import urllib3.exceptions
+import urllib3.util
 from dotenv import load_dotenv
 from app.services.document_processing_errors import RetryableDocumentProcessingError
 from app.services.document_resource_errors import DocumentResourceError
@@ -109,7 +110,8 @@ if not 1 <= IMAGE_UPLOAD_CONCURRENCY <= 16:
         "DATALAB_IMAGE_UPLOAD_CONCURRENCY must be between 1 and 16"
     )
 
-# Finite per-attempt socket timeout for each Cloudinary image upload.
+# Per-attempt read timeout for each Cloudinary image upload (waiting for the
+# response once connected; POST reads are never retried inside urllib3).
 IMAGE_UPLOAD_TIMEOUT_SECONDS = float(
     os.getenv(
         "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS",
@@ -120,6 +122,21 @@ IMAGE_UPLOAD_TIMEOUT_SECONDS = float(
 if not 1 <= IMAGE_UPLOAD_TIMEOUT_SECONDS <= 300:
     raise RuntimeError(
         "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS must be between 1 and 300"
+    )
+
+# Per-connection-attempt connect timeout. The SDK's urllib3 pool retries failed
+# connections up to 3 more times within one upload attempt (Retry(total=3)),
+# so an unreachable host costs at most 4 x this value per attempt.
+IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS = float(
+    os.getenv(
+        "DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS",
+        "5",
+    )
+)
+
+if not 1 <= IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS <= 60:
+    raise RuntimeError(
+        "DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS must be between 1 and 60"
     )
 
 # Total attempts per distinct image; only transient failures are retried.
@@ -613,7 +630,11 @@ def _upload_once(
             overwrite=False,
             unique_filename=False,
             use_filename=False,
-            timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS,
+            # Passed through unchanged by the SDK to urllib3's request().
+            timeout=urllib3.util.Timeout(
+                connect=IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS,
+                read=IMAGE_UPLOAD_TIMEOUT_SECONDS,
+            ),
             # JSON error responses come back with their HTTP status instead of
             # a generic exception, so 5xx can be told apart from 4xx.
             return_error=True,

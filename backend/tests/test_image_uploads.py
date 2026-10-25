@@ -118,12 +118,13 @@ class ImageUploadTests(unittest.TestCase):
             "DATALAB_API_KEY": "offline", "CLOUDINARY_URL": "cloudinary://key:secret@demo",
         }))
         for name in ("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS",
-                     "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS"):
+                     "DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS", "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS"):
             os.environ.pop(name, None)
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
         cls.datalab = importlib.import_module("app.services.datalab_service")
         cls.exceptions = importlib.import_module("cloudinary.exceptions")
         cls.urllib3 = importlib.import_module("urllib3.exceptions")
+        cls.urllib3_util = importlib.import_module("urllib3.util")
 
     @classmethod
     def tearDownClass(cls):
@@ -168,6 +169,8 @@ class ImageUploadTests(unittest.TestCase):
         self.assertLessEqual(cloud.peak, 2)
         cases = [("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "0"), ("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "17"),
                  ("DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS", "0"), ("DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS", "301"),
+                 ("DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS", "0"),
+                 ("DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS", "61"),
                  ("DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS", "0"), ("DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS", "7")]
         try:
             for name, bad in cases:
@@ -187,7 +190,9 @@ class ImageUploadTests(unittest.TestCase):
         cloud = FakeCloudinary()
         self.save(cloud, {"a.png": encode(image("a"))})
         options = cloud.options[0]
-        self.assertEqual(options["timeout"], 30.0)
+        self.assertIsInstance(options["timeout"], self.urllib3_util.Timeout)
+        self.assertEqual((options["timeout"].connect_timeout, options["timeout"].read_timeout), (5.0, 30.0))
+        self.assertIsNone(options["timeout"].total)
         self.assertIs(options["return_error"], True)
         self.assertEqual((options["type"], options["overwrite"], options["resource_type"]),
                          ("authenticated", False, "image"))
@@ -583,6 +588,37 @@ class RealSDKUploadTests(unittest.TestCase):
         self.assertEqual(result, ("https://res.cloudinary.com/x.png", None, 1))
         self.assertLess(elapsed, 8)             # bounded, not indefinite
         self.assertEqual(len(loopback.requests), 2)
+
+    def test_unreachable_host_is_bounded_by_the_connect_timeout(self):
+        """The real SDK and urllib3 with connection attempts intercepted: every attempt
+        uses the connect timeout, urllib3 adds at most 3 connection retries per
+        upload attempt, and the total is bounded."""
+        import urllib3.util.connection as connection
+        seen = []
+
+        def unreachable(address, timeout=None, *args, **kwargs):
+            seen.append(timeout)
+            raise socket.timeout("connect timed out")         # as a blackholed SYN would
+        with self.server() as loopback, patch.object(connection, "create_connection", unreachable):
+            self.assertEqual(self.upload(), (None, "timeout", 2))
+        attempts = self.datalab.IMAGE_UPLOAD_MAX_ATTEMPTS
+        self.assertEqual(len(seen), 4 * attempts)                 # 1 + 3 urllib3 connect retries, per attempt
+        self.assertEqual(set(seen), {self.datalab.IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS})
+        self.assertEqual(loopback.requests, [])
+        # Effective worst case for one image: 4 x 5s x 3 attempts = 60s (plus backoff),
+        # instead of 4 x 30s x 3 = 360s with a single 30s timeout.
+        self.assertEqual(len(seen) * self.datalab.IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS, 60)
+
+    def test_read_timeout_is_not_retried_inside_urllib3(self):
+        with self.server(["stall", "stall"], timeout=1.0) as loopback:
+            started = time.monotonic()
+            with patch.object(self.datalab, "IMAGE_UPLOAD_MAX_ATTEMPTS", 2):
+                result = self.upload()
+            elapsed = time.monotonic() - started
+        self.assertEqual(result, (None, "timeout", 1))
+        self.assertEqual(len(loopback.requests), 2)               # exactly one request per attempt
+        self.assertGreaterEqual(elapsed, 2 * 1.0 * 0.9)
+        self.assertLess(elapsed, 2 * 1.0 + 6)                     # bounded by attempts x read timeout
 
     def test_refused_connection_is_a_transient_network_failure(self):
         probe = socket.socket()

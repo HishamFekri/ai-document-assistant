@@ -69,8 +69,16 @@ with at most `DATALAB_IMAGE_UPLOAD_CONCURRENCY` (default 4) uploads in flight,
 backoff included. Results keep the input order; a per-job cache reuses URLs
 across that document's batches only (the folder is per document).
 
-Every attempt has a finite socket timeout (`DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS`,
-default 30). Transient failures are retried up to `DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS`
+Every attempt has explicit urllib3 timeouts: connect
+`DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS` (default 5) and read
+`DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS` (default 30). The SDK's urllib3 pool
+(`Retry(total=3)`, not configurable through the SDK) retries a failed
+*connection* up to 3 more times inside one attempt; a POST read timeout is never
+retried there. One attempt therefore costs at most `4 x connect` (unreachable
+host) or `connect + read` (connected, then no response); with the defaults one
+image's full retry cycle is at most 60s against an unreachable host and about
+95s against a server that stops responding, plus backoff. Both bounds are
+verified with the real SDK. Transient failures are retried up to `DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS`
 (default 3) total attempts with exponential backoff and jitter (1s, 2s, ... capped
 at 8s, each randomised to 50-100%): HTTP 420/429, 5xx, timeouts, connection
 errors and unparseable responses (gateway error pages). Other rejections
@@ -78,9 +86,9 @@ errors and unparseable responses (gateway error pages). Other rejections
 are not retried. Classification uses SDK exception types, the HTTP status
 (`return_error=True`) and the chained transport error, never message text. Once
 one image exhausts its retries on a transient failure, the remaining uploads of
-that batch get a single attempt, so an outage costs about one timeout per image
+that batch get a single attempt, so an outage costs about one attempt per image
 rather than several. Worst case per batch: roughly
-`ceil(images / concurrency) x timeout` plus one image's full retry cycle.
+`ceil(images / concurrency) x one attempt` plus one image's full retry cycle.
 
 `Retry-After` is not honoured: the pinned Cloudinary SDK (1.44.1) does not
 expose response headers, and Cloudinary signals upload rate limits with 420.
