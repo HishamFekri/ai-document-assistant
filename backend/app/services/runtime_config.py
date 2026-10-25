@@ -76,5 +76,11 @@ def server_arguments():
     if not 1 <= port <= 65535:
         raise ValueError("Invalid PORT")
     # Ignore forwarded headers by default, including ambient Uvicorn proxy env.
-    return ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(port),
-            "--no-proxy-headers", "--no-access-log"]
+    arguments = ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", str(port),
+                 "--no-proxy-headers", "--no-access-log"]
+    if os.getenv("TASK_QUEUE", "background").lower() == "background":
+        # In-process jobs, the processing slot and the recovery scanner assume one
+        # process. Uvicorn otherwise takes its worker count from WEB_CONCURRENCY,
+        # which Render sets by CPU count on newer services.
+        arguments += ["--workers", "1"]
+    return arguments
