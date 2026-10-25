@@ -367,34 +367,94 @@ def offline_network(providers):
 
 # ---- Timing capture ---------------------------------------------------------------
 
+QUEUE_EVENTS = ("document_processing_deferred", "document_processing_slot_ready", "document_retry_scheduled")
+
+
 class TimingCapture(logging.Handler):
-    """logging.Handler.handle already serializes emit() with the handler's own lock."""
+    """logging.Handler.handle already serializes emit() with the handler's own lock.
+
+    Stage events get a harness-only capture time (perf_counter) so slot idle time
+    can be computed from interval overlap; it is never added to application logs.
+    """
 
     def __init__(self):
         super().__init__(logging.INFO)
         self.events = []
+        self.queue_events = {name: 0 for name in QUEUE_EVENTS}
 
     def emit(self, record):
         event = getattr(record, "safe_event", None)
-        if event and event.get("event") == "processing_stage_completed":
-            self.events.append(dict(event))
+        if not event:
+            return
+        if event.get("event") == "processing_stage_completed":
+            self.events.append({**event, "captured_at": time.perf_counter()})
+        elif event.get("event") in self.queue_events:
+            self.queue_events[event["event"]] += 1
 
 
 @contextmanager
 def capture_timings():
     handler = TimingCapture()
-    timing_logger = logging.getLogger("app.timing")
-    previous = (timing_logger.level, timing_logger.propagate, timing_logger.disabled)
-    timing_logger.addHandler(handler)
-    # Alembic's fileConfig may have disabled pre-existing loggers; keep events local.
-    timing_logger.setLevel(logging.INFO)
-    timing_logger.propagate = False
-    timing_logger.disabled = False
+    loggers = [logging.getLogger("app.timing"), logging.getLogger("app.services.task_queue")]
+    previous = [(item.level, item.propagate, item.disabled) for item in loggers]
+    for item in loggers:
+        item.addHandler(handler)
+        # Alembic's fileConfig may have disabled pre-existing loggers; keep events local.
+        item.setLevel(logging.INFO)
+        item.propagate = False
+        item.disabled = False
     try:
         yield handler
     finally:
-        timing_logger.removeHandler(handler)
-        timing_logger.level, timing_logger.propagate, timing_logger.disabled = previous
+        for item, state in zip(loggers, previous):
+            item.removeHandler(handler)
+            item.level, item.propagate, item.disabled = state
+
+
+@contextmanager
+def count_sql(engine):
+    """Every statement the application sends through its engine (database load)."""
+    from sqlalchemy import event
+    counter = {"statements": 0}
+    lock = threading.Lock()
+
+    def before_cursor_execute(*args, **kwargs):
+        with lock:
+            counter["statements"] += 1
+
+    event.listen(engine, "before_cursor_execute", before_cursor_execute)
+    try:
+        yield counter
+    finally:
+        event.remove(engine, "before_cursor_execute", before_cursor_execute)
+
+
+def interval_union(intervals):
+    merged = []
+    for start, end in sorted(intervals):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def queue_idle_ms(results):
+    """Time when at least one document waited for the slot while none was processing."""
+    waiting, active = [], []
+    for result in results:
+        for event in result.timings:
+            end = event["captured_at"]
+            if event["stage"] == "queue_wait":
+                waiting.append((end - event["duration_ms"] / 1000, end))
+            elif event["stage"] == "processing_active":
+                active.append((end - event["duration_ms"] / 1000, end))
+    idle = 0.0
+    busy = interval_union(active)
+    for start, end in interval_union(waiting):
+        overlap = sum(max(0.0, min(end, b_end) - max(start, b_start)) for b_start, b_end in busy)
+        idle += (end - start) - overlap
+    return round(idle * 1000, 3)
 
 
 def summarize_stages(events):
@@ -495,7 +555,7 @@ def run_scenario(app, engine, providers, scenario, user_offset):
     for spec, pdf in documents:
         providers.register(hashlib.sha256(pdf).hexdigest(), spec)
     tokens = [create_user(engine, user_offset + index) for index in range(len(documents))]
-    with capture_timings() as capture:
+    with capture_timings() as capture, count_sql(engine) as sql:
         started = time.perf_counter()
         if scenario.concurrent:
             results = [None] * len(documents)
@@ -515,7 +575,9 @@ def run_scenario(app, engine, providers, scenario, user_offset):
     with engine.connect() as connection:
         fingerprints = {result.label: document_fingerprint(connection, result.document_id) for result in results}
     report = {"scenario": scenario.name, "concurrent": scenario.concurrent,
-              "wall_seconds": round(scenario_wall, 3), "documents": []}
+              "wall_seconds": round(scenario_wall, 3), "sql_statements": sql["statements"],
+              "queue_events": dict(capture.queue_events), "queue_idle_ms": queue_idle_ms(results),
+              "documents": []}
     for result in results:
         stages = summarize_stages(result.timings)
         top_level = round(sum(stages.get(name, {}).get("total_ms", 0.0) for name in TOP_LEVEL_STAGES), 3)

@@ -383,34 +383,46 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_background_global_capacity_defers_then_processes(self):
+        # P1: a capacity deferral waits on the slot itself and proceeds as soon as it
+        # is released, instead of sleeping a fixed backoff.
+        import threading
+        import time
         capacity = BoundedSemaphore(1)
         capacity.acquire()
+        threading.Timer(0.2, capacity.release).start()
 
-        def release_capacity(delay):
-            self.assertEqual(delay, 2)
-            capacity.release()
-
+        started = time.monotonic()
         with patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", capacity), \
-                patch.object(self.queue_module, "sleep", side_effect=release_capacity) as sleep:
+                patch.object(self.queue_module, "sleep") as sleep:
             outcome = self.queue_module._run_document_processing(1)
 
         self.assertEqual(outcome, "completed")
         self.assertEqual(self.state.document.processing_status, "ready")
         self.extract.assert_called_once()
-        sleep.assert_called_once_with(2)
+        sleep.assert_not_called()
+        self.assertLess(time.monotonic() - started, 1.5)  # previously a 2 second sleep
+        self.assertTrue(capacity.acquire(blocking=False))  # slot returned, not leaked
+        capacity.release()
 
     def test_background_capacity_deferrals_do_not_consume_failure_budget(self):
         retryable = self.failures.RetryableDocumentProcessingError("safe")
         outcomes = ["deferred"] * 5 + [retryable] * 3 + ["completed"]
+        slots = BoundedSemaphore(1)
         with patch.object(self.processing, "process_document", side_effect=outcomes) as process, \
                 patch.object(self.processing, "mark_processing_retries_exhausted") as exhausted, \
+                patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", slots), \
                 patch.object(self.queue_module, "sleep") as sleep:
             result = self.queue_module._run_document_processing(1)
 
         self.assertEqual(result, "completed")
         self.assertEqual(process.call_count, 9)
-        self.assertEqual(sleep.call_count, 8)
         exhausted.assert_not_called()
+        # The first deferral took the free slot; that attempt was still deferred
+        # (cause is not capacity), so later deferrals fall back to backoff sleeps.
+        # Failure retries keep their existing backoff (shared retry counter, capped at 60s).
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [4, 8, 16, 32, 60, 60, 60])
+        self.assertTrue(slots.acquire(blocking=False))
+        slots.release()
 
     def test_background_genuine_processing_retries_are_bounded(self):
         with patch.object(
