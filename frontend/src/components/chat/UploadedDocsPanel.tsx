@@ -1,6 +1,12 @@
 "use client";
 
 import {
+  type CSSProperties,
+  useEffect,
+  useState,
+} from "react";
+
+import {
   File,
   FileSpreadsheet,
   FileText,
@@ -20,10 +26,16 @@ import {
 } from "@/lib/document-warnings";
 
 
+// Matches the closing animation in globals.css (190ms) with a little slack.
+const CLOSE_DURATION_MS = 220;
+
+
 type Props = {
   open: boolean;
 
   documents: Document[];
+
+  activeDocumentId?: number | null;
 
   onClose: () => void;
 
@@ -65,138 +77,32 @@ function FileIcon({
       filename
     );
 
-
-  if (extension === "pdf") {
-    return (
-      <div
-        className="
-          flex
-          h-10
-          w-10
-          shrink-0
-          items-center
-          justify-center
-          rounded-xl
-          bg-[var(--surface-hover)]
-        "
-      >
-        <FileText
-          size={20}
-          strokeWidth={1.8}
-          className="
-            text-[var(--text-secondary)]
-          "
-        />
-      </div>
-    );
-  }
-
-
-  if (
-    extension === "doc"
-    || extension === "docx"
-  ) {
-    return (
-      <div
-        className="
-          flex
-          h-10
-          w-10
-          shrink-0
-          items-center
-          justify-center
-          rounded-xl
-          bg-[var(--surface-hover)]
-        "
-      >
-        <FileType2
-          size={20}
-          strokeWidth={1.8}
-          className="
-            text-[var(--text-secondary)]
-          "
-        />
-      </div>
-    );
-  }
-
-
-  if (
-    extension === "xls"
-    || extension === "xlsx"
-  ) {
-    return (
-      <div
-        className="
-          flex
-          h-10
-          w-10
-          shrink-0
-          items-center
-          justify-center
-          rounded-xl
-          bg-[var(--surface-hover)]
-        "
-      >
-        <FileSpreadsheet
-          size={20}
-          strokeWidth={1.8}
-          className="
-            text-[var(--text-secondary)]
-          "
-        />
-      </div>
-    );
-  }
-
-
-  if (extension === "txt") {
-    return (
-      <div
-        className="
-          flex
-          h-10
-          w-10
-          shrink-0
-          items-center
-          justify-center
-          rounded-xl
-          bg-[var(--surface-hover)]
-        "
-      >
-        <FileText
-          size={20}
-          strokeWidth={1.8}
-          className="
-            text-[var(--text-secondary)]
-          "
-        />
-      </div>
-    );
-  }
-
+  const Icon =
+    extension === "pdf"
+    || extension === "txt"
+      ? FileText
+      : extension === "doc"
+        || extension === "docx"
+        ? FileType2
+        : extension === "xls"
+          || extension === "xlsx"
+          ? FileSpreadsheet
+          : File;
 
   return (
-    <div
+    <Icon
+      size={16}
+      strokeWidth={1.7}
+      aria-hidden="true"
       className="
-        flex
-        h-10
-        w-10
+        mt-0.5
         shrink-0
-        items-center
-        justify-center
-        rounded-xl
-        bg-[var(--surface)]
+        text-[var(--text-muted)]
+        transition-colors
+        duration-200
+        group-hover:text-[var(--text-secondary)]
       "
-    >
-      <File
-        size={20}
-        strokeWidth={1.8}
-        className="
-          text-[var(--text-muted)]
-        "
-      />
-    </div>
+    />
   );
 }
 
@@ -239,79 +145,211 @@ function getFileLabel(
 }
 
 
+function DocumentStatus({
+  document,
+  warning,
+}: {
+  document: Document;
+  warning: string | null;
+}) {
+  if (
+    document.processing_status
+    === "processing"
+  ) {
+    return (
+      <span
+        className="
+          inline-flex
+          items-center
+          gap-1
+        "
+      >
+        <Loader2
+          size={11}
+          aria-hidden="true"
+          className="
+            animate-spin
+          "
+        />
+
+        {document.processing_progress
+          ?? 0}
+        %
+      </span>
+    );
+  }
+
+  const failed =
+    document.processing_status
+    === "failed";
+
+  return (
+    <span
+      className="
+        inline-flex
+        items-center
+        gap-1.5
+      "
+    >
+      <span
+        aria-hidden="true"
+        className={`
+          h-1.5
+          w-1.5
+          rounded-full
+          ${
+            failed
+              ? "bg-[var(--danger)]"
+              : warning
+                ? "bg-[var(--warning)]"
+                : "bg-[var(--ok)]"
+          }
+        `}
+      />
+
+      <span
+        className={
+          failed
+            ? "text-[var(--danger)]"
+            : undefined
+        }
+      >
+        {failed
+          ? "Failed"
+          : warning
+            // The warning line below spells out "Ready with warnings: …".
+            ? "Ready"
+            : readyLabel(
+                document
+              )}
+      </span>
+    </span>
+  );
+}
+
+
 export default function UploadedDocsPanel({
   open,
   documents,
+  activeDocumentId = null,
   onClose,
   onRemove,
   onOpenSummary,
 }: Props) {
-  if (!open) {
+  // Stay mounted while the closing animation plays.
+  const [
+    rendered,
+    setRendered,
+  ] = useState(open);
+
+  if (
+    open
+    && !rendered
+  ) {
+    setRendered(true);
+  }
+
+  // Unmount on a timer rather than animationend, which never fires when the
+  // animation is skipped (background tab, reduced motion).
+  useEffect(() => {
+    if (
+      open
+      || !rendered
+    ) {
+      return;
+    }
+
+    const timeoutId =
+      window.setTimeout(
+        () => setRendered(false),
+        CLOSE_DURATION_MS
+      );
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    open,
+    rendered,
+  ]);
+
+  if (!rendered) {
     return null;
   }
 
 
   return (
     <aside
+      aria-label="Files in this chat"
+      aria-hidden={!open}
+      inert={!open}
+      data-state={
+        open
+          ? "open"
+          : "closed"
+      }
       className="
+        aura-files
         absolute
-        right-0
-        top-0
+        bottom-2
+        right-2
+        top-2
         z-40
         flex
-        h-full
-        w-[320px]
+        w-[min(300px,calc(100%-1rem))]
         flex-col
-
-        border-l
-        border-[var(--border)]
-
-        bg-[var(--background)]
+        overflow-hidden
+        rounded-[18px]
+        border
+        border-[var(--border-soft)]
+        bg-[var(--sidebar)]
         text-[var(--text-primary)]
-
-        shadow-2xl
-        shadow-black/30
-
-        transition-colors
-        duration-200
-
+        shadow-[0_24px_60px_-24px_rgba(0,0,0,0.55)]
         xl:relative
+        xl:inset-auto
+        xl:my-2
+        xl:mr-2
+        xl:w-[300px]
+        xl:shrink-0
         xl:shadow-none
       "
     >
       <div
         className="
           flex
-          min-h-16
+          h-14
+          shrink-0
           items-center
           justify-between
-          px-5
+          gap-2
+          pl-4
+          pr-2
         "
       >
-        <div>
+        <div
+          className="
+            flex
+            items-baseline
+            gap-2
+          "
+        >
           <h2
             className="
-              text-[15px]
+              text-[14px]
               font-semibold
-              text-[var(--text-primary)]
+              tracking-[-0.01em]
             "
           >
-            Documents
+            Files
           </h2>
 
-          <p
+          <span
             className="
-              mt-0.5
-              text-xs
+              text-[12px]
+              tabular-nums
               text-[var(--text-muted)]
             "
           >
             {documents.length}
-            {" "}
-            {documents.length === 1
-              ? "file"
-              : "files"}
-          </p>
+          </span>
         </div>
 
 
@@ -320,28 +358,24 @@ export default function UploadedDocsPanel({
           onClick={
             onClose
           }
-          title="Close"
+          title="Close files"
+          aria-label="Close files"
           className="
             flex
-            h-9
-            w-9
+            h-8
+            w-8
             items-center
             justify-center
             rounded-full
-
-            text-red-500
-
-            transition-all
+            text-[var(--text-muted)]
+            transition
             duration-200
-
-            hover:bg-red-500/10
-            hover:text-red-400
-
-            active:scale-95
+            hover:bg-[var(--surface-hover)]
+            hover:text-[var(--text-primary)]
           "
         >
           <X
-            size={18}
+            size={16}
           />
         </button>
       </div>
@@ -352,8 +386,8 @@ export default function UploadedDocsPanel({
           min-h-0
           flex-1
           overflow-y-auto
-          px-3
-          pb-4
+          px-2
+          pb-3
         "
       >
         {documents.length === 0 ? (
@@ -361,328 +395,319 @@ export default function UploadedDocsPanel({
             className="
               flex
               h-full
+              flex-col
               items-center
               justify-center
               px-6
+              pb-10
               text-center
             "
           >
-            <div>
-              <div
-                className="
-                  mx-auto
-                  mb-3
-                  flex
-                  h-12
-                  w-12
-                  items-center
-                  justify-center
-                  rounded-2xl
-                  bg-[var(--primary-soft)]
-                "
-              >
-                <FileText
-                  size={21}
-                  className="
-                    text-[var(--primary)]
-                  "
-                />
-              </div>
+            <p
+              className="
+                text-[13px]
+                font-medium
+                text-[var(--text-primary)]
+              "
+            >
+              No documents yet
+            </p>
 
-              <p
-                className="
-                  text-sm
-                  font-medium
-                  text-[var(--text-primary)]
-                "
-              >
-                No documents yet
-              </p>
-
-              <p
-                className="
-                  mt-1
-                  text-xs
-                  leading-5
-                  text-[var(--text-muted)]
-                "
-              >
-                Attach files using the
-                + button in the chat.
-              </p>
-            </div>
+            <p
+              className="
+                mt-1
+                text-[12px]
+                leading-5
+                text-[var(--text-muted)]
+              "
+            >
+              Attach files using the
+              + button in the chat.
+            </p>
           </div>
         ) : (
-          <div className="space-y-1">
+          <ul
+            className="
+              space-y-0.5
+            "
+          >
             {documents.map(
               (
-                document
+                document,
+                index
               ) => {
-                const processing =
-                  document.processing_status
-                  === "processing";
-
-                const failed =
-                  document.processing_status
-                  === "failed";
-
                 const ready =
-                  !processing
-                  && !failed;
+                  document.processing_status
+                  !== "processing"
+                  && document.processing_status
+                  !== "failed";
 
-                const fileLabel =
-                  getFileLabel(
-                    document.filename
-                  );
+                const active =
+                  document.id
+                  === activeDocumentId;
 
                 const warning =
                   missingImageWarning(
                     document
                   );
 
+                const pages =
+                  document.pages_count
+                    ? `${document.pages_count} ${
+                        document.pages_count === 1
+                          ? "page"
+                          : "pages"
+                      }`
+                    : null;
+
 
                 return (
-                  <div
+                  <li
                     key={
                       document.id
                     }
-                    role={
-                      ready
-                        ? "button"
-                        : undefined
-                    }
-                    tabIndex={
-                      ready
-                        ? 0
-                        : -1
-                    }
-                    onClick={() => {
-                      if (!ready) {
-                        return;
+                    style={{
+                      "--i": index,
+                    } as CSSProperties}
+                    className="aura-file-row"
+                  >
+                    <div
+                      role={
+                        ready
+                          ? "button"
+                          : undefined
                       }
-
-                      onOpenSummary(
-                        document
-                      );
-                    }}
-                    onKeyDown={(
-                      event
-                    ) => {
-                      if (!ready) {
-                        return;
+                      tabIndex={
+                        ready
+                          ? 0
+                          : -1
                       }
-
-                      if (
-                        event.key === "Enter"
-                        || event.key === " "
-                      ) {
-                        event.preventDefault();
+                      aria-current={
+                        active
+                          ? "true"
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (!ready) {
+                          return;
+                        }
 
                         onOpenSummary(
                           document
                         );
-                      }
-                    }}
-                    className={`
-                      group
-                      flex
-                      items-center
-                      gap-3
-                      rounded-2xl
-                      px-3
-                      py-3
-                      transition
+                      }}
+                      onKeyDown={(
+                        event
+                      ) => {
+                        if (!ready) {
+                          return;
+                        }
 
-                      ${
-                        ready
-                          ? "cursor-pointer hover:bg-[var(--surface-hover)]"
-                          : ""
-                      }
-                    `}
-                  >
-                    <FileIcon
-                      filename={
-                        document.filename
-                      }
-                    />
+                        if (
+                          event.key === "Enter"
+                          || event.key === " "
+                        ) {
+                          event.preventDefault();
 
+                          onOpenSummary(
+                            document
+                          );
+                        }
+                      }}
+                      className={`
+                        group
+                        relative
+                        flex
+                        items-start
+                        gap-2.5
+                        rounded-xl
+                        py-2.5
+                        pl-3
+                        pr-1.5
+                        outline-none
+                        transition-colors
+                        duration-200
+                        focus-visible:ring-2
+                        focus-visible:ring-[var(--focus-ring)]
 
-                    <div
-                      className="
-                        min-w-0
-                        flex-1
-                      "
+                        ${
+                          active
+                            ? "bg-[var(--surface-active)]"
+                            : ready
+                              ? "cursor-pointer hover:bg-[var(--surface-hover)]"
+                              : ""
+                        }
+                      `}
                     >
-                      <p
-                        title={
+                      <FileIcon
+                        filename={
                           document.filename
                         }
-                        className="
-                          truncate
-                          text-[13px]
-                          font-medium
-                          text-[var(--text-primary)]
-                        "
-                      >
-                        {document.filename}
-                      </p>
+                      />
 
 
                       <div
                         className="
-                          mt-1
-                          flex
-                          items-center
-                          gap-1.5
+                          min-w-0
+                          flex-1
                         "
                       >
-                        <span
+                        <p
+                          title={
+                            document.filename
+                          }
                           className="
-                            text-[11px]
+                            truncate
+                            text-[13px]
+                            font-medium
+                            leading-5
+                            text-[var(--text-primary)]
+                          "
+                        >
+                          {document.filename}
+                        </p>
+
+
+                        <p
+                          className="
+                            mt-0.5
+                            flex
+                            min-w-0
+                            items-center
+                            gap-1.5
+                            whitespace-nowrap
+                            text-[11.5px]
+                            leading-4
                             text-[var(--text-muted)]
                           "
                         >
-                          {fileLabel}
-                        </span>
-
-                        <span
-                          className="
-                            text-[10px]
-                            text-[var(--border)]
-                          "
-                        >
-                          •
-                        </span>
-
-
-                        {processing ? (
-                          <span
-                            className="
-                              flex
-                              items-center
-                              gap-1
-                              text-[11px]
-                              font-medium
-                              text-amber-500
-                            "
-                          >
-                            <Loader2
-                              size={11}
-                              className="
-                                animate-spin
-                              "
-                            />
-
-                            {document.processing_progress
-                              ?? 0}
-                            %
-                          </span>
-
-                        ) : failed ? (
-                          <span
-                            className="
-                              text-[11px]
-                              font-medium
-                              text-red-500
-                            "
-                          >
-                            Failed
-                          </span>
-
-                        ) : (
-                          <span
-                            className={`
-                              flex
-                              items-center
-                              gap-1
-                              text-[11px]
-                              font-medium
-                              ${
-                                warning
-                                  ? "text-amber-600"
-                                  : "text-emerald-500"
-                              }
-                            `}
-                          >
-                            <span
-                              className={`
-                                h-1.5
-                                w-1.5
-                                rounded-full
-                                ${
-                                  warning
-                                    ? "bg-amber-500"
-                                    : "bg-emerald-500"
-                                }
-                              `}
-                            />
-
-                            {readyLabel(
-                              document
+                          <span>
+                            {getFileLabel(
+                              document.filename
                             )}
                           </span>
+
+                          {pages && (
+                            <>
+                              <span aria-hidden="true">
+                                ·
+                              </span>
+
+                              <span className="tabular-nums">
+                                {pages}
+                              </span>
+                            </>
+                          )}
+
+                          <span aria-hidden="true">
+                            ·
+                          </span>
+
+                          <DocumentStatus
+                            document={
+                              document
+                            }
+                            warning={
+                              warning
+                            }
+                          />
+                        </p>
+
+
+                        {document.processing_status
+                          === "processing" && (
+                          <span
+                            aria-hidden="true"
+                            className="
+                              mt-2
+                              block
+                              h-0.5
+                              overflow-hidden
+                              rounded-full
+                              bg-[var(--surface-active)]
+                            "
+                          >
+                            <span
+                              className="
+                                block
+                                h-full
+                                rounded-full
+                                bg-[var(--text-secondary)]
+                                transition-[width]
+                                duration-500
+                              "
+                              style={{
+                                width: `${Math.min(
+                                  100,
+                                  Math.max(
+                                    4,
+                                    document.processing_progress
+                                    ?? 0
+                                  )
+                                )}%`,
+                              }}
+                            />
+                          </span>
+                        )}
+
+
+                        {warning && (
+                          <p
+                            className="
+                              mt-1.5
+                              text-[11.5px]
+                              leading-[1.45]
+                              text-[var(--warning)]
+                            "
+                          >
+                            {warning}
+                          </p>
                         )}
                       </div>
 
-                      {warning && (
-                        <p
-                          className="
-                            mt-1
-                            text-[11px]
-                            leading-4
-                            text-amber-600
-                          "
-                        >
-                          {warning}
-                        </p>
-                      )}
+
+                      <button
+                        type="button"
+                        onClick={(
+                          event
+                        ) => {
+                          event.stopPropagation();
+
+                          onRemove(
+                            document.id
+                          );
+                        }}
+                        title="Remove file"
+                        aria-label={`Remove ${document.filename}`}
+                        className="
+                          flex
+                          h-7
+                          w-7
+                          shrink-0
+                          items-center
+                          justify-center
+                          rounded-lg
+                          text-[var(--text-muted)]
+                          transition
+                          duration-200
+                          hover:bg-[var(--danger)]/10
+                          hover:text-[var(--danger)]
+                          focus-visible:opacity-100
+                          md:opacity-0
+                          md:group-hover:opacity-100
+                          md:group-focus-within:opacity-100
+                        "
+                      >
+                        <Trash2
+                          size={14}
+                        />
+                      </button>
                     </div>
-
-
-                    <button
-                      type="button"
-                      onClick={(
-                        event
-                      ) => {
-                        event.stopPropagation();
-
-                        onRemove(
-                          document.id
-                        );
-                      }}
-                      title="Remove file"
-                      className="
-                        flex
-                        h-8
-                        w-8
-                        shrink-0
-                        items-center
-                        justify-center
-                        rounded-lg
-
-                        text-red-500
-
-                        opacity-70
-
-                        transition-all
-                        duration-200
-
-                        hover:bg-red-500/10
-                        hover:text-red-400
-                        hover:opacity-100
-
-                        active:scale-95
-                      "
-                    >
-                      <Trash2
-                        size={14}
-                      />
-                    </button>
-                  </div>
+                  </li>
                 );
               }
             )}
-          </div>
+          </ul>
         )}
       </div>
     </aside>

@@ -169,6 +169,48 @@ function ChatWorkspace({
   ] = useState(false);
 
 
+  // The drawer stays mounted while its closing animation plays.
+  const [
+    mobileSidebarRendered,
+    setMobileSidebarRendered,
+  ] = useState(false);
+
+  if (
+    mobileSidebarOpen
+    && !mobileSidebarRendered
+  ) {
+    setMobileSidebarRendered(true);
+  }
+
+  useEffect(() => {
+    if (
+      mobileSidebarOpen
+      || !mobileSidebarRendered
+    ) {
+      return;
+    }
+
+    // Matches the 200ms closing animation in globals.css.
+    const timeoutId =
+      window.setTimeout(
+        () => setMobileSidebarRendered(false),
+        230
+      );
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    mobileSidebarOpen,
+    mobileSidebarRendered,
+  ]);
+
+
+  // -1, 0 or 1: which way the next view slides in.
+  const [
+    viewDirection,
+    setViewDirection,
+  ] = useState(0);
+
+
   const [
     selectedDocument,
     setSelectedDocument,
@@ -966,9 +1008,16 @@ function ChatWorkspace({
       </div>
 
 
-      {mobileSidebarOpen && (
+      {mobileSidebarRendered && (
         <div
+          data-state={
+            mobileSidebarOpen
+              ? "open"
+              : "closed"
+          }
+          inert={!mobileSidebarOpen}
           className="
+            aura-drawer
             fixed
             inset-0
             z-[80]
@@ -982,6 +1031,7 @@ function ChatWorkspace({
               setMobileSidebarOpen(false)
             }
             className="
+              aura-drawer-backdrop
               absolute
               inset-0
               bg-black/55
@@ -991,6 +1041,7 @@ function ChatWorkspace({
 
           <div
             className="
+              aura-drawer-panel
               relative
               z-10
               h-full
@@ -1178,11 +1229,19 @@ function ChatWorkspace({
                   label,
                   Icon,
                   open,
-                }) => (
+                }, index) => (
                   <button
                     key={view}
                     type="button"
-                    onClick={open}
+                    onClick={() => {
+                      setViewDirection(
+                        Math.sign(
+                          index - activeViewIndex
+                        )
+                      );
+
+                      open();
+                    }}
                     aria-pressed={
                       activeView === view
                     }
@@ -1237,6 +1296,9 @@ function ChatWorkspace({
 
           <div
             key={activeView}
+            style={{
+              "--view-dir": viewDirection,
+            } as CSSProperties}
             className="
               aura-view
               flex
@@ -1767,6 +1829,12 @@ function ChatWorkspace({
 
             documents={
               chat.documents
+            }
+
+            activeDocumentId={
+              activeView !== "chat"
+                ? selectedDocument?.id
+                : null
             }
 
             onClose={() =>

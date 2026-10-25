@@ -22,6 +22,7 @@ import rehypeKatex from "rehype-katex";
 
 import "katex/dist/katex.min.css";
 
+import CitationChip from "@/components/chat/CitationChip";
 import SourceImage from "@/components/chat/SourceImage";
 
 import {
@@ -33,6 +34,11 @@ import {
   missingImageWarning,
   readyLabel,
 } from "@/lib/document-warnings";
+
+import {
+  pageLabel,
+  rehypeCitations,
+} from "@/lib/citations";
 
 
 type Props = {
@@ -202,9 +208,44 @@ function AssistantMarkdown({
           remarkMath,
         ]}
         rehypePlugins={[
+          rehypeCitations,
           rehypeKatex,
         ]}
         components={{
+          span({
+            node,
+            className,
+            children,
+            ...props
+          }) {
+            // The hast node is react-markdown metadata, not a DOM attribute.
+            void node;
+
+            const full =
+              (props as Record<string, unknown>)["data-cite"];
+
+            if (
+              className === "aura-cite"
+              && typeof full === "string"
+            ) {
+              return (
+                <CitationChip
+                  label={String(children)}
+                  full={full}
+                />
+              );
+            }
+
+            return (
+              <span
+                className={className}
+                {...props}
+              >
+                {children}
+              </span>
+            );
+          },
+
           p({
             children,
           }) {
@@ -534,7 +575,7 @@ function AssistantVisuals({
   return (
     <div
       className="
-        mt-5
+        mt-4
         grid
         gap-3
       "
@@ -543,35 +584,67 @@ function AssistantVisuals({
         (
           source,
           index
-        ) => (
-          <div
-            key={
-              String(
-                source.asset_url
-              )
-            }
-            className="
-              overflow-hidden
-              rounded-2xl
-              border
-              border-[var(--border)]
-              bg-[var(--surface)]
-            "
-          >
-            <SourceImage
-              imageUrl={
+        ) => {
+          const page =
+            pageLabel(
+              source.location
+              ?? ""
+            );
+
+          return (
+            <figure
+              key={
                 String(
                   source.asset_url
                 )
               }
-              alt={
-                source.filename
-                ? `${source.filename} image ${index + 1}`
-                : `Document image ${index + 1}`
-              }
-            />
-          </div>
-        )
+              className="
+                m-0
+              "
+            >
+              <SourceImage
+                imageUrl={
+                  String(
+                    source.asset_url
+                  )
+                }
+                alt={
+                  source.filename
+                  ? `${source.filename} image ${index + 1}`
+                  : `Document image ${index + 1}`
+                }
+              />
+
+              <figcaption
+                title={
+                  [source.filename, source.location]
+                    .filter(Boolean)
+                    .join(" · ")
+                  || undefined
+                }
+                className="aura-figcaption"
+              >
+                <span>
+                  Figure
+                  {" "}
+                  {index + 1}
+                </span>
+
+                {page && (
+                  <span>
+                    {page}
+                  </span>
+                )}
+
+                {source.filename && (
+                  <span className="min-w-0 truncate">
+                    {source.filename}
+                  </span>
+                )}
+              </figcaption>
+            </figure>
+          );
+        }
       )}
     </div>
   );
@@ -1029,9 +1102,10 @@ export default function ChatMessage({
         >
           <span
             className={`aura-orb ${
-              assistantContent
-                ? ""
-                : "is-thinking"
+              !assistantContent
+              || message.status === "processing"
+                ? "is-thinking"
+                : ""
             }`}
           />
         </div>

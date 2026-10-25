@@ -695,6 +695,18 @@ html:not(.dark) .ambient-noise {
   --aura-light: rgba(0, 0, 0, 0.045);
   --aura-light-active: rgba(0, 0, 0, 0.08);
 
+  --ok: #2f8f5b;
+  --warning: #96650b;
+  --danger: #c93636;
+
+  --cite-bg: #ececef;
+  --cite-bg-hover: #e2e2e6;
+  --cite-ink: #5f5f67;
+
+  --tooltip-bg: #111113;
+  --tooltip-ink: #f5f5f7;
+  --tooltip-shadow: 0 12px 32px -12px rgba(0, 0, 0, 0.35);
+
   color: var(--foreground);
 
   font-family:
@@ -758,6 +770,20 @@ html.dark .aura {
   --focus-ring: rgba(245, 245, 247, 0.55);
   --aura-light: rgba(255, 255, 255, 0.05);
   --aura-light-active: rgba(255, 255, 255, 0.1);
+
+  --ok: #5cbf8a;
+  --warning: #d6a24a;
+  --danger: #f06b6b;
+
+  --cite-bg: #17181b;
+  --cite-bg-hover: #212226;
+  --cite-ink: #8d8d95;
+
+  --tooltip-bg: #212226;
+  --tooltip-ink: #f5f5f7;
+  --tooltip-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 14px 36px -12px rgba(0, 0, 0, 0.7);
 }
 
 
@@ -886,19 +912,19 @@ html.dark:has(.aura) body {
 /* View change: a short rise and fade, no layout shift. */
 
 .aura-view {
-  animation: aura-view-enter 340ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  animation: aura-view-enter 300ms cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 
 
 @keyframes aura-view-enter {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    translate: calc(var(--view-dir, 0) * 14px) 4px;
   }
 
   to {
     opacity: 1;
-    transform: none;
+    translate: 0 0;
   }
 }
 
@@ -1012,17 +1038,272 @@ html:not(.dark) .aura .aura-orb {
 }
 
 
+/* Press feedback. Layered so a button's own transition utility still wins. */
+
+@layer base {
+  .aura button {
+    transition: scale 160ms cubic-bezier(0.2, 0.9, 0.2, 1);
+  }
+
+  .aura button:not(:disabled):active {
+    scale: 0.97;
+  }
+}
+
+
+/* Files panel: slides in from the edge; rows settle in sequence. */
+
+.aura-files[data-state="open"] {
+  animation: aura-files-in 260ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+
+.aura-files[data-state="closed"] {
+  pointer-events: none;
+  animation: aura-files-out 190ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+
+@keyframes aura-files-in {
+  from {
+    opacity: 0;
+    translate: 18px 0;
+  }
+}
+
+
+@keyframes aura-files-out {
+  to {
+    opacity: 0;
+    translate: 18px 0;
+  }
+}
+
+
+/* Inline on wide screens: the thread eases aside instead of jumping. */
+@media (min-width: 1280px) {
+  .aura-files[data-state="open"] {
+    animation-name: aura-files-in-inline;
+  }
+
+  .aura-files[data-state="closed"] {
+    animation-name: aura-files-out-inline;
+  }
+}
+
+
+@keyframes aura-files-in-inline {
+  from {
+    opacity: 0;
+    margin-right: -300px;
+  }
+}
+
+
+@keyframes aura-files-out-inline {
+  to {
+    opacity: 0;
+    margin-right: -300px;
+  }
+}
+
+
+.aura-file-row {
+  animation: aura-row-in 280ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+  animation-delay: calc(min(var(--i, 0), 8) * 35ms + 60ms);
+}
+
+
+@keyframes aura-row-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+
+
+/* Mobile chat drawer. */
+
+.aura-drawer[data-state="open"] .aura-drawer-backdrop {
+  animation: aura-fade-in 220ms ease-out both;
+}
+
+
+.aura-drawer[data-state="open"] .aura-drawer-panel {
+  animation: aura-drawer-in 280ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+
+.aura-drawer[data-state="closed"] .aura-drawer-backdrop {
+  animation: aura-fade-out 200ms ease-in both;
+}
+
+
+.aura-drawer[data-state="closed"] .aura-drawer-panel {
+  animation: aura-drawer-out 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+
+@keyframes aura-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+
+@keyframes aura-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+
+@keyframes aura-drawer-in {
+  from {
+    translate: -100% 0;
+  }
+}
+
+
+@keyframes aura-drawer-out {
+  to {
+    translate: -100% 0;
+  }
+}
+
+
+/* Source references inside answers: quiet metadata, not prose. */
+
+.aura-cite {
+  display: inline-block;
+  max-width: 12em;
+  height: 18px;
+  margin-inline-start: 4px;
+  padding: 0 6px;
+
+  overflow: hidden;
+  vertical-align: -3px;
+
+  border-radius: 6px;
+
+  background: var(--cite-bg);
+  color: var(--cite-ink);
+
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  cursor: default;
+  user-select: none;
+
+  transition:
+    background-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+
+.aura-cite:hover,
+.aura-cite:focus-visible {
+  background: var(--cite-bg-hover);
+  color: var(--text-primary);
+  box-shadow: 0 0 0 1px var(--border);
+  outline: none;
+}
+
+
+.aura-cite-tip {
+  position: fixed;
+  z-index: 100;
+
+  width: max-content;
+  max-width: min(300px, calc(100vw - 24px));
+  padding: 8px 10px;
+
+  border-radius: 10px;
+
+  background: var(--tooltip-bg);
+  color: var(--tooltip-ink);
+  box-shadow: var(--tooltip-shadow);
+
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: start;
+  white-space: normal;
+  overflow-wrap: anywhere;
+
+  pointer-events: none;
+
+  animation: aura-tip-in 150ms ease-out both;
+}
+
+
+.aura-cite-tip[data-placement="above"] {
+  transform: translateY(-100%);
+}
+
+
+@keyframes aura-tip-in {
+  from {
+    opacity: 0;
+    translate: 0 3px;
+  }
+}
+
+
+.aura-figcaption {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  min-width: 0;
+  margin-top: 6px;
+
+  color: var(--text-muted);
+
+  font-size: 11.5px;
+  line-height: 16px;
+}
+
+
+.aura-figcaption > span + span::before {
+  content: "·";
+  margin-inline-end: 6px;
+}
+
+
 @media (
   prefers-reduced-motion:
   reduce
 ) {
   .aura-view,
   .aura-ambient.is-active,
-  .aura-orb.is-thinking {
+  .aura-orb.is-thinking,
+  .aura-file-row,
+  .aura-cite-tip,
+  .aura-files[data-state="open"],
+  .aura-drawer[data-state="open"] .aura-drawer-backdrop,
+  .aura-drawer[data-state="open"] .aura-drawer-panel {
     animation: none;
+  }
+
+  /* Closing still ends on animationend, so keep it but make it instant. */
+  .aura-files[data-state="closed"],
+  .aura-drawer[data-state="closed"] .aura-drawer-backdrop,
+  .aura-drawer[data-state="closed"] .aura-drawer-panel {
+    animation-duration: 1ms;
   }
 
   .aura-modes-thumb {
     transition: none;
+  }
+
+  .aura button:not(:disabled):active {
+    scale: none;
   }
 }
