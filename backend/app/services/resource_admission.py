@@ -3,7 +3,6 @@
 from contextlib import contextmanager
 from functools import lru_cache
 from hashlib import sha256
-import ipaddress
 from threading import Lock
 from uuid import uuid4
 
@@ -15,6 +14,7 @@ from redis.retry import Retry
 from sqlalchemy import text
 
 from app.database import database
+from app.services.client_ip import auth_client_identity
 from app.services.resource_limits import resource_limits
 
 
@@ -110,13 +110,9 @@ def consume_user_rate(user_id, category):
 
 
 def authentication_subject(request):
-    # Use the ASGI peer only; never parse X-Forwarded-For or Forwarded here.
-    peer = request.client.host if request.client else "unknown"
-    try:
-        peer = str(ipaddress.ip_address(peer))
-    except ValueError:
-        peer = "unknown"
-    return f"ip:{peer}"
+    # Default: the ASGI peer only. Forwarded headers are considered solely by the
+    # opt-in, trusted-proxy policy in client_ip; the subject is hashed below.
+    return f"ip:{auth_client_identity(request)}"
 
 
 class Permit:

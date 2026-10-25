@@ -1440,6 +1440,12 @@ def ask_chat_stream(
                                     document
                                     .processing_progress
                                 ),
+
+                            "missing_image_count":
+                                (
+                                    document
+                                    .missing_image_count
+                                ),
                         }
                         for document
                         in current_documents

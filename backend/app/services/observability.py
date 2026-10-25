@@ -8,12 +8,14 @@ import logging
 import math
 import re
 import sys
-from time import monotonic
+from time import monotonic, perf_counter
 from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 from functools import wraps
 
 
 _context = ContextVar("observability_context", default=None)
+# perf_counter() when the current HTTP request arrived (timing only; never logged).
+_request_started = ContextVar("observability_request_started", default=None)
 _error_reporter = None
 _request_observer = None
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_.]{0,159}\Z")
@@ -21,10 +23,17 @@ _NUMBERS = {
     "document_id", "summary_id", "chat_id", "message_id", "status_code",
     "duration_ms", "response_bytes", "retry", "delay_seconds", "chunks",
     "count", "pages", "images", "tables", "equations",
+    "batch", "batches", "bytes", "complex_pages", "failed", "missing",
+    "recovered", "exhausted",
 }
-_NAMES = {"event", "operation", "exception_type", "failure_category", "dependency", "outcome"}
+_NAMES = {"event", "operation", "exception_type", "failure_category", "dependency", "outcome", "stage"}
 _IDS = {"request_id", "correlation_id", "job_id"}
+# Timing events carry aggregate counts only; correlate them through job/request IDs.
+STAGE_EVENT = "processing_stage_completed"
+_RAW_RECORD_IDS = frozenset({"document_id", "summary_id", "chat_id", "message_id"})
 logger = logging.getLogger(__name__)
+# Stage-timing events only; filterable separately from operational logs.
+timing_logger = logging.getLogger("app.timing")
 
 
 def valid_id(value):
@@ -134,6 +143,40 @@ def log_exception(target, operation, error=None, **fields):
               exception_type=f"{type(error).__module__}.{type(error).__name__}", **fields)
 
 
+def request_started_at():
+    return _request_started.get()
+
+
+def stage_context():
+    return {key: value for key, value in current_context().items() if key not in _RAW_RECORD_IDS}
+
+
+def log_stage(stage, duration_ms, *, outcome="success", **counts):
+    """One timing event on the dedicated app.timing logger: stage name,
+    monotonic duration and aggregate counts."""
+    payload = safe_fields({**stage_context(), **counts, "stage": stage,
+                           "duration_ms": round(duration_ms, 3), "outcome": outcome, "event": STAGE_EVENT})
+    timing_logger.info(STAGE_EVENT, extra={"safe_event": payload, **payload})
+
+
+@contextmanager
+def timed_stage(stage, **counts):
+    """Time a block with a monotonic clock; counts may be added to the yielded dict.
+
+    A failure is recorded with outcome=failed and its exception type, then re-raised
+    unchanged, so retry behaviour is not affected.
+    """
+    metrics = dict(counts)
+    started = perf_counter()
+    try:
+        yield metrics
+    except BaseException as error:
+        log_stage(stage, (perf_counter() - started) * 1000, outcome="failed",
+                  exception_type=f"{type(error).__module__}.{type(error).__name__}", **metrics)
+        raise
+    log_stage(stage, (perf_counter() - started) * 1000, **metrics)
+
+
 class SafeJSONFormatter(logging.Formatter):
     def format(self, record):
         try:
@@ -145,7 +188,9 @@ class SafeJSONFormatter(logging.Formatter):
     def _format_safe(self, record):
         # Do not call getMessage()/formatException(): third-party records can
         # contain full HTTP URLs, SQL parameters, task args, secrets and bodies.
-        fields = safe_fields({**current_context(), **getattr(record, "safe_event", {})})
+        event = getattr(record, "safe_event", {})
+        context = stage_context() if event.get("event") == STAGE_EVENT else current_context()
+        fields = safe_fields({**context, **event})
         fields.setdefault("event", "library_log")
         fields.update(timestamp=datetime.now(timezone.utc).isoformat(), level=record.levelname)
         fields["logger"] = record.name if _NAME.fullmatch(record.name) else "unknown"
@@ -225,6 +270,7 @@ class RequestObservabilityMiddleware:
                 size += len(message.get("body", b""))
                 complete = not message.get("more_body", False)
 
+        started_token = _request_started.set(perf_counter())
         with log_context(request_id=request_id, correlation_id=correlation_id or request_id):
             try:
                 await self.app(scope, tracked_receive, tracked_send)
@@ -232,6 +278,7 @@ class RequestObservabilityMiddleware:
                 log_exception(logger, "http_request", error)
                 raise
             finally:
+                _request_started.reset(started_token)
                 # Route NAME is code-owned, low cardinality; never raw path/query.
                 operation = getattr(scope.get("route"), "name", "unmatched")
                 fields = safe_fields(dict(

@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 from urllib.parse import urlencode
@@ -11,7 +12,7 @@ from fastapi import (
     Response,
     Request,
 )
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import RedirectResponse
 from fastapi.security import (
     HTTPAuthorizationCredentials,
     HTTPBearer,
@@ -32,6 +33,7 @@ from app.services.auth_service import (
     verify_google_token,
 )
 
+from app.services.observability import log_event
 from app.services.resource_admission import (
     authentication_subject, consume_rate, consume_user_rate,
 )
@@ -52,6 +54,7 @@ router = APIRouter(
 )
 
 security = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_REDIRECT_URI = auth_settings().google_redirect_uri
@@ -149,17 +152,10 @@ def login_with_google(
 
 @router.get("/google/start", dependencies=[Depends(limit_authentication)])
 def start_google_oauth():
-    if not GOOGLE_CLIENT_ID:
-        raise HTTPException(
-            status_code=500,
-            detail="Google login is temporarily unavailable",
-        )
-
-    if not GOOGLE_REDIRECT_URI:
-        raise HTTPException(
-            status_code=500,
-            detail="Google login is temporarily unavailable",
-        )
+    # Reached by top-level browser navigation, so failures redirect to the
+    # frontend with a fixed reason code instead of showing raw JSON.
+    if not GOOGLE_CLIENT_ID or not GOOGLE_REDIRECT_URI:
+        return oauth_failure("unavailable")
 
     state = secrets.token_urlsafe(32)
 
@@ -210,14 +206,13 @@ def google_oauth_callback(
             state_cookie,
         )
     ):
-        return oauth_failure(400, "Invalid Google OAuth state")
+        # Usually an expired state cookie or a callback opened in another browser.
+        return oauth_failure("expired")
 
     if error:
-        response = RedirectResponse(url=f"{FRONTEND_URL}/?google_login=cancelled", status_code=302)
-        delete_state_cookie(response)
-        return response
+        return oauth_failure("cancelled")
     if not code:
-        return oauth_failure(400, "Invalid Google OAuth state")
+        return oauth_failure("failed")
 
     try:
         google_user = exchange_google_code(code)
@@ -230,9 +225,9 @@ def google_oauth_callback(
         access_token = create_access_token(user)
 
     except ValueError:
-        return oauth_failure(401, "Could not authenticate with Google")
+        return oauth_failure("failed")
     except Exception:
-        return oauth_failure(500, "Google login is temporarily unavailable")
+        return oauth_failure("unavailable")
 
     response = RedirectResponse(
         url=f"{FRONTEND_URL}/chat",
@@ -245,8 +240,18 @@ def google_oauth_callback(
     return response
 
 
-def oauth_failure(status, detail):
-    response = JSONResponse(status_code=status, content={"detail": detail})
+OAUTH_FAILURE_REASONS = frozenset({"cancelled", "expired", "failed", "unavailable"})
+
+
+def oauth_failure(reason):
+    if reason not in OAUTH_FAILURE_REASONS:
+        reason = "failed"
+    log_event(logger, logging.INFO if reason == "cancelled" else logging.WARNING,
+              "google_oauth_failed", outcome=reason)
+    response = RedirectResponse(
+        url=f"{FRONTEND_URL}/?{urlencode({'google_login': reason})}",
+        status_code=302,
+    )
     delete_state_cookie(response)
     return response
 

@@ -807,6 +807,12 @@ export function useChatStream({
                                     .processing_progress
                                   ?? document
                                     .processing_progress,
+
+                                missing_image_count:
+                                  updated
+                                    .missing_image_count
+                                  ?? document
+                                    .missing_image_count,
                               };
                             }
                           ),

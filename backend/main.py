@@ -1,8 +1,10 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from app.services.observability import configure_logging, RequestObservabilityMiddleware
 from app.services.runtime_config import validate_runtime
 from app.services.readiness import readiness_status
+from app.services.security_headers import SecurityHeadersMiddleware
 
 configure_logging()
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +13,7 @@ from app.services.resource_admission import ResourceRejected, resource_error_res
 from app.services.document_resource_errors import DocumentResourceError, resource_validation_response
 from app.services.upload_ingress import UploadBodyLimitMiddleware
 from app.services.auth_config import auth_settings
+from app.services.request_origin import rejects_request_origin
 
 from app.routes.documents import router as documents_router
 from app.routes.chats import router as chats_router
@@ -23,13 +26,28 @@ from app.routes.summary_assistant import router as summary_assistant_router
 @asynccontextmanager
 async def lifespan(app):
     validate_runtime()
-    yield
+    # Daemon thread; its first scan runs after startup, so readiness never waits on it.
+    from app.services import processing_recovery as recovery
+    scanner = recovery.start_recovery_scanner()
+    if scanner is None:
+        yield
+        return
+    # Stop claiming recoveries on SIGTERM itself, not after Uvicorn has drained.
+    with recovery.stop_recovery_on_shutdown_signal(scanner):
+        try:
+            yield
+        finally:
+            await asyncio.to_thread(scanner.stop)
+            # Recovered jobs get the same remaining grace as drained BackgroundTasks.
+            await asyncio.to_thread(recovery.wait_for_recovered_jobs,
+                                    recovery.RECOVERED_JOBS_SHUTDOWN_WAIT_SECONDS)
 
 
 class ObservedFastAPI(FastAPI):
     def build_middleware_stack(self):
-        # Outside ServerErrorMiddleware so generated 500s also carry a request ID.
-        return RequestObservabilityMiddleware(super().build_middleware_stack())
+        # Outside ServerErrorMiddleware so generated 500s also carry a request ID
+        # and security headers.
+        return SecurityHeadersMiddleware(RequestObservabilityMiddleware(super().build_middleware_stack()))
 
 
 app = ObservedFastAPI(
@@ -62,21 +80,18 @@ async def validate_request_origin(
     request: Request,
     call_next,
 ):
-    if request.method in {
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-    }:
-        origin = request.headers.get("origin")
-
-        if origin and origin not in ALLOWED_ORIGINS:
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "detail": "Request origin is not allowed"
-                },
-            )
+    if rejects_request_origin(
+        request.method,
+        request.headers,
+        request.cookies,
+        ALLOWED_ORIGINS,
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Request origin is not allowed"
+            },
+        )
 
     return await call_next(request)
 

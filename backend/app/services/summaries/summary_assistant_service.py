@@ -1,9 +1,9 @@
 import json
 import os
 
-from openai import OpenAI
-
 from sqlalchemy.orm import Session
+
+from app.services.llm_client import deepseek_client
 
 from app.database.summary_assistant_models import (
     SummaryAssistantMessage,
@@ -28,7 +28,8 @@ DEEPSEEK_MODEL = os.getenv(
 MAX_HISTORY_MESSAGES = 20
 
 
-client = OpenAI(
+client = deepseek_client(
+    "summary_assistant",
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
 )

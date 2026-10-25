@@ -1,16 +1,22 @@
 import type { NextConfig } from "next";
 
+import { backendProxyRewrite } from "./src/lib/backend-proxy";
+import { securityHeaders } from "./src/lib/security-headers";
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
 
-  async rewrites() {
+  async headers() {
     return [
       {
-        source: "/api/backend/:path*",
-        destination:
-          "https://ai-document-assistant-5k8d.onrender.com/:path*",
+        source: "/:path*",
+        headers: securityHeaders(process.env),
       },
     ];
+  },
+
+  async rewrites() {
+    return [backendProxyRewrite(process.env)];
   },
 };
 

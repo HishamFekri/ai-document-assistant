@@ -62,6 +62,71 @@ external execution. If legacy assets no longer match the new extraction, process
 stops for explicit review before adding alternate copies or removing references.
 Existing valid data is not wiped to force a retry to succeed.
 
+## Extracted image uploads
+
+Each distinct image (SHA-256 of its bytes) in a Datalab batch is uploaded once,
+with at most `DATALAB_IMAGE_UPLOAD_CONCURRENCY` (default 4) uploads in flight,
+backoff included. Results keep the input order; a per-job cache reuses URLs
+across that document's batches only (the folder is per document).
+
+Every attempt has explicit urllib3 timeouts: connect
+`DATALAB_IMAGE_UPLOAD_CONNECT_TIMEOUT_SECONDS` (default 5) and read
+`DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS` (default 30). The SDK's urllib3 pool
+(`Retry(total=3)`, not configurable through the SDK) retries a failed
+*connection* up to 3 more times inside one attempt; a POST read timeout is never
+retried there. One attempt therefore costs at most `4 x connect` (unreachable
+host) or `connect + read` (connected, then no response); with the defaults one
+image's full retry cycle is at most 60s against an unreachable host and at
+most 105s against a server that accepts connections but stops responding
+(3 x (5 + 30)), plus backoff. Both bounds are
+verified with the real SDK. Transient failures are retried up to `DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS`
+(default 3) total attempts with exponential backoff and jitter (1s, 2s, ... capped
+at 8s, each randomised to 50-100%): HTTP 420/429, 5xx, timeouts, connection
+errors and unparseable responses (gateway error pages). Other rejections
+(400/401/403/404/409, invalid credentials or image data) and unrecognised errors
+are not retried. Classification uses SDK exception types, the HTTP status
+(`return_error=True`) and the chained transport error, never message text. Once
+one image exhausts its retries on a transient failure, the remaining uploads of
+that batch get a single attempt, so an outage costs about one attempt per image
+rather than several. Worst case per batch: roughly
+`ceil(images / concurrency) x one attempt` plus one image's full retry cycle.
+
+`Retry-After` is not honoured: the pinned Cloudinary SDK (1.44.1) does not
+expose response headers, and Cloudinary signals upload rate limits with 420.
+The jittered backoff applies instead.
+
+A distinct image that still fails is omitted for every occurrence in the
+batch; failures are never cached, so a later batch tries it again. Image blocks
+are then re-derived from the uploads that succeeded, so no block references a
+missing asset; an omitted image becomes the text "Image extracted from the
+document on page N". Each such batch logs `datalab_images_upload_incomplete`
+(WARNING, `failed`/`missing`/`images` counts) besides `datalab_images_uploaded`
+(`count`, `failed`, `missing`, `retry`) and one
+`operation_failed`/`datalab_image_upload` with a `failure_category` per failed
+image; no URLs, filenames or provider messages are logged.
+
+The document still becomes `ready` (chat, search and summaries stay available),
+but `documents.missing_image_count` records how many extracted image
+**occurrences** ended without a stored asset: every copy of a failed duplicate,
+across all Datalab batches, plus undecodable images and uploads that returned no
+URL. It is written in the chunk checkpoint transaction, so attempts that resume
+from saved chunks keep it, and a failure before the checkpoint records nothing
+(the next attempt counts afresh). Every newly processed document gets a value
+(0 when nothing is missing, including non-PDF formats); documents processed
+before revision `5c1e8f2a9b47` keep NULL ("not tracked") and are shown as
+before. The API returns the field on every document payload, and the frontend
+shows "Ready with warnings: N image(s) could not be processed. Some information
+may be missing from AI responses." instead of a plain "Ready" when it is
+positive. Missing images are not re-attempted after processing; an explicit
+retry of a ready document remains a no-op.
+
+The SDK's urllib3 pool keeps one idle connection per host and cannot be sized
+through supported configuration. Measured with the real SDK against a loopback
+server (80 and 200 uploads, 4 workers, jittered latency), workers reuse four
+connections for the whole batch; three are discarded when the batch ends, which
+logs three urllib3 "pool is full" warnings (`library_log` events). A size-4
+pool was not faster, so no workaround is applied.
+
 ## Dispatch and explicit retry
 
 Upload validates/saves the file and commits its document, then ends the refresh
@@ -123,11 +188,84 @@ the three-retry genuine-failure budget. Unknown values fail visibly rather than
 silently selecting a fallback.
 
 BackgroundTasks are not durable. A web-process restart, redeploy, crash or service
-suspension loses pending in-memory work. Background-mode queued rows therefore
-remain protected while their retry loop refreshes them, but become eligible for
-the existing 15-minute stale reconciliation after that loop disappears. The
-stored Cloudinary original and explicit retry endpoint remain available. Celery
-is recommended whenever a separate durable worker exists.
+suspension loses pending in-memory work; automatic recovery (below) re-dispatches
+it. Celery remains an option whenever a separate durable worker exists.
+
+## Automatic recovery of interrupted background jobs
+
+With `TASK_QUEUE=background`, each web process runs a recovery scanner thread
+(`app/services/processing_recovery.py`): one scan about 5 seconds after startup,
+then every `DOCUMENT_RECOVERY_INTERVAL_SECONDS` (default 60). It starts from the
+FastAPI lifespan as a daemon thread, so readiness never waits for it, a failed
+scan (e.g. the database is briefly unavailable) is logged and retried, and
+shutdown stops it within seconds. It is enabled by default outside
+`ENVIRONMENT=test`, can be disabled with `DOCUMENT_RECOVERY_ENABLED=false`, and
+never runs with Celery (broker-queued tasks do not refresh their rows).
+
+A document is recovered only when nothing can still be working on it:
+
+* **no advisory lock** - a running job holds the document's session lock for its
+  whole duration (Datalab polling, image uploads and embeddings included), and
+  PostgreSQL releases it when the owning connection or process dies; and
+* **stale** - `processing_updated_at` is older than
+  `DOCUMENT_RECOVERY_STALE_SECONDS` (default 300). Running jobs refresh it every
+  60s with a heartbeat on separate short transactions (so a live job looks alive
+  even if its lock connection were dropped), and jobs waiting for the processing
+  slot refresh it on every attempt (at most 60s apart); and
+* **recent** - stale for less than `DOCUMENT_RECOVERY_MAX_AGE_SECONDS` (default
+  one day), so the first run never reprocesses old history in bulk; and
+* `processing`, or `failed`/`retryable_failure` (an in-memory retry loop that died
+  during its backoff). Ready, permanent, exhausted and dispatch-failed rows are
+  never touched.
+
+Each recovery takes the document's advisory lock in a short transaction,
+re-reads the row with the same conditions, sets it to `processing`/`queued`,
+increments `processing_recovery_attempts`, bumps `processing_updated_at` and
+commits before dispatching. A second instance (two overlap during Render's
+zero-downtime deploys) or a concurrent scan either fails the lock or finds the
+row fresh, so each interruption is dispatched once. Dispatch uses the normal
+background path, so the global processing slot, per-user permits, ownership and
+checkpoints apply: after the chunk checkpoint a recovered job only finishes
+embeddings, with no repeated extraction or Datalab call. A job interrupted
+before the checkpoint repeats extraction (and Datalab), the one cost recovery
+cannot avoid.
+
+After `MAX_AUTOMATIC_RECOVERIES` (2) the next interruption ends as `failed` /
+`retry_exhausted` with "Document processing was interrupted and could not be
+resumed automatically. Please retry." The explicit retry endpoint resets the
+counter. Events: `document_processing_recovered`, `document_recovery_exhausted`
+(WARNING) and `document_recovery_scan` (counts). The 15-minute stale
+reconciliation remains as a fallback when the scanner is disabled.
+
+Shutdown: Uvicorn installs its SIGTERM/SIGINT handlers before the lifespan
+starts, and the lifespan chains onto them. On the first signal the scanner stops
+claiming recoveries immediately (a scan in progress stops before its next
+document), instead of after Uvicorn has drained requests. Once Uvicorn has
+drained requests and their BackgroundTasks, the lifespan waits for jobs the
+scanner dispatched (at most 300s, Render's maximum shutdown delay) so they get
+the same remaining grace; a second signal abandons that wait, like Uvicorn's
+forced exit. Background mode always runs one Uvicorn worker (`--workers 1`),
+whatever `WEB_CONCURRENCY` says.
+
+Recovery latency after an interruption is the stale threshold plus up to one
+interval: about 5-6 minutes with the defaults. Within one process the scanner
+cannot tell a job lost by *this* process from another instance's job waiting for
+a slot, hence the threshold rather than immediate recovery at startup.
+
+### Recommended Render shutdown settings (not applied)
+
+During a zero-downtime deploy Render keeps the old instance for 60 seconds
+after the new one is live, then sends `SIGTERM`, and `SIGKILL` after
+`maxShutdownDelaySeconds` (default 30, maximum 300; set in `render.yaml` or via
+the API; not available with a persistent disk). Uvicorn waits for in-flight
+requests, including their background tasks, after `SIGTERM`.
+
+Recommended: `maxShutdownDelaySeconds: 300` on the web service, and Uvicorn's
+`--timeout-graceful-shutdown 280` (in `server_arguments`) so the process exits
+cleanly just before `SIGKILL`. Most jobs then finish on the old instance during
+deploys; anything still running is recovered by the new instance as above.
+This only shortens recovery and saves repeated Datalab work - correctness does
+not depend on it. Not changed in this repository or on Render.
 
 ## Deletion and diagnostics
 

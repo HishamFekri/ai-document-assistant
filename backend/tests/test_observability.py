@@ -338,6 +338,23 @@ class ObservabilityTests(unittest.TestCase):
             with patch.dict(os.environ, {"PORT": port}), self.assertRaises(ValueError):
                 self.runtime.server_arguments()
 
+    def test_background_mode_always_runs_one_uvicorn_worker(self):
+        for queue in ("background", "BACKGROUND", None):
+            environment = {"WEB_CONCURRENCY": "4", **({"TASK_QUEUE": queue} if queue else {})}
+            with self.subTest(queue=queue), patch.dict(os.environ, environment):
+                if queue is None:
+                    os.environ.pop("TASK_QUEUE", None)
+                args = self.runtime.server_arguments()
+                self.assertEqual(args[args.index("--workers") + 1], "1")
+                self.assertEqual(args.count("--workers"), 1)
+        # The explicit flag is what Uvicorn uses instead of WEB_CONCURRENCY.
+        import uvicorn.config
+        with patch.dict(os.environ, {"WEB_CONCURRENCY": "4"}):
+            self.assertEqual(uvicorn.config.Config("main:app", workers=1).workers, 1)
+            self.assertEqual(uvicorn.config.Config("main:app").workers, 4)
+        with patch.dict(os.environ, {"TASK_QUEUE": "celery", "WEB_CONCURRENCY": "4"}):
+            self.assertNotIn("--workers", self.runtime.server_arguments())
+
     def test_normalized_environment_enforces_runtime_and_resource_security_consistently(self):
         values = {"FRONTEND_URL": "https://frontend.example.test", "FRONTEND_URLS": "https://frontend.example.test",
                   "GOOGLE_REDIRECT_URI": "https://frontend.example.test/auth/google/callback", "TASK_QUEUE": "celery",

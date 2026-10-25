@@ -1,7 +1,7 @@
 import json
 import os
 
-from openai import OpenAI
+from app.services.llm_client import deepseek_client
 
 
 DEEPSEEK_API_KEY = os.getenv(
@@ -19,7 +19,8 @@ DEEPSEEK_MODEL = os.getenv(
 )
 
 
-client = OpenAI(
+client = deepseek_client(
+    "intent",
     api_key=DEEPSEEK_API_KEY,
     base_url=DEEPSEEK_BASE_URL,
 )

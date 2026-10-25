@@ -31,6 +31,10 @@ export type Document = {
   processing_error:
     string | null;
 
+  // Extracted images that could not be stored; null when not tracked.
+  missing_image_count?:
+    number | null;
+
   created_at: string;
 };
 

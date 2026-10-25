@@ -228,6 +228,25 @@ class Document(Base):
         onupdate=func.now(),
     )
 
+    # Extracted image occurrences that could not be stored, set with the chunk
+    # checkpoint. NULL for documents processed before this was tracked.
+    missing_image_count: Mapped[
+        int | None
+    ] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Automatic recoveries of interrupted background processing since the last
+    # upload or explicit retry (capped; see processing_recovery).
+    processing_recovery_attempts: Mapped[
+        int
+    ] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+    )
+
     created_at: Mapped[
         datetime
     ] = mapped_column(

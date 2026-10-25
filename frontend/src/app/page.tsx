@@ -1,15 +1,22 @@
 "use client";
 
 import {
+  useEffect,
+  useState,
+} from "react";
+
+import {
   ArrowRight,
   FileSpreadsheet,
   FileText,
   MessageSquareText,
   Search,
   ShieldCheck,
+  X,
 } from "lucide-react";
 
 import GoogleLoginButton from "@/components/google-login-button";
+import { googleLoginMessage, withoutGoogleLogin } from "@/lib/login-feedback";
 
 
 export default function Home() {
@@ -37,6 +44,73 @@ export default function Home() {
         <Footer />
       </div>
     </main>
+  );
+}
+
+
+function LoginNotice() {
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const found = googleLoginMessage(window.location.search);
+      if (!found) return;
+      setMessage(found);
+      // Drop the reason from the address bar so a refresh does not repeat it.
+      window.history.replaceState(window.history.state, "", withoutGoogleLogin(window.location.href));
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  if (!message) {
+    return null;
+  }
+
+  return (
+    <div
+      role="alert"
+      className="
+        mx-auto
+        mb-6
+        flex
+        max-w-md
+        items-center
+        gap-3
+        rounded-2xl
+        border
+        border-[var(--border)]
+        bg-[var(--surface)]
+        px-4
+        py-3
+        text-left
+        text-[13px]
+        text-[var(--text-secondary)]
+        shadow-sm
+        backdrop-blur-xl
+      "
+    >
+      <span className="flex-1">
+        {message}
+      </span>
+
+      <button
+        type="button"
+        onClick={() => setMessage(null)}
+        aria-label="Dismiss sign-in message"
+        className="
+          shrink-0
+          rounded-full
+          p-1
+          text-[var(--text-muted)]
+          transition-colors
+          hover:bg-[var(--surface-hover)]
+          hover:text-[var(--text-primary)]
+        "
+      >
+        <X size={14} />
+      </button>
+    </div>
   );
 }
 
@@ -286,6 +360,8 @@ function Hero() {
           text-center
         "
       >
+        <LoginNotice />
+
         <div
           className="
             mb-7

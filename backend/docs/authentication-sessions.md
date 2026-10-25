@@ -123,16 +123,107 @@ scheme. Cookie Domain is never broadened to bridge hosts.
 
 The Docker command retains `--no-proxy-headers`. The app does not interpret
 `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Forwarded-For` or `Forwarded` for cookie
-security or redirect URLs. If operators need client-IP restoration for Batch 8
-behind a proxy, enable server-layer forwarding only for an explicit trusted proxy
-IP/CIDR allowlist, have that proxy overwrite client-supplied forwarding headers,
-and prevent direct access to the origin. Never use an unrestricted trust wildcard.
-Without trusted restoration, auth admission conservatively shares the proxy peer's
-IP bucket. This batch does not alter that Batch 8 boundary or the Docker command.
+security or redirect URLs. Client-IP restoration for the authentication rate limit
+is a separate, opt-in setting described in
+[Client identity for authentication rate limiting](#client-identity-for-authentication-rate-limiting).
+Without it, auth admission conservatively shares the proxy peer's IP bucket.
 
 CORS retains credentials with explicit origins; wildcard origins cannot be
 configured. Existing mutating-request Origin checks remain in place. This batch
 does not add a general CSRF/CORS redesign.
+
+## Client identity for authentication rate limiting
+
+The `/auth/google`, `/auth/google/start`, `/auth/google/callback` and `/auth/logout`
+routes are rate limited per client address (default 30 requests per 60 seconds).
+Every other endpoint is limited per authenticated user and is unaffected by this
+section. Implementation: `app/services/client_ip.py`. The identity is used only as
+the rate-limit subject; it is hashed before it reaches Redis and is never logged
+or returned. `request.client`, Uvicorn's `--no-proxy-headers`, cookies, CSRF and
+OAuth are not affected.
+
+| Variable | Values | Default |
+|---|---|---|
+| `AUTH_CLIENT_IP_SOURCE` | `peer`, `cf-connecting-ip`, `x-forwarded-for` | `peer` |
+| `AUTH_TRUSTED_PROXY_CIDRS` | Comma-separated CIDRs of the **immediate** proxy (and, for `x-forwarded-for`, every intermediate proxy). Required for forwarded modes. `/0` is rejected. | unset |
+| `AUTH_TRUSTED_PROXY_HOPS` | `1`-`5`; `x-forwarded-for` only | unset |
+
+**Secure default: `peer`.** The immediate TCP peer identifies the client, exactly as
+before Task 1.4. Behind a reverse proxy this peer is the proxy, so all clients share
+one bucket. That is coarse (one client can exhaust the limit for everyone) but it
+can never be bypassed. Leave this default unless the procedure below proves a
+forwarded mode is trustworthy for your deployment.
+
+Forwarded modes are deliberately strict. Invalid or inconsistent settings stop the
+application at startup with an error that names the variable but not its value.
+At runtime:
+
+- Headers are considered only when the immediate peer is inside
+  `AUTH_TRUSTED_PROXY_CIDRS`; otherwise the peer is used.
+- `cf-connecting-ip` accepts exactly one header containing exactly one valid address.
+- `x-forwarded-for` reads repeated headers as one ordered list and selects the entry
+  `AUTH_TRUSTED_PROXY_HOPS` positions from the right. Every entry to the right of it
+  must itself be a trusted proxy address, and the selected entry must not be one;
+  leftmost (client-supplied) values are never used.
+- Missing, malformed, duplicated, bracketed-IPv4, link-local-scoped, overlong or
+  ambiguous values fall back to the peer. Fallback can only merge clients into the
+  shared bucket, never create new buckets, so it cannot be used to evade the limit.
+- IPv4-mapped IPv6 counts as IPv4; other IPv6 clients share their /64.
+
+### Why neither header can be trusted automatically
+
+- **`X-Forwarded-For`** is a list anyone can start. Render's proxy appends to an
+  incoming value rather than replacing it, so leftmost entries are attacker-chosen.
+  A hop count only says *where* to read; it is not proof that a trusted proxy wrote
+  that entry. That is why every hop to the right must also be a trusted address.
+- **`CF-Connecting-IP`** is overwritten by Cloudflare for traffic Cloudflare proxies,
+  but it identifies *whoever connected to Cloudflare*. Behind another proxy it is
+  that proxy's address, and requests that bypass Cloudflare (for example over a
+  private network) can set it freely.
+
+### Render + Vercel limitation (current architecture)
+
+Production traffic is `Browser -> Vercel (/api/backend rewrite) -> Render -> FastAPI`,
+and the public Render URL is also directly reachable. Under this architecture no
+forwarded mode is currently safe to enable:
+
+- The immediate peer FastAPI sees is Render's proxy layer for **all** traffic,
+  whether it came through Vercel or straight to Render. Trusting that peer therefore
+  cannot distinguish Vercel-forwarded requests from direct ones.
+- For requests through Vercel, `CF-Connecting-IP` is a Vercel egress address shared
+  by many users, not the browser.
+- Vercel sets `X-Forwarded-For` to the visitor address, but a direct request to
+  Render can send the same header, and Vercel egress addresses are shared by all
+  Vercel customers and not published as a stable list. There is no network-level
+  trust boundary between Vercel and Render that this app can verify.
+
+Securely attributing the browser address would need an authenticated proxy hop,
+for example a secret header added by Next middleware and verified by the backend,
+or rate limiting at the edge. That is a separate design and is **not** implemented.
+Until then keep `AUTH_CLIENT_IP_SOURCE=peer` (or unset).
+
+### Verifying a proxy chain safely (staging only)
+
+Do this before enabling any forwarded mode, on a separate staging or throwaway
+service that never receives real users. It involves only the operator's own address.
+
+1. Deploy a minimal echo service in the same Render region as the backend, with no
+   secrets and no logging, that returns only the current request's header names,
+   the `X-Forwarded-For`, `CF-Connecting-IP`, `X-Real-IP` and `True-Client-IP`
+   values, and the TCP peer.
+2. From your own machine, request it normally and note where your public address
+   appears (compare with any "what is my IP" service), how many `X-Forwarded-For`
+   entries there are, and which entries belong to proxies.
+3. Request it again with forged headers, for example
+   `curl -H "X-Forwarded-For: 203.0.113.7" -H "CF-Connecting-IP: 203.0.113.8" <url>`.
+   Confirm that `203.0.113.7` stays at the left (proving it is client-controlled)
+   and whether `CF-Connecting-IP` is replaced with your real address.
+4. Repeat through the exact production path (for example a Vercel preview whose
+   rewrite targets the echo service) and from a second network such as mobile data.
+5. Enable a forwarded mode only if every path that can reach the backend yields a
+   proxy-written client entry and the immediate-proxy and intermediate addresses can
+   be listed as stable CIDRs. Then test on staging that two networks receive separate
+   buckets and that forged headers change nothing. Delete the echo service afterwards.
 
 ## Logout and remaining limits
 

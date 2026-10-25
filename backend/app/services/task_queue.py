@@ -1,7 +1,7 @@
 import os
 import logging
 from threading import BoundedSemaphore
-from time import sleep
+from time import perf_counter, sleep
 
 from fastapi import BackgroundTasks
 from app.services.document_processing_errors import RetryableDocumentProcessingError
@@ -10,7 +10,7 @@ from app.services.document_processing_retry import (
     retry_delay,
 )
 from app.services.error_service import log_generation_failure
-from app.services.observability import log_event
+from app.services.observability import log_event, request_started_at
 from app.services.resource_limits import resource_limits
 
 
@@ -19,6 +19,29 @@ logger = logging.getLogger(__name__)
 _BACKGROUND_PROCESSING_SLOTS = BoundedSemaphore(
     resource_limits().concurrency["processing"]
 )
+
+
+class _SlotHandoff:
+    """A background slot acquired while waiting, handed to the next attempt.
+
+    process_claimed_document calls acquire(blocking=False) and later release(),
+    exactly as with the shared semaphore. close() returns the slot if the attempt
+    finished without claiming it (busy, already complete, failure before capacity).
+    """
+
+    def __init__(self, slots):
+        self._slots = slots
+        self._held = True
+
+    def acquire(self, blocking=True):
+        return self._held
+
+    def release(self):
+        if self._held:
+            self._held = False
+            self._slots.release()
+
+    close = release
 
 
 def enqueue_document_processing(
@@ -40,11 +63,17 @@ def enqueue_document_processing(
     background_tasks.add_task(
         _run_document_processing,
         document_id,
+        # Timing only: when this request arrived and when processing was queued.
+        queued_at=perf_counter(),
+        accepted_at=request_started_at(),
     )
 
 
 def _run_document_processing(
     document_id: int,
+    *,
+    queued_at: float | None = None,
+    accepted_at: float | None = None,
 ) -> str:
     from app.services.document_processing_service import (
         mark_processing_retries_exhausted,
@@ -53,11 +82,18 @@ def _run_document_processing(
 
     retries = 0
     processing_failures = 0
+    handoff = None
+    # Wait on the slot itself instead of sleeping blind; disabled for this task once
+    # an attempt holding a slot is still deferred (e.g. the per-user permit is busy).
+    wait_on_slot = True
     while True:
+        held_slot = handoff is not None
         try:
             outcome = process_document(
                 document_id,
-                processing_capacity=_BACKGROUND_PROCESSING_SLOTS,
+                processing_capacity=handoff or _BACKGROUND_PROCESSING_SLOTS,
+                queued_at=queued_at,
+                accepted_at=accepted_at,
             )
         except RetryableDocumentProcessingError:
             if processing_failures >= MAX_PROCESSING_RETRIES:
@@ -81,6 +117,10 @@ def _run_document_processing(
             if outcome != "deferred":
                 return outcome
             event = "document_processing_deferred"
+        finally:
+            if handoff is not None:
+                handoff.close()
+                handoff = None
 
         delay = retry_delay(retries)
         retries += 1
@@ -92,4 +132,15 @@ def _run_document_processing(
             retry=retries,
             delay_seconds=delay,
         )
+        if event == "document_processing_deferred" and held_slot:
+            wait_on_slot = False
+        if event == "document_processing_deferred" and wait_on_slot:
+            # Wake as soon as a slot frees (one waiter per release, no database
+            # polling while waiting). On timeout, retry as before, which also
+            # refreshes the document's liveness timestamp.
+            slots = _BACKGROUND_PROCESSING_SLOTS
+            if slots.acquire(timeout=delay):
+                handoff = _SlotHandoff(slots)
+                log_event(logger, logging.INFO, "document_processing_slot_ready", document_id=document_id)
+            continue
         sleep(delay)

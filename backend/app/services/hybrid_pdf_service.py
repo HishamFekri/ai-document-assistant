@@ -1,5 +1,5 @@
 import logging
-from app.services.observability import submit_observed
+from app.services.observability import submit_observed, timed_stage
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -36,10 +36,12 @@ from app.services.datalab_admission import AdvancedPageBudget
 class PreparedPDFContent(list):
     """List-compatible extraction result carrying validated processing work."""
 
-    def __init__(self, blocks, *, pages_count, chunks):
+    def __init__(self, blocks, *, pages_count, chunks, missing_images=0):
         super().__init__(blocks)
         self.pages_count = pages_count
         self.prepared_chunks = chunks
+        # Extracted image occurrences left without a stored asset (all batches).
+        self.missing_images = missing_images
 
 
 def create_pypdf_block(
@@ -852,20 +854,25 @@ def get_asset_directory(
 def process_datalab_batch(*, path: Path, batch_number: int, batch_pages: list[int],
                           total_batches: int, asset_directory: Path, admission):
     try:
-        result = extract_content_with_datalab(file_path=path, page_range=build_page_range(batch_pages), admission=admission)
+        # Batches run in parallel: these per-batch timings overlap; extraction.datalab is the wall time.
+        with timed_stage("extraction.datalab_provider", batch=batch_number, pages=len(batch_pages)) as metrics:
+            result = extract_content_with_datalab(file_path=path, page_range=build_page_range(batch_pages), admission=admission)
+            metrics["images"] = len(result.get("images") or {})
         document_json = result.get("document_json")
         images = result.get("images") or {}
         if not document_json:
             raise ValueError("Datalab returned no document JSON")
-        # Normalize and validate each provider result once, before any image upload.
-        preview = {name: "pending" for name, data in images.items()
-                   if data and Path(name).name}
-        blocks, provider_blocks = extract_datalab_blocks(
-            document_json,
-            batch_pages,
-            preview,
-            include_provider_block_count=True,
-        )
+        with timed_stage("extraction.datalab_normalize", batch=batch_number) as metrics:
+            # Normalize and validate each provider result once, before any image upload.
+            preview = {name: "pending" for name, data in images.items()
+                       if data and Path(name).name}
+            blocks, provider_blocks = extract_datalab_blocks(
+                document_json,
+                batch_pages,
+                preview,
+                include_provider_block_count=True,
+            )
+            metrics["count"] = provider_blocks
         if provider_blocks + len(images) > upload_limits().blocks:
             raise DocumentResourceError("content_limit")
         return {"batch_number": batch_number, "batch_pages": batch_pages,
@@ -905,11 +912,15 @@ def bind_saved_image_paths(blocks: list[dict], preview: dict, saved: dict) -> bo
 
 def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
     path = Path(file_path)
-    with validated_pdf_reader(path) as (reader, total_pages):
-        simple_blocks, complex_pages = classify_pdf_pages(reader)
+    with timed_stage("extraction.page_classification") as metrics:
+        with validated_pdf_reader(path) as (reader, total_pages):
+            simple_blocks, complex_pages = classify_pdf_pages(reader)
+        metrics.update(pages=total_pages, complex_pages=len(complex_pages))
     validate_processing_cost(total_pages, complex_pages)
     from app.services.chunk_service import create_chunks_from_content
-    simple_chunks = create_chunks_from_content(simple_blocks)
+    with timed_stage("extraction.local_chunking") as metrics:
+        simple_chunks = create_chunks_from_content(simple_blocks)
+        metrics["chunks"] = len(simple_chunks)
     if not complex_pages:
         return PreparedPDFContent(
             simple_blocks,
@@ -922,51 +933,64 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
     asset_directory = get_asset_directory(path, document_id)
     results = []
     # Submit only bounded batches; shared admission checks every paid entry point.
-    with ThreadPoolExecutor(max_workers=min(limits.datalab_parallel_batches, len(page_batches))) as executor:
-        futures = [submit_observed(executor, process_datalab_batch, path=path, batch_number=index,
-                                   batch_pages=pages, total_batches=len(page_batches),
-                                   asset_directory=asset_directory, admission=admission)
-                   for index, pages in enumerate(page_batches, 1)]
-        try:
-            for future in as_completed(futures):
-                results.append(future.result())
-        except BaseException:
-            admission.stop()
-            for future in futures:
-                future.cancel()
-            raise
-    results.sort(key=lambda result: result["batch_number"])
-    all_blocks = list(simple_blocks)
-    content_budget = ContentBudget()
-    for block in simple_blocks:
-        content_budget.block(block)
-    for result in results:
-        # The per-batch conversion above checks structural limits. Account for
-        # the combined document incrementally instead of rescanning prior batches.
-        for block in result["blocks"]:
-            content_budget.block(block)
-        all_blocks.extend(result["blocks"])
-    all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
-    # Also check chunk admission before creating remote image assets.
-    prepared_chunks = create_chunks_from_content(all_blocks)
-    requires_rebuild = False
-    for result in results:
-        saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}") if result["images"] else {}
-        if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
-            # Partial/ambiguous uploads retain the prior exact reassignment logic.
-            result["blocks"] = extract_datalab_blocks(
-                result["document_json"], result["batch_pages"], saved,
-            )
-            requires_rebuild = True
-    if requires_rebuild:
+    with timed_stage("extraction.datalab", batches=len(page_batches), complex_pages=len(complex_pages)):
+        with ThreadPoolExecutor(max_workers=min(limits.datalab_parallel_batches, len(page_batches))) as executor:
+            futures = [submit_observed(executor, process_datalab_batch, path=path, batch_number=index,
+                                       batch_pages=pages, total_batches=len(page_batches),
+                                       asset_directory=asset_directory, admission=admission)
+                       for index, pages in enumerate(page_batches, 1)]
+            try:
+                for future in as_completed(futures):
+                    results.append(future.result())
+            except BaseException:
+                admission.stop()
+                for future in futures:
+                    future.cancel()
+                raise
+    with timed_stage("extraction.chunk_preparation") as metrics:
+        results.sort(key=lambda result: result["batch_number"])
         all_blocks = list(simple_blocks)
+        content_budget = ContentBudget()
+        for block in simple_blocks:
+            content_budget.block(block)
         for result in results:
+            # The per-batch conversion above checks structural limits. Account for
+            # the combined document incrementally instead of rescanning prior batches.
+            for block in result["blocks"]:
+                content_budget.block(block)
             all_blocks.extend(result["blocks"])
-        check_content(all_blocks)
         all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
+        # Also check chunk admission before creating remote image assets.
         prepared_chunks = create_chunks_from_content(all_blocks)
+        metrics["chunks"] = len(prepared_chunks)
+    requires_rebuild = False
+    # Scoped to this document's processing job: identical images upload once across batches.
+    upload_cache = {}
+    image_report = {"missing_images": 0}
+    with timed_stage("extraction.images", batches=len(results)) as totals:
+        for result in results:
+            with timed_stage("extraction.image_upload", batch=result["batch_number"],
+                             images=len(result["images"] or {})):
+                saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}",
+                                            upload_cache=upload_cache, report=image_report) if result["images"] else {}
+            if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
+                # Partial/ambiguous uploads retain the prior exact reassignment logic.
+                result["blocks"] = extract_datalab_blocks(
+                    result["document_json"], result["batch_pages"], saved,
+                )
+                requires_rebuild = True
+        if requires_rebuild:
+            all_blocks = list(simple_blocks)
+            for result in results:
+                all_blocks.extend(result["blocks"])
+            check_content(all_blocks)
+            all_blocks.sort(key=lambda block: block.get("metadata", {}).get("page", 999999))
+            prepared_chunks = create_chunks_from_content(all_blocks)
+        totals["images"] = sum(len(result["images"] or {}) for result in results)
+        totals["missing"] = image_report["missing_images"]
     return PreparedPDFContent(
         all_blocks,
         pages_count=total_pages,
         chunks=prepared_chunks,
+        missing_images=image_report["missing_images"],
     )

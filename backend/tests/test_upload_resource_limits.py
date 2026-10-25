@@ -250,6 +250,28 @@ class UploadResourceTests(unittest.TestCase):
         self.assertEqual(list(blocks), expected)
         self.assertEqual(blocks.prepared_chunks, self.chunks.create_chunks_from_content(expected))
 
+    def test_missing_image_counts_are_summed_over_batches_of_one_document(self):
+        path = self.pdf_file(pages=2)
+        self.configure(DATALAB_BATCH_SIZE=1)
+        reports, caches = [], []
+
+        def save(images, directory, upload_cache=None, report=None):
+            reports.append(report)
+            caches.append(upload_cache)
+            report["missing_images"] = report.get("missing_images", 0) + len(images)   # every occurrence fails
+            return {}
+        with patch.object(self.hybrid, "classify_pdf_pages", return_value=([], [1, 2])), \
+             patch.object(self.hybrid, "extract_content_with_datalab", side_effect=lambda **kwargs: {
+                 "document_json": {"children": [{"id": "/page/0/Picture/0", "block_type": "Picture"}]},
+                 "images": {"a.png": "valid", "b.png": "valid"}}), \
+             patch.object(self.hybrid, "save_datalab_images", side_effect=save):
+            blocks = self.hybrid.extract_content_from_hybrid_pdf(path)
+        self.assertEqual(blocks.missing_images, 4)                  # 2 batches x 2 occurrences
+        self.assertIs(reports[0], reports[1])                       # one report per document job
+        self.assertIs(caches[0], caches[1])
+        with patch.object(self.hybrid, "classify_pdf_pages", return_value=([], [])):
+            self.assertEqual(self.hybrid.extract_content_from_hybrid_pdf(path).missing_images, 0)
+
     def test_datalab_response_size_is_bounded_and_closed(self):
         self.configure(MAX_DATALAB_RESPONSE_BYTES=4)
         response = MagicMock()

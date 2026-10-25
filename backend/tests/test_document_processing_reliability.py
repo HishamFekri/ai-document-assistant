@@ -226,6 +226,52 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         self.assertEqual(self.state.document.pages_count, 30)
         self.ensure_assets.assert_called_once_with(ANY, 1, content)
 
+    def prepared_content(self, missing_images):
+        class PreparedContent(list):
+            pass
+        content = PreparedContent([{"type": "text", "content": "Block", "metadata": {"page": 1}}])
+        content.missing_images = missing_images
+        return content
+
+    def test_missing_image_count_is_saved_with_the_checkpoint_and_document_is_ready(self):
+        self.extract.side_effect = lambda **kwargs: self.prepared_content(3)
+        self.assertEqual(self.processing.process_document(1), "completed")
+        document = self.state.document
+        self.assertEqual((document.processing_status, document.processing_progress, document.missing_image_count),
+                         ("ready", 100, 3))
+
+    def test_content_without_image_tracking_records_zero(self):
+        # Text/Office extractors return plain block lists.
+        self.assertEqual(self.processing.process_document(1), "completed")
+        self.assertEqual(self.state.document.missing_image_count, 0)
+
+    def test_resumed_processing_keeps_the_checkpoint_missing_image_count(self):
+        self.extract.side_effect = lambda **kwargs: self.prepared_content(2)
+        self.embed.side_effect = TimeoutError("synthetic provider timeout")
+        with self.assertRaises(self.failures.RetryableDocumentProcessingError):
+            self.processing.process_document(1)
+        self.assertEqual((self.state.document.processing_stage, self.state.document.missing_image_count),
+                         ("retryable_failure", 2))
+        # The retry resumes from saved chunks: no extraction, count unchanged.
+        self.embed.side_effect = self.embeddings
+        self.assertEqual(self.processing.process_document(1), "completed")
+        self.extract.assert_called_once()
+        self.assertEqual(self.state.document.missing_image_count, 2)
+
+    def test_failure_before_checkpoint_records_nothing_and_retry_counts_afresh(self):
+        self.extract.side_effect = [TimeoutError("synthetic extraction timeout"), self.prepared_content(1)]
+        with self.assertRaises(self.failures.RetryableDocumentProcessingError):
+            self.processing.process_document(1)
+        self.assertFalse(hasattr(self.state.document, "missing_image_count"))
+        self.assertEqual(self.processing.process_document(1), "completed")
+        self.assertEqual(self.state.document.missing_image_count, 1)   # not accumulated across attempts
+
+    def test_legacy_document_resumed_without_tracking_stays_untracked(self):
+        self.existing_chunk()
+        self.assertEqual(self.processing.process_document(1), "completed")
+        self.extract.assert_not_called()
+        self.assertFalse(hasattr(self.state.document, "missing_image_count"))
+
     def test_ready_complete_guard_skips_file_access_and_provider_calls(self):
         self.state.document.processing_status = "ready"
         self.state.document.file_path = None
@@ -383,34 +429,46 @@ class DocumentProcessingReliabilityTests(unittest.TestCase):
         sleep.assert_not_called()
 
     def test_background_global_capacity_defers_then_processes(self):
+        # P1: a capacity deferral waits on the slot itself and proceeds as soon as it
+        # is released, instead of sleeping a fixed backoff.
+        import threading
         capacity = BoundedSemaphore(1)
         capacity.acquire()
-
-        def release_capacity(delay):
-            self.assertEqual(delay, 2)
-            capacity.release()
+        threading.Timer(0.2, capacity.release).start()
 
         with patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", capacity), \
-                patch.object(self.queue_module, "sleep", side_effect=release_capacity) as sleep:
+                patch.object(self.queue_module, "sleep") as sleep, \
+                patch.object(self.queue_module, "log_event", wraps=self.queue_module.log_event) as events:
             outcome = self.queue_module._run_document_processing(1)
 
         self.assertEqual(outcome, "completed")
         self.assertEqual(self.state.document.processing_status, "ready")
         self.extract.assert_called_once()
-        sleep.assert_called_once_with(2)
+        sleep.assert_not_called()
+        # Woken by the release itself (handoff), not by the 2 second wait timeout.
+        self.assertIn("document_processing_slot_ready", [call.args[2] for call in events.call_args_list])
+        self.assertTrue(capacity.acquire(blocking=False))  # slot returned, not leaked
+        capacity.release()
 
     def test_background_capacity_deferrals_do_not_consume_failure_budget(self):
         retryable = self.failures.RetryableDocumentProcessingError("safe")
         outcomes = ["deferred"] * 5 + [retryable] * 3 + ["completed"]
+        slots = BoundedSemaphore(1)
         with patch.object(self.processing, "process_document", side_effect=outcomes) as process, \
                 patch.object(self.processing, "mark_processing_retries_exhausted") as exhausted, \
+                patch.object(self.queue_module, "_BACKGROUND_PROCESSING_SLOTS", slots), \
                 patch.object(self.queue_module, "sleep") as sleep:
             result = self.queue_module._run_document_processing(1)
 
         self.assertEqual(result, "completed")
         self.assertEqual(process.call_count, 9)
-        self.assertEqual(sleep.call_count, 8)
         exhausted.assert_not_called()
+        # The first deferral took the free slot; that attempt was still deferred
+        # (cause is not capacity), so later deferrals fall back to backoff sleeps.
+        # Failure retries keep their existing backoff (shared retry counter, capped at 60s).
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [4, 8, 16, 32, 60, 60, 60])
+        self.assertTrue(slots.acquire(blocking=False))
+        slots.release()
 
     def test_background_genuine_processing_retries_are_bounded(self):
         with patch.object(

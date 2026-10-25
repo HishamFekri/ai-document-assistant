@@ -9,7 +9,7 @@ from starlette.exceptions import HTTPException
 
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.resource_limits import upload_limits
-from app.services.observability import log_event
+from app.services.observability import log_event, log_stage
 
 
 logger = logging.getLogger(__name__)
@@ -24,9 +24,12 @@ def upload_phase(operation, *, document_id=None):
         yield
         outcome = "success"
     finally:
+        duration_ms = (perf_counter() - started) * 1000
         log_event(logger, logging.INFO, "upload_phase_finished", operation=operation,
-                  duration_ms=round((perf_counter() - started) * 1000, 3),
+                  duration_ms=round(duration_ms, 3),
                   outcome=outcome, document_id=document_id)
+        # Same duration in the ID-free stage-timing stream (upload.validation, ...).
+        log_stage("upload." + operation.removeprefix("upload_"), duration_ms, outcome=outcome)
 
 
 class UploadBodyLimitMiddleware:
