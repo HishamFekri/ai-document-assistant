@@ -1,19 +1,24 @@
-"""Parallel, deduplicated Datalab image uploads (Phase 2 P2), offline.
+"""Parallel, deduplicated, retried Datalab image uploads (Phase 2 P2/P3), offline.
 
 Run: python -B tests/test_image_uploads.py
-Cloudinary is replaced by an in-memory fake; no network.
+Cloudinary is replaced by an in-memory fake, or the real SDK is pointed at a
+loopback HTTP server; no external network.
 """
 
 import base64
+import email.parser
 import hashlib
 import importlib
+import json
 import os
 import random
+import socket
 import sys
 import threading
 import time
 import unittest
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,26 +34,41 @@ def image(seed):
     return f"synthetic-image-{seed}".encode() * 8
 
 
-class FakeCloudinary:
-    """Thread-safe upload double tracking calls and peak concurrency."""
+def digest_of(seed):
+    return hashlib.sha256(image(seed)).hexdigest()
 
-    def __init__(self, delay=0.0, delays=None, fail=lambda digest, attempt: False, missing_url=()):
+
+class FakeCloudinary:
+    """Thread-safe upload double tracking calls, options and peak concurrency.
+
+    fail(digest, attempt) returns a falsy value for success, an int HTTP status
+    (returned as a JSON error, as the SDK does with return_error=True), an
+    exception instance to raise, or True for a generic (permanent) exception.
+    """
+
+    def __init__(self, delay=0.0, delays=None, fail=lambda digest, attempt: None, missing_url=()):
         self.delay, self.delays, self.fail, self.missing_url = delay, delays or {}, fail, set(missing_url)
         self.lock = threading.Lock()
-        self.calls, self.in_flight, self.peak, self.attempts = [], 0, 0, {}
+        self.calls, self.options, self.in_flight, self.peak, self.attempts = [], [], 0, 0, {}
 
     def upload(self, file, folder=None, public_id=None, **options):
         data = file.read()
         digest = hashlib.sha256(data).hexdigest()
         with self.lock:
             self.calls.append(public_id)
+            self.options.append(options)
             attempt = self.attempts[digest] = self.attempts.get(digest, 0) + 1
             self.in_flight += 1
             self.peak = max(self.peak, self.in_flight)
         try:
             time.sleep(self.delays.get(digest, self.delay))
-            if self.fail(digest, attempt):
+            outcome = self.fail(digest, attempt)
+            if outcome is True:
                 raise RuntimeError("synthetic upload failure")
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if isinstance(outcome, int):
+                return {"error": {"message": "synthetic", "http_code": outcome}}
             if digest in self.missing_url:
                 return {}
             return {"secure_url": f"https://res.cloudinary.com/demo/image/authenticated/v1/{folder}/{public_id}.png"}
@@ -78,6 +98,17 @@ def legacy_save(images, output_directory, upload):
     return saved
 
 
+def chained(error, cause):
+    """An SDK Error raised while handling `cause`, exactly as uploader.call_api does."""
+    try:
+        try:
+            raise cause
+        except Exception:
+            raise error
+    except Exception as raised:
+        return raised
+
+
 class ImageUploadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -86,38 +117,80 @@ class ImageUploadTests(unittest.TestCase):
             "PYTHON_DOTENV_DISABLED": "1", "ENVIRONMENT": "test",
             "DATALAB_API_KEY": "offline", "CLOUDINARY_URL": "cloudinary://key:secret@demo",
         }))
-        os.environ.pop("DATALAB_IMAGE_UPLOAD_CONCURRENCY", None)
+        for name in ("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS",
+                     "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS"):
+            os.environ.pop(name, None)
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
         cls.datalab = importlib.import_module("app.services.datalab_service")
+        cls.exceptions = importlib.import_module("cloudinary.exceptions")
+        cls.urllib3 = importlib.import_module("urllib3.exceptions")
 
     @classmethod
     def tearDownClass(cls):
         cls.stack.close()
 
-    def save(self, cloud, images, **kwargs):
+    def save(self, cloud, images, backoff=0.0, events=None, **kwargs):
+        log_event = self.datalab.log_event
+        def record(target, level, event, **fields):
+            if events is not None:
+                events.append((event, fields))
         with patch.object(self.datalab.cloudinary.uploader, "upload", cloud.upload), \
-                patch.object(self.datalab, "log_exception"), patch.object(self.datalab, "log_event"):
+                patch.object(self.datalab, "image_upload_backoff", lambda attempt: backoff), \
+                patch.object(self.datalab, "log_exception"), \
+                patch.object(self.datalab, "log_event", side_effect=record):
             return self.datalab.save_datalab_images(images, FOLDER_DIR, **kwargs)
+
+    # Concurrency, ordering and deduplication (P2) -------------------------------
 
     def test_default_concurrency_is_bounded_at_four(self):
         cloud = FakeCloudinary(delay=0.05)
         images = {f"figure_{index}.png": encode(image(index)) for index in range(12)}
         result = self.save(cloud, images)
         self.assertEqual(self.datalab.IMAGE_UPLOAD_CONCURRENCY, 4)
-        self.assertEqual(cloud.peak, 4)
+        self.assertLessEqual(cloud.peak, 4)
+        self.assertGreater(cloud.peak, 1)               # uploads do overlap
         self.assertEqual(len(cloud.calls), 12)
+        self.assertEqual(list(result), list(images))
+
+    def test_concurrency_bound_holds_while_retries_back_off(self):
+        # Every image fails twice with 503 and then succeeds; backoff sleeps in the worker.
+        cloud = FakeCloudinary(delay=0.01, fail=lambda digest, attempt: 503 if attempt <= 2 else None)
+        images = {f"figure_{index}.png": encode(image(index)) for index in range(10)}
+        result = self.save(cloud, images, backoff=0.02)
+        self.assertLessEqual(cloud.peak, 4)
+        self.assertEqual(len(cloud.calls), 30)
         self.assertEqual(list(result), list(images))
 
     def test_concurrency_is_configurable_and_validated(self):
         cloud = FakeCloudinary(delay=0.05)
         with patch.object(self.datalab, "IMAGE_UPLOAD_CONCURRENCY", 2):
             self.save(cloud, {f"f{index}.png": encode(image(index)) for index in range(6)})
-        self.assertEqual(cloud.peak, 2)
-        for bad in ("0", "17"):
-            with self.subTest(value=bad), patch.dict(os.environ, {"DATALAB_IMAGE_UPLOAD_CONCURRENCY": bad}):
-                with self.assertRaises(RuntimeError):
-                    importlib.reload(self.datalab)
-        importlib.reload(self.datalab)   # restore the default module state
+        self.assertLessEqual(cloud.peak, 2)
+        cases = [("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "0"), ("DATALAB_IMAGE_UPLOAD_CONCURRENCY", "17"),
+                 ("DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS", "0"), ("DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS", "301"),
+                 ("DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS", "0"), ("DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS", "7")]
+        try:
+            for name, bad in cases:
+                with self.subTest(name=name, value=bad), patch.dict(os.environ, {name: bad}):
+                    with self.assertRaises(RuntimeError):
+                        importlib.reload(self.datalab)
+            with patch.dict(os.environ, {"DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS": "12.5",
+                                         "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS": "5"}):
+                importlib.reload(self.datalab)
+                self.assertEqual((self.datalab.IMAGE_UPLOAD_TIMEOUT_SECONDS,
+                                  self.datalab.IMAGE_UPLOAD_MAX_ATTEMPTS), (12.5, 5))
+        finally:
+            importlib.reload(self.datalab)   # restore the default module state
+        self.assertEqual((self.datalab.IMAGE_UPLOAD_TIMEOUT_SECONDS, self.datalab.IMAGE_UPLOAD_MAX_ATTEMPTS), (30.0, 3))
+
+    def test_every_upload_has_a_finite_timeout_and_reports_errors_with_status(self):
+        cloud = FakeCloudinary()
+        self.save(cloud, {"a.png": encode(image("a"))})
+        options = cloud.options[0]
+        self.assertEqual(options["timeout"], 30.0)
+        self.assertIs(options["return_error"], True)
+        self.assertEqual((options["type"], options["overwrite"], options["resource_type"]),
+                         ("authenticated", False, "image"))
 
     def test_identical_images_upload_once_and_keep_every_reference(self):
         cloud = FakeCloudinary()
@@ -134,33 +207,11 @@ class ImageUploadTests(unittest.TestCase):
         names = [f"figure_{index}.png" for index in range(8)]
         images = {name: encode(image(index)) for index, name in enumerate(names)}
         # Earlier images finish last.
-        delays = {hashlib.sha256(image(index)).hexdigest(): 0.02 * (8 - index) for index in range(8)}
+        delays = {digest_of(index): 0.02 * (8 - index) for index in range(8)}
         result = self.save(FakeCloudinary(delays=delays), images)
         self.assertEqual(list(result), names)
         reference = legacy_save(images, FOLDER_DIR, FakeCloudinary().upload)
-        self.assertEqual(result, reference)
         self.assertEqual(list(result.items()), list(reference.items()))
-
-    def test_failed_upload_is_skipped_and_its_duplicate_retried(self):
-        broken = hashlib.sha256(image("logo")).hexdigest()
-        cloud = FakeCloudinary(fail=lambda digest, attempt: digest == broken and attempt == 1)
-        logo = encode(image("logo"))
-        images = {"a.png": logo, "b.png": encode(image("b")), "c.png": logo, "d.png": logo}
-        result = self.save(cloud, images)
-        # As before: the first copy failed, the next copy was attempted and succeeded.
-        self.assertEqual(list(result), ["b.png", "c.png", "d.png"])
-        self.assertEqual(cloud.attempts[broken], 2)
-        self.assertEqual(len(cloud.calls), 3)
-
-    def test_permanently_failing_and_url_less_uploads_are_skipped(self):
-        broken = hashlib.sha256(image("broken")).hexdigest()
-        url_less = hashlib.sha256(image("no-url")).hexdigest()
-        cloud = FakeCloudinary(fail=lambda digest, attempt: digest == broken, missing_url=[url_less])
-        images = {"ok.png": encode(image("ok")), "broken.png": encode(image("broken")),
-                  "broken_copy.png": encode(image("broken")), "no_url.png": encode(image("no-url"))}
-        result = self.save(cloud, images)
-        self.assertEqual(list(result), ["ok.png"])
-        self.assertEqual(cloud.attempts[broken], 2)   # each copy tried once, as before
 
     def test_skips_empty_unsafe_and_undecodable_entries_without_uploading(self):
         cloud = FakeCloudinary()
@@ -198,7 +249,131 @@ class ImageUploadTests(unittest.TestCase):
         self.save(FakeCloudinary(delay=0.02), {f"f{index}.png": encode(image(index)) for index in range(9)})
         self.assertEqual(threading.active_count(), before)
 
+    # Failure classification and retries (P3) -----------------------------------
+
+    def test_failure_classification(self):
+        exceptions, urllib3 = self.exceptions, self.urllib3
+        rejected = self.datalab.CloudinaryUploadRejected
+        pool = object()
+        cases = {
+            "rate_limited": [rejected(420), rejected(429), exceptions.RateLimited("x")],
+            "server_error": [rejected(500), rejected(502), rejected(503), rejected(504), exceptions.GeneralError("x")],
+            "timeout": [chained(exceptions.Error("x"), urllib3.ReadTimeoutError(pool, "/", "read timed out")),
+                        chained(exceptions.Error("x"), socket.timeout("timed out")),
+                        chained(exceptions.Error("x"), urllib3.MaxRetryError(
+                            pool, "/", urllib3.ConnectTimeoutError(pool, "connect timed out")))],
+            "network": [chained(exceptions.Error("x"), urllib3.ProtocolError("reset")),
+                        chained(exceptions.Error("x"), ConnectionResetError()),
+                        chained(exceptions.Error("x"), urllib3.MaxRetryError(
+                            pool, "/", urllib3.NewConnectionError(pool, "refused")))],
+            "invalid_response": [chained(exceptions.Error("x"), json.JSONDecodeError("bad", "<html>", 0))],
+        }
+        for category, errors in cases.items():
+            for error in errors:
+                with self.subTest(error=repr(error)):
+                    self.assertEqual(self.datalab.upload_failure_category(error), (category, True))
+        permanent = [rejected(400), rejected(401), rejected(403), rejected(404), rejected(409), rejected(0),
+                     exceptions.BadRequest("x"), exceptions.AuthorizationRequired("x"), exceptions.NotAllowed("x"),
+                     exceptions.NotFound("x"), exceptions.AlreadyExists("x"), exceptions.Error("unchained"),
+                     ValueError("Must supply api_key"), RuntimeError("x")]
+        for error in permanent:
+            with self.subTest(error=repr(error)):
+                self.assertEqual(self.datalab.upload_failure_category(error), ("rejected", False))
+
+    def test_transient_failures_are_retried_and_recover(self):
+        for status in (420, 429, 500, 503):
+            with self.subTest(status=status):
+                broken = digest_of("logo")
+                cloud = FakeCloudinary(fail=lambda digest, attempt: status if digest == broken and attempt <= 2 else None)
+                logo = encode(image("logo"))
+                images = {"a.png": logo, "b.png": encode(image("b")), "c.png": logo}
+                events = []
+                result = self.save(cloud, images, events=events)
+                self.assertEqual(list(result), ["a.png", "b.png", "c.png"])
+                self.assertEqual(cloud.attempts[broken], 3)
+                summary = dict(events)["datalab_images_uploaded"]
+                self.assertEqual((summary["failed"], summary["retry"], summary["count"]), (0, 2, 2))
+                self.assertNotIn("datalab_images_upload_incomplete", dict(events))
+
+    def test_permanent_failures_are_not_retried(self):
+        rejected = [400, 401, 403, 404, True, self.exceptions.AuthorizationRequired("bad credentials")]
+        for outcome in rejected:
+            with self.subTest(outcome=outcome):
+                cloud = FakeCloudinary(fail=lambda digest, attempt: outcome if digest == digest_of("bad") else None)
+                images = {"ok.png": encode(image("ok")), "bad.png": encode(image("bad")),
+                          "bad_copy.png": encode(image("bad"))}
+                events = []
+                result = self.save(cloud, images, events=events)
+                self.assertEqual(list(result), ["ok.png"])
+                self.assertEqual(cloud.attempts[digest_of("bad")], 1)   # copies are not re-attempted
+                self.assertEqual(dict(events)["datalab_images_uploaded"]["failed"], 1)
+
+    def test_retry_exhaustion_is_bounded_and_visible(self):
+        broken = digest_of("broken")
+        cloud = FakeCloudinary(fail=lambda digest, attempt: 503 if digest == broken else None)
+        images = {"ok.png": encode(image("ok")), "broken.png": encode(image("broken")),
+                  "broken_copy.png": encode(image("broken"))}
+        events = []
+        result = self.save(cloud, images, events=events)
+        self.assertEqual(list(result), ["ok.png"])
+        self.assertEqual(cloud.attempts[broken], 3)                 # IMAGE_UPLOAD_MAX_ATTEMPTS, once per distinct image
+        recorded = dict(events)
+        self.assertEqual(recorded["datalab_images_uploaded"]["failed"], 1)
+        self.assertEqual(recorded["datalab_images_upload_incomplete"], {"failed": 1, "images": 1})
+        retries = [fields for event, fields in events if event == "datalab_image_upload_retry"]
+        self.assertEqual(retries, [{"failure_category": "server_error", "retry": 1},
+                                   {"failure_category": "server_error", "retry": 2}])
+
+    def test_exhaustion_is_logged_with_category_and_no_message_or_url(self):
+        cloud = FakeCloudinary(fail=lambda digest, attempt: 429)
+        with patch.object(self.datalab.cloudinary.uploader, "upload", cloud.upload), \
+                patch.object(self.datalab, "image_upload_backoff", lambda attempt: 0), \
+                patch.object(self.datalab, "log_exception") as failure:
+            self.datalab.save_datalab_images({"a.png": encode(image("a"))}, FOLDER_DIR)
+        failure.assert_called_once()
+        args, fields = failure.call_args
+        self.assertEqual(args[1], "datalab_image_upload")
+        self.assertIsInstance(args[2], self.datalab.CloudinaryUploadRejected)
+        self.assertEqual(args[2].status_code, 429)
+        self.assertEqual(fields, {"failure_category": "rate_limited", "retry": 2})
+
+    def test_after_one_image_exhausts_retries_the_rest_of_the_batch_gets_one_attempt(self):
+        # A Cloudinary outage must not cost max_attempts x timeout for every image.
+        cloud = FakeCloudinary(fail=lambda digest, attempt: 503)
+        images = {f"f{index}.png": encode(image(index)) for index in range(6)}
+        with patch.object(self.datalab, "IMAGE_UPLOAD_CONCURRENCY", 1):
+            result = self.save(cloud, images)
+        self.assertEqual(result, {})
+        self.assertEqual(sorted(cloud.attempts.values()), [1, 1, 1, 1, 1, 3])
+        # The next batch starts fresh.
+        recovered = FakeCloudinary(fail=lambda digest, attempt: 503 if attempt == 1 else None)
+        self.assertEqual(len(self.save(recovered, images)), 6)
+
+    def test_url_less_success_is_skipped_without_retry(self):
+        url_less = digest_of("no-url")
+        cloud = FakeCloudinary(missing_url=[url_less])
+        events = []
+        result = self.save(cloud, {"ok.png": encode(image("ok")), "no_url.png": encode(image("no-url"))}, events=events)
+        self.assertEqual(list(result), ["ok.png"])
+        self.assertEqual(cloud.attempts[url_less], 1)
+        self.assertEqual(dict(events)["datalab_images_uploaded"]["failed"], 1)
+
+    def test_backoff_is_exponential_jittered_and_capped(self):
+        rng_state = random.getstate()
+        try:
+            random.seed(7)
+            for attempt, ceiling in ((1, 1.0), (2, 2.0), (3, 4.0), (4, 8.0), (6, 8.0)):
+                delays = [self.datalab.image_upload_backoff(attempt) for _ in range(200)]
+                self.assertGreaterEqual(min(delays), ceiling / 2)
+                self.assertLessEqual(max(delays), ceiling)
+                self.assertGreater(len(set(delays)), 100)   # jittered, not synchronised
+        finally:
+            random.setstate(rng_state)
+
     def test_matches_previous_algorithm_on_random_inputs(self):
+        """Without failures: identical to the pre-P2 algorithm. With transient failures that
+        recover within the retry budget: identical to the failure-free result. With permanent
+        failures: exactly the failure-free result minus the images that were rejected."""
         rng = random.Random(20261025)
         for case in range(200):
             pool = [image(f"{case}-{index}") for index in range(rng.randint(1, 5))]
@@ -211,13 +386,186 @@ class ImageUploadTests(unittest.TestCase):
                     images[f"{index}/"] = encode(rng.choice(pool))
                 else:
                     images[f"{rng.choice(['a', 'b'])}/fig_{index}.png"] = encode(rng.choice(pool))
-            failing = {hashlib.sha256(data).hexdigest(): rng.randint(0, 2) for data in pool}
-            # Realistic failure model: the first k attempts for an image fail, then it exists.
-            model = lambda digest, attempt, failing=failing: attempt <= failing.get(digest, 0)
+            digests = [hashlib.sha256(data).hexdigest() for data in pool]
+            transient = {digest: rng.randint(0, 2) for digest in digests}
+            rejected = {digest for digest in digests if rng.random() < 0.2}
+            expected = legacy_save(images, FOLDER_DIR, FakeCloudinary().upload)
             with self.subTest(case=case):
-                expected = legacy_save(images, FOLDER_DIR, FakeCloudinary(fail=model).upload)
-                actual = self.save(FakeCloudinary(fail=model), images)
-                self.assertEqual(list(actual.items()), list(expected.items()))
+                self.assertEqual(list(self.save(FakeCloudinary(), images).items()), list(expected.items()))
+                flaky = FakeCloudinary(fail=lambda digest, attempt: 503 if attempt <= transient[digest] else None)
+                self.assertEqual(list(self.save(flaky, images).items()), list(expected.items()))
+                failing = FakeCloudinary(fail=lambda digest, attempt: 400 if digest in rejected else None)
+                kept = [(name, url) for name, url in expected.items()
+                        if not any(f"img_{digest[:40]}" in url for digest in rejected)]
+                self.assertEqual(list(self.save(failing, images).items()), kept)
+
+
+class LoopbackCloudinary:
+    """A loopback HTTP stand-in for the Upload API, driven by a list of responses.
+
+    Each response is (status, content_type, body) or "stall" (never answers).
+    """
+
+    def __init__(self):
+        self.responses, self.requests, self.connections = [], [], 0
+        self.lock = threading.Lock()
+        self.release = threading.Event()
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def setup(self):
+                super().setup()
+                with owner.lock:
+                    owner.connections += 1
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                with owner.lock:
+                    owner.requests.append((self.path, self.headers["Content-Type"], body))
+                    response = owner.responses.pop(0) if owner.responses else (
+                        200, "application/json", json.dumps({"secure_url": "https://res.cloudinary.com/x.png"}))
+                if response == "stall":
+                    owner.release.wait(10)
+                    return
+                status, content_type, payload = response
+                payload = payload.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def prefix(self):
+        return f"http://127.0.0.1:{self.server.server_address[1]}"
+
+    def form(self, index):
+        _, content_type, body = self.requests[index]
+        message = email.parser.BytesParser().parsebytes(
+            b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
+        fields = {}
+        for part in message.get_payload():
+            name = part.get_param("name", header="content-disposition")
+            fields[name] = part.get_payload(decode=True)
+        return fields
+
+
+class RealSDKUploadTests(unittest.TestCase):
+    """The pinned Cloudinary SDK, unpatched, against a loopback server."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.stack = ExitStack()
+        cls.stack.enter_context(patch.dict(os.environ, {
+            "PYTHON_DOTENV_DISABLED": "1", "ENVIRONMENT": "test",
+            "DATALAB_API_KEY": "offline", "CLOUDINARY_URL": "cloudinary://key:secret@demo",
+        }))
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+        cls.datalab = importlib.import_module("app.services.datalab_service")
+        import cloudinary
+        cls.cloudinary = cloudinary
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.stack.close()
+
+    @contextmanager
+    def server(self, responses=(), timeout=5.0):
+        loopback = LoopbackCloudinary()
+        loopback.responses.extend(responses)
+        loopback.thread.start()
+        config = self.cloudinary.config()
+        previous = config.upload_prefix
+        try:
+            config.upload_prefix = loopback.prefix
+            with patch.object(self.datalab, "IMAGE_UPLOAD_TIMEOUT_SECONDS", timeout), \
+                    patch.object(self.datalab, "image_upload_backoff", lambda attempt: 0), \
+                    patch.object(self.datalab, "log_exception"), patch.object(self.datalab, "log_event"):
+                yield loopback
+        finally:
+            config.upload_prefix = previous
+            loopback.release.set()
+            loopback.server.shutdown()
+            loopback.server.server_close()
+
+    def upload(self, data=b"png-bytes"):
+        stopped = threading.Event()
+        return self.datalab._upload_image(data, "ai-document-assistant/document_7", "img_abc", stopped)
+
+    def test_success_and_unchanged_signed_form_fields(self):
+        with self.server() as loopback:
+            self.assertEqual(self.upload(), ("https://res.cloudinary.com/x.png", None, 0))
+            # The same SDK call without this change's options, for comparison.
+            self.cloudinary.uploader.upload(
+                __import__("io").BytesIO(b"png-bytes"), folder="ai-document-assistant/document_7",
+                public_id="img_abc", resource_type="image", type="authenticated",
+                overwrite=False, unique_filename=False, use_filename=False)
+        path, _, _ = loopback.requests[0]
+        self.assertEqual(path, "/v1_1/demo/image/upload")
+        new, old = loopback.form(0), loopback.form(1)
+        for fields in (new, old):
+            fields.pop("timestamp"), fields.pop("signature")
+        # timeout/return_error are transport options: never sent, never signed.
+        self.assertEqual(new, old)
+        self.assertEqual(new["type"], b"authenticated")
+        self.assertEqual(new["public_id"], b"img_abc")
+
+    def test_rate_limits_and_server_errors_are_retried_then_succeed(self):
+        error = lambda status: (status, "application/json", json.dumps({"error": {"message": "limit"}}))
+        with self.server([error(420), error(429)]) as loopback:
+            self.assertEqual(self.upload(), ("https://res.cloudinary.com/x.png", None, 2))
+        with self.server([error(500), error(503)]) as loopback:
+            self.assertEqual(self.upload(), ("https://res.cloudinary.com/x.png", None, 2))
+        self.assertEqual(len(loopback.requests), 3)
+
+    def test_gateway_html_error_page_is_retried(self):
+        with self.server([(502, "text/html", "<html>Bad gateway</html>")]):
+            self.assertEqual(self.upload(), ("https://res.cloudinary.com/x.png", None, 1))
+
+    def test_permanent_rejections_are_not_retried(self):
+        for status in (400, 401, 403, 404):
+            with self.subTest(status=status), self.server([
+                    (status, "application/json", json.dumps({"error": {"message": "no"}}))]) as loopback:
+                self.assertEqual(self.upload(), (None, "rejected", 0))
+                self.assertEqual(len(loopback.requests), 1)
+
+    def test_retry_exhaustion_on_persistent_server_errors(self):
+        with self.server([(503, "application/json", json.dumps({"error": {"message": "x"}}))] * 5) as loopback:
+            self.assertEqual(self.upload(), (None, "server_error", 2))
+        self.assertEqual(len(loopback.requests), 3)
+
+    def test_stalled_server_times_out_and_is_retried(self):
+        with self.server(["stall"], timeout=1.0) as loopback:
+            started = time.monotonic()
+            result = self.upload()
+            elapsed = time.monotonic() - started
+        self.assertEqual(result, ("https://res.cloudinary.com/x.png", None, 1))
+        self.assertLess(elapsed, 8)             # bounded, not indefinite
+        self.assertEqual(len(loopback.requests), 2)
+
+    def test_refused_connection_is_a_transient_network_failure(self):
+        probe = socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()                           # nothing listens on this port now
+        config = self.cloudinary.config()
+        previous = config.upload_prefix
+        try:
+            config.upload_prefix = f"http://127.0.0.1:{port}"
+            with patch.object(self.datalab, "image_upload_backoff", lambda attempt: 0), \
+                    patch.object(self.datalab, "log_exception"), patch.object(self.datalab, "log_event"):
+                self.assertEqual(self.upload(), (None, "network", 2))
+        finally:
+            config.upload_prefix = previous
 
 
 if __name__ == "__main__":

@@ -62,6 +62,47 @@ external execution. If legacy assets no longer match the new extraction, process
 stops for explicit review before adding alternate copies or removing references.
 Existing valid data is not wiped to force a retry to succeed.
 
+## Extracted image uploads
+
+Each distinct image (SHA-256 of its bytes) in a Datalab batch is uploaded once,
+with at most `DATALAB_IMAGE_UPLOAD_CONCURRENCY` (default 4) uploads in flight,
+backoff included. Results keep the input order; a per-job cache reuses URLs
+across that document's batches only (the folder is per document).
+
+Every attempt has a finite socket timeout (`DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS`,
+default 30). Transient failures are retried up to `DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS`
+(default 3) total attempts with exponential backoff and jitter (1s, 2s, ... capped
+at 8s, each randomised to 50-100%): HTTP 420/429, 5xx, timeouts, connection
+errors and unparseable responses (gateway error pages). Other rejections
+(400/401/403/404/409, invalid credentials or image data) and unrecognised errors
+are not retried. Classification uses SDK exception types, the HTTP status
+(`return_error=True`) and the chained transport error, never message text. Once
+one image exhausts its retries on a transient failure, the remaining uploads of
+that batch get a single attempt, so an outage costs about one timeout per image
+rather than several. Worst case per batch: roughly
+`ceil(images / concurrency) x timeout` plus one image's full retry cycle.
+
+`Retry-After` is not honoured: the pinned Cloudinary SDK (1.44.1) does not
+expose response headers, and Cloudinary signals upload rate limits with 420.
+The jittered backoff applies instead.
+
+A distinct image that still fails is omitted for every occurrence in the
+batch; failures are never cached, so a later batch tries it again. Image blocks
+are then re-derived from the uploads that succeeded, so no block references a
+missing asset; an omitted image becomes the text "Image extracted from the
+document on page N". The document still becomes `ready`. Each such batch logs
+`datalab_images_upload_incomplete` (WARNING, `failed`/`images` counts) besides
+`datalab_images_uploaded` (`count`, `failed`, `retry`) and one
+`operation_failed`/`datalab_image_upload` with a `failure_category` per failed
+image; no URLs, filenames or provider messages are logged.
+
+The SDK's urllib3 pool keeps one idle connection per host and cannot be sized
+through supported configuration. Measured with the real SDK against a loopback
+server (80 and 200 uploads, 4 workers, jittered latency), workers reuse four
+connections for the whole batch; three are discarded when the batch ends, which
+logs three urllib3 "pool is full" warnings (`library_log` events). A size-4
+pool was not faster, so no workaround is applied.
+
 ## Dispatch and explicit retry
 
 Upload validates/saves the file and commits its document, then ends the refresh

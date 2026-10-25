@@ -7,12 +7,16 @@ import io
 import json
 import logging
 import os
+import random
+import threading
 import time
 from pathlib import Path
 
 import cloudinary
+import cloudinary.exceptions
 import cloudinary.uploader
 import requests
+import urllib3.exceptions
 from dotenv import load_dotenv
 from app.services.document_processing_errors import RetryableDocumentProcessingError
 from app.services.document_resource_errors import DocumentResourceError
@@ -104,6 +108,35 @@ if not 1 <= IMAGE_UPLOAD_CONCURRENCY <= 16:
     raise RuntimeError(
         "DATALAB_IMAGE_UPLOAD_CONCURRENCY must be between 1 and 16"
     )
+
+# Finite per-attempt socket timeout for each Cloudinary image upload.
+IMAGE_UPLOAD_TIMEOUT_SECONDS = float(
+    os.getenv(
+        "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS",
+        "30",
+    )
+)
+
+if not 1 <= IMAGE_UPLOAD_TIMEOUT_SECONDS <= 300:
+    raise RuntimeError(
+        "DATALAB_IMAGE_UPLOAD_TIMEOUT_SECONDS must be between 1 and 300"
+    )
+
+# Total attempts per distinct image; only transient failures are retried.
+IMAGE_UPLOAD_MAX_ATTEMPTS = int(
+    os.getenv(
+        "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS",
+        "3",
+    )
+)
+
+if not 1 <= IMAGE_UPLOAD_MAX_ATTEMPTS <= 6:
+    raise RuntimeError(
+        "DATALAB_IMAGE_UPLOAD_MAX_ATTEMPTS must be between 1 and 6"
+    )
+
+IMAGE_UPLOAD_BACKOFF_SECONDS = 1.0
+IMAGE_UPLOAD_MAX_BACKOFF_SECONDS = 8.0
 
 
 if not DATALAB_API_KEY:
@@ -509,36 +542,139 @@ def extract_content_with_datalab(
     }
 
 
-def _upload_image(
+class CloudinaryUploadRejected(Exception):
+    """A JSON error response from the Upload API; carries only its HTTP status."""
+
+    def __init__(self, status_code):
+        super().__init__("Cloudinary rejected the image upload")
+        self.status_code = status_code
+
+
+def upload_failure_category(error):
+    """(category, transient) for one failed attempt, from structured types only.
+
+    The SDK raises RateLimited for 420/429, GeneralError for 500, and wraps
+    urllib3/socket errors and unparseable (e.g. gateway HTML) responses in
+    Error, chaining the original. Anything unrecognised is permanent.
+    """
+    if isinstance(error, CloudinaryUploadRejected):
+        if error.status_code in (420, 429):
+            return "rate_limited", True
+        if 500 <= error.status_code <= 599:
+            return "server_error", True
+        return "rejected", False
+    if isinstance(error, cloudinary.exceptions.RateLimited):
+        return "rate_limited", True
+    if isinstance(error, cloudinary.exceptions.GeneralError):
+        return "server_error", True
+    if type(error) is cloudinary.exceptions.Error:
+        cause = error.__cause__ or error.__context__
+        if isinstance(cause, urllib3.exceptions.MaxRetryError):
+            cause = cause.reason or cause
+        # urllib3 2.x derives NewConnectionError (e.g. refused) from ConnectTimeoutError.
+        if isinstance(cause, urllib3.exceptions.NewConnectionError):
+            return "network", True
+        if isinstance(cause, (urllib3.exceptions.TimeoutError, TimeoutError)):
+            return "timeout", True
+        if isinstance(cause, (urllib3.exceptions.HTTPError, OSError)):
+            return "network", True
+        if isinstance(cause, ValueError):
+            return "invalid_response", True
+    return "rejected", False
+
+
+def image_upload_backoff(attempt):
+    """Exponential backoff with jitter before retry number `attempt` (1-based)."""
+    delay = min(
+        IMAGE_UPLOAD_MAX_BACKOFF_SECONDS,
+        IMAGE_UPLOAD_BACKOFF_SECONDS * 2 ** (attempt - 1),
+    )
+    return random.uniform(delay / 2, delay)
+
+
+def _upload_once(
     image_bytes: bytes,
     cloudinary_folder: str,
     public_id: str,
 ):
-    """One authenticated Cloudinary upload; None on failure (logged, as before)."""
-    try:
-        upload_result = (
-            cloudinary.uploader.upload(
-                io.BytesIO(
-                    image_bytes
-                ),
-                folder=(
-                    cloudinary_folder
-                ),
-                public_id=(
-                    public_id
-                ),
-                resource_type="image",
-                type="authenticated",
-                overwrite=False,
-                unique_filename=False,
-                use_filename=False,
-            )
+    upload_result = (
+        cloudinary.uploader.upload(
+            io.BytesIO(
+                image_bytes
+            ),
+            folder=(
+                cloudinary_folder
+            ),
+            public_id=(
+                public_id
+            ),
+            resource_type="image",
+            type="authenticated",
+            overwrite=False,
+            unique_filename=False,
+            use_filename=False,
+            timeout=IMAGE_UPLOAD_TIMEOUT_SECONDS,
+            # JSON error responses come back with their HTTP status instead of
+            # a generic exception, so 5xx can be told apart from 4xx.
+            return_error=True,
+        )
+    )
+
+    error = upload_result.get("error")
+
+    if error:
+        status_code = error.get("http_code") if isinstance(error, dict) else None
+        raise CloudinaryUploadRejected(
+            status_code if isinstance(status_code, int) else 0
         )
 
-    except Exception:
-        log_exception(logger, "datalab_image_upload")
+    return upload_result
 
-        return None
+
+def _upload_image(
+    image_bytes: bytes,
+    cloudinary_folder: str,
+    public_id: str,
+    retries_stopped: threading.Event | None = None,
+):
+    """One authenticated Cloudinary upload, retrying transient failures.
+
+    Returns (secure_url or None, failure category or None, retries used).
+    Once any upload in the same batch exhausts its retries on a transient
+    failure, retries_stopped is set and later uploads get a single attempt,
+    bounding the time spent during a Cloudinary outage.
+    """
+    retries = 0
+
+    while True:
+        try:
+            upload_result = _upload_once(
+                image_bytes,
+                cloudinary_folder,
+                public_id,
+            )
+
+        except Exception as error:
+            category, transient = upload_failure_category(error)
+            stopped = retries_stopped is not None and retries_stopped.is_set()
+
+            if transient and not stopped and retries + 1 < IMAGE_UPLOAD_MAX_ATTEMPTS:
+                retries += 1
+                log_event(logger, logging.INFO, "datalab_image_upload_retry",
+                          failure_category=category, retry=retries)
+                time.sleep(image_upload_backoff(retries))
+
+                continue
+
+            if transient and retries_stopped is not None:
+                retries_stopped.set()
+
+            log_exception(logger, "datalab_image_upload", error,
+                          failure_category=category, retry=retries)
+
+            return None, category, retries
+
+        break
 
     secure_url = (
         upload_result.get(
@@ -549,11 +685,11 @@ def _upload_image(
     if not secure_url:
         log_event(logger, logging.WARNING, "datalab_image_url_missing")
 
-        return None
+        return None, "url_missing", retries
 
     return str(
         secure_url
-    )
+    ), None, retries
 
 
 def save_datalab_images(
@@ -571,10 +707,11 @@ def save_datalab_images(
     never overwritten; legacy public objects are left in their original type.
 
     Each distinct image is uploaded once, with at most
-    IMAGE_UPLOAD_CONCURRENCY uploads in flight. upload_cache (scoped to one
-    document's processing job) reuses URLs from earlier batches. A failed
-    upload is never reused: the next occurrence of the same bytes gets its
-    own attempt, as when every image was uploaded individually.
+    IMAGE_UPLOAD_CONCURRENCY uploads in flight (retry backoff included).
+    Transient failures are retried up to IMAGE_UPLOAD_MAX_ATTEMPTS; a distinct
+    image that still fails is left out for every occurrence in this batch.
+    upload_cache (scoped to one document's processing job) reuses URLs from
+    earlier batches; failures are never cached, so a later batch tries again.
 
     Return shape and order remain:
         {original_filename: cloudinary_secure_url}
@@ -647,10 +784,12 @@ def save_datalab_images(
         for image_hash in unique_images
         if image_hash not in urls
     ]
-    upload_calls = len(pending)
+    failed = 0
+    retries = 0
 
     if pending:
         workers = min(IMAGE_UPLOAD_CONCURRENCY, len(pending))
+        retries_stopped = threading.Event()
         # The executor joins every upload before results are read; no thread outlives this call.
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
@@ -660,36 +799,24 @@ def save_datalab_images(
                     unique_images[image_hash],
                     cloudinary_folder,
                     f"img_{image_hash[:40]}",
+                    retries_stopped,
                 )
                 for image_hash in pending
             }
 
         for image_hash, future in futures.items():
-            secure_url = future.result()
+            secure_url, failure, used = future.result()
+            retries += used
 
             if secure_url:
                 urls[image_hash] = secure_url
+            elif failure:
+                failed += 1
 
     # Assemble in input order, independent of upload completion order.
     saved_images = {}
-    attempted = set(pending)
 
     for safe_filename, image_hash in entries:
-        if image_hash in attempted:
-            attempted.discard(image_hash)
-
-        elif image_hash not in urls:
-            # A later occurrence of an image whose upload failed: retry it.
-            upload_calls += 1
-            secure_url = _upload_image(
-                unique_images[image_hash],
-                cloudinary_folder,
-                f"img_{image_hash[:40]}",
-            )
-
-            if secure_url:
-                urls[image_hash] = secure_url
-
         if image_hash in urls:
             saved_images[
                 safe_filename
@@ -699,7 +826,13 @@ def save_datalab_images(
         cache[(cloudinary_folder, image_hash)] = secure_url
 
     log_event(logger, logging.INFO, "datalab_images_uploaded",
-              images=len(saved_images), count=upload_calls)
+              images=len(saved_images), count=len(pending),
+              failed=failed, retry=retries)
+
+    if failed:
+        # Visible, ID-free signal that this batch's output lacks image assets.
+        log_event(logger, logging.WARNING, "datalab_images_upload_incomplete",
+                  failed=failed, images=len(saved_images))
 
     logger.info(
         "Uploaded %s Datalab images "
