@@ -237,6 +237,16 @@ counter. Events: `document_processing_recovered`, `document_recovery_exhausted`
 (WARNING) and `document_recovery_scan` (counts). The 15-minute stale
 reconciliation remains as a fallback when the scanner is disabled.
 
+Shutdown: Uvicorn installs its SIGTERM/SIGINT handlers before the lifespan
+starts, and the lifespan chains onto them. On the first signal the scanner stops
+claiming recoveries immediately (a scan in progress stops before its next
+document), instead of after Uvicorn has drained requests. Once Uvicorn has
+drained requests and their BackgroundTasks, the lifespan waits for jobs the
+scanner dispatched (at most 300s, Render's maximum shutdown delay) so they get
+the same remaining grace; a second signal abandons that wait, like Uvicorn's
+forced exit. Background mode always runs one Uvicorn worker (`--workers 1`),
+whatever `WEB_CONCURRENCY` says.
+
 Recovery latency after an interruption is the stale threshold plus up to one
 interval: about 5-6 minutes with the defaults. Within one process the scanner
 cannot tell a job lost by *this* process from another instance's job waiting for

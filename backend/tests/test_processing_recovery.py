@@ -82,7 +82,7 @@ class RecoveryOfflineTests(unittest.TestCase):
         settings = self.settings_module.RecoverySettings(True, 300, 10, 86400)
         calls = []
         scanner = self.recovery.RecoveryScanner(settings, initial_delay=0.01,
-                                                scan=lambda settings: calls.append(time.monotonic()))
+                                                scan=lambda settings, **kwargs: calls.append(time.monotonic()))
         scanner.start()
         deadline = time.monotonic() + 5
         while not calls and time.monotonic() < deadline:
@@ -97,7 +97,7 @@ class RecoveryOfflineTests(unittest.TestCase):
         settings = self.settings_module.RecoverySettings(True, 300, 0.01, 86400)
         calls = []
 
-        def scan(settings):
+        def scan(settings, **kwargs):
             calls.append(1)
             if len(calls) == 1:
                 raise RuntimeError("database unavailable")
@@ -116,7 +116,7 @@ class RecoveryOfflineTests(unittest.TestCase):
         main = importlib.import_module("main")
         entered, release = threading.Event(), threading.Event()
 
-        def slow_scan(settings):
+        def slow_scan(settings, **kwargs):
             entered.set()
             release.wait(10)
         enabled = self.settings_module.RecoverySettings(True, 300, 60, 86400)
@@ -173,6 +173,156 @@ class RecoveryOfflineTests(unittest.TestCase):
             with self.recovery.processing_heartbeat(7, interval=0.02):
                 time.sleep(0.08)
         logged.assert_called()
+
+    # ---- Shutdown (M1: stop claiming at SIGTERM; M2: wait for recovered jobs) ----
+
+    def scanner(self):
+        settings = self.settings_module.RecoverySettings(True, 300, 60, 86400)
+        return self.recovery.RecoveryScanner(settings, scan=lambda settings, **kwargs: None)
+
+    def test_shutdown_signal_stops_claiming_and_chains_to_the_server_handler(self):
+        import signal
+        self.addCleanup(self.recovery._abandon_shutdown_wait.clear)
+        for signum in self.recovery.SHUTDOWN_SIGNALS:
+            with self.subTest(signal=signum):
+                self.recovery._abandon_shutdown_wait.clear()
+                received = []
+                original = signal.getsignal(signum)
+                uvicorn_like = lambda number, frame: received.append(number)   # e.g. Server.handle_exit
+                signal.signal(signum, uvicorn_like)
+                try:
+                    scanner = self.scanner()
+                    with self.recovery.stop_recovery_on_shutdown_signal(scanner):
+                        signal.raise_signal(signum)
+                        self.assertTrue(scanner.stopping)            # at SIGTERM, before any drain
+                        self.assertEqual(received, [signum])         # the server still shuts down
+                        self.assertFalse(self.recovery._abandon_shutdown_wait.is_set())
+                        signal.raise_signal(signum)                  # a second signal forces exit
+                        self.assertTrue(self.recovery._abandon_shutdown_wait.is_set())
+                        self.assertEqual(received, [signum, signum])
+                    self.assertIs(signal.getsignal(signum), uvicorn_like)   # restored
+                finally:
+                    signal.signal(signum, original)
+
+    def test_default_termination_is_kept_without_a_server_handler(self):
+        import signal
+        original = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        try:
+            scanner = self.scanner()
+            with self.recovery.stop_recovery_on_shutdown_signal(scanner), \
+                    patch.object(self.recovery.signal, "raise_signal") as reraised:
+                handler = signal.getsignal(signal.SIGTERM)
+                handler(signal.SIGTERM, None)
+                self.assertTrue(scanner.stopping)
+                reraised.assert_called_once_with(signal.SIGTERM)          # still terminates
+                self.assertEqual(signal.getsignal(signal.SIGTERM), signal.SIG_DFL)
+        finally:
+            signal.signal(signal.SIGTERM, original)
+
+    def test_no_signal_handlers_outside_the_main_thread(self):
+        import signal
+        before = {signum: signal.getsignal(signum) for signum in self.recovery.SHUTDOWN_SIGNALS}
+        seen = {}
+
+        def worker():
+            with self.recovery.stop_recovery_on_shutdown_signal(self.scanner()):
+                seen.update({signum: signal.getsignal(signum) for signum in self.recovery.SHUTDOWN_SIGNALS})
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join(5)
+        self.assertEqual(seen, before)
+
+    def test_scan_claims_nothing_more_once_shutdown_starts(self):
+        claimed, dispatched = [], []
+        stopping = threading.Event()
+
+        def recover(session_factory, document_id, settings):
+            claimed.append(document_id)
+            stopping.set()                                    # SIGTERM arrives during the scan
+            return "dispatch"
+
+        @contextmanager
+        def session():
+            yield None
+        with patch.object(self.recovery, "recovery_candidates", lambda db, settings: [1, 2, 3]), \
+                patch.object(self.recovery, "recover_document", recover), \
+                patch.object(self.recovery, "log_event"):
+            outcomes = self.recovery.scan_once(session, self.scanner().settings,
+                                               dispatch=dispatched.append, stopping=stopping.is_set)
+        self.assertEqual((claimed, dispatched), ([1], [1]))  # the claimed one still runs
+        self.assertEqual(outcomes["dispatch"], 1)
+
+    def test_scanner_passes_its_stop_state_to_each_scan(self):
+        seen = []
+        settings = self.settings_module.RecoverySettings(True, 300, 60, 86400)
+        scanner = self.recovery.RecoveryScanner(
+            settings, initial_delay=0.01, scan=lambda settings, stopping: seen.append(stopping()))
+        scanner.start()
+        deadline = time.monotonic() + 5
+        while not seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+        scanner.request_stop()
+        self.assertTrue(scanner.stop(timeout=2))
+        self.assertEqual(seen, [False])
+
+    def recovered_job(self, release):
+        def run(document_id, **kwargs):
+            release.wait(10)
+        return patch.object(importlib.import_module("app.services.task_queue"), "_run_document_processing", run)
+
+    def test_shutdown_waits_for_recovered_jobs_to_finish(self):
+        release = threading.Event()
+        with self.recovered_job(release), patch.object(self.recovery, "log_event"):
+            self.recovery.dispatch_recovered(41)
+            threading.Timer(0.3, release.set).start()
+            started = time.monotonic()
+            self.assertEqual(self.recovery.wait_for_recovered_jobs(5), 0)
+            self.assertGreaterEqual(time.monotonic() - started, 0.25)
+        self.assertEqual(self.recovery._recovered_jobs, set())       # registry cleaned up
+
+    def test_shutdown_wait_is_bounded_and_can_be_abandoned(self):
+        release = threading.Event()
+        self.addCleanup(release.set)
+        self.addCleanup(self.recovery._abandon_shutdown_wait.clear)
+        with self.recovered_job(release), patch.object(self.recovery, "log_event"):
+            self.recovery.dispatch_recovered(42)
+            started = time.monotonic()
+            self.assertEqual(self.recovery.wait_for_recovered_jobs(0.3), 1)
+            self.assertLess(time.monotonic() - started, 2)
+            threading.Timer(0.1, self.recovery._abandon_shutdown_wait.set).start()
+            started = time.monotonic()
+            self.assertEqual(self.recovery.wait_for_recovered_jobs(30), 1)   # forced exit: stop waiting
+            self.assertLess(time.monotonic() - started, 2)
+            release.set()
+            self.recovery._abandon_shutdown_wait.clear()
+            self.assertEqual(self.recovery.wait_for_recovered_jobs(5), 0)
+
+    def test_application_shutdown_waits_for_a_running_recovered_job(self):
+        from fastapi.testclient import TestClient
+        main = importlib.import_module("main")
+        release, finished = threading.Event(), threading.Event()
+
+        def run(document_id, **kwargs):
+            release.wait(10)
+            finished.set()
+        enabled = self.settings_module.RecoverySettings(True, 300, 60, 86400)
+        original = self.recovery.RecoveryScanner
+
+        def dispatching(settings):
+            return original(settings, initial_delay=0.0,
+                            scan=lambda settings, **kwargs: self.recovery.dispatch_recovered(43))
+        with patch.object(self.recovery, "recovery_settings", lambda: enabled), \
+                patch.object(self.recovery, "RecoveryScanner", dispatching), \
+                patch.object(importlib.import_module("app.services.task_queue"), "_run_document_processing", run), \
+                patch.object(self.recovery, "log_event"):
+            with TestClient(main.app):
+                deadline = time.monotonic() + 5
+                while not self.recovery._recovered_jobs and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                threading.Timer(0.3, release.set).start()
+            # Lifespan shutdown returned only after the recovered job completed.
+            self.assertTrue(finished.is_set())
 
 
 if __name__ == "__main__":

@@ -239,7 +239,7 @@ def test_scanner_survives_database_errors_and_stops_promptly(recovery):
     module, settings, _ = recovery
     calls = []
 
-    def failing(settings=None):
+    def failing(settings=None, **kwargs):
         calls.append(1)
         raise RuntimeError("database unavailable")
     fast = type(settings)(enabled=True, stale_seconds=300, interval_seconds=10, max_age_seconds=86400)

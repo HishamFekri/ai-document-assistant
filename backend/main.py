@@ -27,13 +27,20 @@ from app.routes.summary_assistant import router as summary_assistant_router
 async def lifespan(app):
     validate_runtime()
     # Daemon thread; its first scan runs after startup, so readiness never waits on it.
-    from app.services.processing_recovery import start_recovery_scanner
-    scanner = start_recovery_scanner()
-    try:
+    from app.services import processing_recovery as recovery
+    scanner = recovery.start_recovery_scanner()
+    if scanner is None:
         yield
-    finally:
-        if scanner is not None:
+        return
+    # Stop claiming recoveries on SIGTERM itself, not after Uvicorn has drained.
+    with recovery.stop_recovery_on_shutdown_signal(scanner):
+        try:
+            yield
+        finally:
             await asyncio.to_thread(scanner.stop)
+            # Recovered jobs get the same remaining grace as drained BackgroundTasks.
+            await asyncio.to_thread(recovery.wait_for_recovered_jobs,
+                                    recovery.RECOVERED_JOBS_SHUTDOWN_WAIT_SECONDS)
 
 
 class ObservedFastAPI(FastAPI):
