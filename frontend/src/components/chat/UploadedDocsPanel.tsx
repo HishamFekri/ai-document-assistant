@@ -14,6 +14,11 @@ import {
   Document,
 } from "@/types/chat";
 
+import {
+  missingImageWarning,
+  readyLabel,
+} from "@/lib/document-warnings";
+
 
 type Props = {
   open: boolean;
@@ -430,6 +435,11 @@ export default function UploadedDocsPanel({
                     document.filename
                   );
 
+                const warning =
+                  missingImageWarning(
+                    document
+                  );
+
 
                 return (
                   <div
@@ -581,28 +591,51 @@ export default function UploadedDocsPanel({
 
                         ) : (
                           <span
-                            className="
+                            className={`
                               flex
                               items-center
                               gap-1
                               text-[11px]
                               font-medium
-                              text-emerald-500
-                            "
+                              ${
+                                warning
+                                  ? "text-amber-600"
+                                  : "text-emerald-500"
+                              }
+                            `}
                           >
                             <span
-                              className="
+                              className={`
                                 h-1.5
                                 w-1.5
                                 rounded-full
-                                bg-emerald-500
-                              "
+                                ${
+                                  warning
+                                    ? "bg-amber-500"
+                                    : "bg-emerald-500"
+                                }
+                              `}
                             />
 
-                            Ready
+                            {readyLabel(
+                              document
+                            )}
                           </span>
                         )}
                       </div>
+
+                      {warning && (
+                        <p
+                          className="
+                            mt-1
+                            text-[11px]
+                            leading-4
+                            text-amber-600
+                          "
+                        >
+                          {warning}
+                        </p>
+                      )}
                     </div>
 
 

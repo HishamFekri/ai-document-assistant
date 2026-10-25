@@ -30,6 +30,11 @@ import {
   Source,
 } from "@/types/chat";
 
+import {
+  missingImageWarning,
+  readyLabel,
+} from "@/lib/document-warnings";
+
 
 type Props = {
   message: Message;
@@ -747,6 +752,11 @@ export default function ChatMessage({
 
 
                       <div
+                        title={
+                          missingImageWarning(
+                            document
+                          ) ?? undefined
+                        }
                         className="
                           mt-0.5
                           flex
@@ -756,7 +766,17 @@ export default function ChatMessage({
                           text-[var(--text-muted)]
                         "
                       >
-                        {document
+                        {missingImageWarning(
+                          document
+                        ) ? (
+                          <TriangleAlert
+                            size={13}
+                            className="
+                              text-amber-500
+                            "
+                          />
+
+                        ) : document
                           .processing_status
                           === "ready" ? (
                           <CheckCircle2
@@ -788,14 +808,20 @@ export default function ChatMessage({
 
 
                         <span>
-                          {attachmentLabel(
-                            document
-                              .processing_status,
+                          {document
+                            .processing_status
+                            === "ready"
+                            ? readyLabel(
+                              document
+                            )
+                            : attachmentLabel(
+                              document
+                                .processing_status,
 
-                            document
-                              .processing_progress
-                              ?? 0
-                          )}
+                              document
+                                .processing_progress
+                                ?? 0
+                            )}
                         </span>
                       </div>
                     </div>

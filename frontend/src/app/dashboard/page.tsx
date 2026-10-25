@@ -5,6 +5,7 @@ import { logoutSession } from "@/lib/logout";
 import UploadGuidance from "@/components/documents/UploadGuidance";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 import { useDocumentStatusPolling } from "@/hooks/useDocumentStatusPolling";
+import { missingImageWarning, readyLabel } from "@/lib/document-warnings";
 import { Document } from "@/types/chat";
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -442,6 +443,12 @@ export default function DashboardPage() {
                           ? ` · ${document.pages_count} pages`
                           : ""}
                       </p>
+
+                      {missingImageWarning(document) && (
+                        <p className="mt-1 text-xs text-amber-700">
+                          {missingImageWarning(document)}
+                        </p>
+                      )}
                     </div>
                   </div>
 
@@ -477,9 +484,20 @@ function DocumentStatus({
     document.processing_status ===
     "ready"
   ) {
+    const label =
+      readyLabel(
+        document
+      );
+
     return (
-      <div className="text-sm font-medium text-emerald-600">
-        Ready
+      <div
+        className={`text-sm font-medium ${
+          label === "Ready"
+            ? "text-emerald-600"
+            : "text-amber-600"
+        }`}
+      >
+        {label}
       </div>
     );
   }

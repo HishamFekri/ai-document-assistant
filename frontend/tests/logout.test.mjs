@@ -40,6 +40,7 @@ function application(fetch) {
       if (name === "@/lib/request-scope") return load("src/lib/request-scope.ts");
       if (name === "@/lib/pagination") return load("src/lib/pagination.ts");
       if (name === "@/lib/logout") return load("src/lib/logout.ts");
+      if (name === "@/lib/document-warnings") return load("src/lib/document-warnings.ts");
       if (name === "@/lib/chat-api") return {};
       if (name === "@/hooks/useUploadPolicy") return { useUploadPolicy: () => ({ policy: null }) };
       if (name === "@/components/documents/UploadGuidance") return { default: () => null };

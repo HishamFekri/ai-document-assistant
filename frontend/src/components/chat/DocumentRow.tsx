@@ -9,6 +9,11 @@ import {
   Document,
 } from "@/types/chat";
 
+import {
+  missingImageWarning,
+  readyLabel,
+} from "@/lib/document-warnings";
+
 
 type Props = {
   document: Document;
@@ -20,6 +25,11 @@ export default function DocumentRow({
   document,
   onRemove,
 }: Props) {
+  const warning =
+    missingImageWarning(
+      document
+    );
+
   return (
     <div className="flex items-center gap-3 rounded-xl border border-neutral-200 px-3 py-2.5">
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-neutral-100">
@@ -40,6 +50,12 @@ export default function DocumentRow({
             }
           />
         </div>
+
+        {warning && (
+          <p className="mt-1 text-[11px] leading-4 text-amber-700">
+            {warning}
+          </p>
+        )}
 
         {document.processing_status ===
           "processing" && (
@@ -80,9 +96,20 @@ function DocumentStatus({
     document.processing_status ===
     "ready"
   ) {
+    const label =
+      readyLabel(
+        document
+      );
+
     return (
-      <span className="shrink-0 text-[11px] font-medium text-emerald-600">
-        Ready
+      <span
+        className={`shrink-0 text-[11px] font-medium ${
+          label === "Ready"
+            ? "text-emerald-600"
+            : "text-amber-600"
+        }`}
+      >
+        {label}
       </span>
     );
   }
