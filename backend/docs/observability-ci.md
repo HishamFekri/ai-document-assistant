@@ -169,6 +169,16 @@ migration execution.
   source with 3.11 grammar and reject unsafe logging calls; require one complete
   migration chain and render upgrade/downgrade SQL entirely in memory; run explicit
   standalone regression suites through `scripts/ci_tests.py`.
+* **Backend PostgreSQL:** Python 3.11 against a disposable `pgvector/pgvector:0.8.1-pg17`
+  service container (pinned by digest, bound to 127.0.0.1, trust auth inside the
+  runner only). Runs all six `tests/*_postgres.py` suites (listed explicitly in the
+workflow; add new ones there) through conftest's isolated
+  per-run database (created and dropped by the fixture, migrated to head), then
+  the processing benchmark in its own process: determinism across two runs and
+  equality with `tests/fixtures/processing_baseline.json`, so any change to
+  extracted text, chunk order, metadata, asset mapping, embeddings or status
+  fails CI. Providers are mocked or simulated with non-loopback sockets refused;
+  provider settings are fixed offline placeholders, and no Redis is used.
 * **Frontend:** Node 22; `npm ci`; all `tests/*.test.mjs`; TypeScript no-emit;
   ESLint (zero errors, maximum 19 existing warnings); production build.
 * **Dependency security:** `pip-audit==2.10.1 --strict -r requirements-dev.txt`
@@ -181,7 +191,7 @@ migration execution.
   entry point replaced by `id`. It never starts the application or probes services.
 
 Dependabot configuration covers pip, npm, Actions and Docker weekly. Enable Actions,
-dependency graph/security alerts, and require these four CI jobs in branch
+dependency graph/security alerts, and require these five CI jobs in branch
 protection after the workflow is published. Scheduled workflows/Dependabot are
 activated from the repository default branch; merely leaving this branch locally
 does not enable them. No repository settings have been changed in this batch.
@@ -190,8 +200,9 @@ does not enable them. No repository settings have been changed in this batch.
 URLs and disables dotenv. It never uses generic pytest discovery. The selected
 suites use existing mocked-service/SQLite harnesses in separate processes. The
 older private-image fixture now includes the same admission mocks and bounded
-pagination query methods required by Batches 8/11. Guarded live PostgreSQL/Redis
-tests remain separate: `TEST_DATABASE_URL` must pass the existing loopback/name
+pagination query methods required by Batches 8/11. Guarded live PostgreSQL tests
+run in the separate PostgreSQL job (live Redis tests are not run in CI):
+`TEST_DATABASE_URL` must pass the existing loopback/name
 checks, and **DATABASE_URL is never a fallback**. Migration rendering does not load
 `migrations/env.py`, import application engines or execute SQL; connections are
 explicitly forbidden in the checker. No historical migration was edited.
