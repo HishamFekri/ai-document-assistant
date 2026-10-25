@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from app.services.observability import configure_logging, RequestObservabilityMiddleware
@@ -25,7 +26,14 @@ from app.routes.summary_assistant import router as summary_assistant_router
 @asynccontextmanager
 async def lifespan(app):
     validate_runtime()
-    yield
+    # Daemon thread; its first scan runs after startup, so readiness never waits on it.
+    from app.services.processing_recovery import start_recovery_scanner
+    scanner = start_recovery_scanner()
+    try:
+        yield
+    finally:
+        if scanner is not None:
+            await asyncio.to_thread(scanner.stop)
 
 
 class ObservedFastAPI(FastAPI):

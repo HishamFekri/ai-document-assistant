@@ -21,6 +21,8 @@ def validate_runtime():
     queue = (configured_queue or "background").lower()
     if queue not in {"background", "celery"}:
         raise ValueError("Invalid TASK_QUEUE")
+    from app.services.recovery_settings import recovery_settings
+    recovery_settings()
     if not production:
         return
     if configured_queue is None:

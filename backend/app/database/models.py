@@ -237,6 +237,16 @@ class Document(Base):
         nullable=True,
     )
 
+    # Automatic recoveries of interrupted background processing since the last
+    # upload or explicit retry (capped; see processing_recovery).
+    processing_recovery_attempts: Mapped[
+        int
+    ] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default="0",
+    )
+
     created_at: Mapped[
         datetime
     ] = mapped_column(

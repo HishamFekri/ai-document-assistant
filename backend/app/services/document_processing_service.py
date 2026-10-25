@@ -32,6 +32,7 @@ from app.services.document_resource_errors import DocumentResourceError
 from app.services.upload_validation import validate_document_source
 from app.services.queued_message_service import process_waiting_messages_for_document
 from app.services.original_storage import materialize_original
+from app.services.processing_recovery import processing_heartbeat
 
 
 logger = logging.getLogger(__name__)
@@ -118,7 +119,8 @@ def process_claimed_document(claim, document_id, processing_capacity=None, timin
                     document_id=document_id,
                 )
                 return "deferred"
-        with user_operation(owner_id, "processing", rate=False, connection=claim.connection):
+        with user_operation(owner_id, "processing", rate=False, connection=claim.connection), \
+                processing_heartbeat(document_id):
             acquired = perf_counter()
             log_wait_stages(timing, acquired)
             set_progress(claim, document_id, "starting", 10)

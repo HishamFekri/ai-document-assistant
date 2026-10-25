@@ -342,6 +342,8 @@ def retry_document_processing(
                 document.processing_stage = "uploaded"
                 document.processing_progress = 5
                 document.processing_error = None
+                # An explicit retry starts a fresh automatic-recovery budget.
+                document.processing_recovery_attempts = 0
                 file_path = document.file_path
                 response = DocumentResponse.model_validate(document)
     # Release the claim before submission so an immediately delivered task can run.

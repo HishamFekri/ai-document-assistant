@@ -629,24 +629,31 @@ def run_scenario(app, engine, providers, scenario, user_offset):
     return report
 
 
-def run_benchmark(scenario_names, latency="realistic", scale=1.0):
-    """Run scenarios against the database already bound through DATABASE_URL."""
+@contextmanager
+def simulated_application(providers):
+    """The real application with simulated providers; yields the FastAPI app."""
     import importlib
-    from app.database import database
     from app.services import observability, original_storage, resource_admission
 
-    providers = SimulatedProviders(LATENCY_PROFILES[latency], scale)
     allow = type("AllowAll", (), {"eval": staticmethod(lambda *args: (1, 0))})()
-    results = {"latency_profile": latency, "scale": scale, "scenarios": []}
     with ExitStack() as stack:
         stack.enter_context(offline_network(providers))
         stack.enter_context(patch.object(resource_admission, "rate_backend", lambda: allow))
         # Production stores originals in Cloudinary and downloads them for processing.
         stack.enter_context(patch.object(original_storage, "uses_shared_original_storage", lambda: True))
         stack.enter_context(patch.object(observability, "configure_logging", lambda: None))
-        main = importlib.import_module("main")
+        yield importlib.import_module("main").app
+
+
+def run_benchmark(scenario_names, latency="realistic", scale=1.0):
+    """Run scenarios against the database already bound through DATABASE_URL."""
+    from app.database import database
+
+    providers = SimulatedProviders(LATENCY_PROFILES[latency], scale)
+    results = {"latency_profile": latency, "scale": scale, "scenarios": []}
+    with simulated_application(providers) as app:
         for offset, name in enumerate(scenario_names):
-            results["scenarios"].append(run_scenario(main.app, database.engine, providers,
+            results["scenarios"].append(run_scenario(app, database.engine, providers,
                                                      SCENARIOS[name], offset * 10))
     results["provider_calls"] = dict(providers.calls)
     results["peak_image_uploads"] = providers.peak_image_uploads
