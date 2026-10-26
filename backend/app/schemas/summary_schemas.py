@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import (
@@ -9,6 +8,7 @@ from pydantic import (
 )
 
 from app.services.error_service import public_generation_error
+from app.schemas.timestamps import UtcDateTime
 
 
 SummaryBlockType = Literal[
@@ -76,7 +76,7 @@ class DocumentSummaryResponse(BaseModel):
     def serialize_error(self, error):
         return public_generation_error(error, "summary")
 
-    created_at: datetime
+    created_at: UtcDateTime
 
     model_config = ConfigDict(
         from_attributes=True

@@ -826,7 +826,7 @@ class ResourceAdmissionTests(unittest.TestCase):
                 self.assertEqual(self.permits.slots, {})
                 self.assertEqual(any(e["type"] == "done" for e in events), mode == "complete")
                 self.assertEqual(events[0], {"type": "chat_activity", "chat_id": 1,
-                                             "last_activity_at": "2026-10-01T09:00:00"})
+                                             "last_activity_at": "2026-10-01T09:00:00Z"})
                 self.assertNotIn("private provider", str(events))
                 if mode == "provider_failure":
                     self.assertEqual(events[-1]["type"], "error")

@@ -1,11 +1,11 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
+from sqlalchemy import engine_from_config, event
 from sqlalchemy import pool
 
 from alembic import context
 
-from app.database.database import Base, DATABASE_URL
+from app.database.database import Base, DATABASE_URL, enforce_utc_session
 
 # مهم جدًا:
 # تحميل كل ملفات الـ models حتى يتم تسجيل الجداول داخل Base.metadata
@@ -56,6 +56,8 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
+    # Migrations write now() defaults too (e.g. last_activity_at): same UTC session.
+    event.listen(connectable, "connect", enforce_utc_session)
 
     with connectable.connect() as connection:
         context.configure(

@@ -408,6 +408,44 @@ class DatabaseScalabilityTests(unittest.TestCase):
             with patch.dict(os.environ, {name: value}), self.assertRaises(ValueError):
                 self.pool.pool_options()
 
+    def test_api_timestamps_carry_an_explicit_utc_offset(self):
+        from datetime import timedelta, timezone
+        from app.schemas import schemas
+        from app.schemas.timestamps import utc_isoformat
+        stored = datetime(2026, 10, 25, 14, 31, 58, 123456)   # naive, as read from the database
+        chat = schemas.ChatResponse(id=1, user_id=1, title='t', is_pinned=False, is_archived=False,
+                                    created_at=stored, last_activity_at=stored.replace(microsecond=0),
+                                    documents=[])
+        body = chat.model_dump(mode='json')
+        self.assertEqual(body['created_at'], '2026-10-25T14:31:58.123456Z')
+        self.assertEqual(body['last_activity_at'], '2026-10-25T14:31:58Z')
+        self.assertIn('"created_at":"2026-10-25T14:31:58.123456Z"', chat.model_dump_json())
+        # Hand-built stream payloads use the same format; aware values are converted, not relabelled.
+        self.assertEqual(utc_isoformat(stored), body['created_at'])
+        istanbul = datetime(2026, 10, 25, 17, 31, 58, tzinfo=timezone(timedelta(hours=3)))
+        self.assertEqual(utc_isoformat(istanbul), '2026-10-25T14:31:58Z')
+        # Same instant, so ordering by the parsed value matches ordering by the stored value.
+        self.assertEqual(datetime.fromisoformat(body['created_at']), stored.replace(tzinfo=timezone.utc))
+        user = schemas.UserResponse(id=1, email='a@example.invalid', name=None, picture=None, created_at=stored)
+        self.assertTrue(user.model_dump(mode='json')['created_at'].endswith('Z'))
+
+    def test_application_and_migration_connections_are_pinned_to_utc(self):
+        # The harness stubs app.database.database; load the real module on a memory URL.
+        path = Path(__file__).resolve().parents[1] / 'app/database/database.py'
+        spec = importlib.util.spec_from_file_location('utc_database_probe', path)
+        database = importlib.util.module_from_spec(spec)
+        with patch('sqlalchemy.create_engine', memory_engine),              patch('app.database.pool_config.pool_options', return_value={}),              patch.dict(os.environ, {'DATABASE_URL': 'sqlite://'}):
+            spec.loader.exec_module(database)
+        self.assertTrue(event.contains(database.engine, 'connect', database.enforce_utc_session))
+        cursor = MagicMock()
+        connection = MagicMock(autocommit=False)
+        connection.cursor.return_value.__enter__.return_value = cursor
+        database.enforce_utc_session(connection, None)
+        cursor.execute.assert_called_once_with("SET TIME ZONE 'UTC'")
+        self.assertFalse(connection.autocommit)   # restored, so no transaction is left open
+        env = (Path(__file__).resolve().parents[1] / 'migrations/env.py').read_text(encoding='utf-8')
+        self.assertIn('event.listen(connectable, "connect", enforce_utc_session)', env)
+
     def test_five_index_migration_uses_autocommit_and_concurrent_ddl_only(self):
         path = Path(__file__).resolve().parents[1] / 'migrations/versions/b11d62a4c901_database_query_indexes.py'
         spec = importlib.util.spec_from_file_location('batch11_migration', path)

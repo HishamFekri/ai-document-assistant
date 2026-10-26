@@ -1,4 +1,3 @@
-from datetime import datetime
 
 from typing import Literal
 
@@ -9,6 +8,7 @@ from pydantic import (
 )
 
 from app.services.assets.image_references import asset_file_url, normalize_image_metadata
+from app.schemas.timestamps import UtcDateTime
 
 
 DocumentAssetType = Literal[
@@ -37,7 +37,7 @@ class DocumentAssetResponse(BaseModel):
 
     asset_metadata: dict | None
 
-    created_at: datetime
+    created_at: UtcDateTime
 
     model_config = ConfigDict(
         from_attributes=True

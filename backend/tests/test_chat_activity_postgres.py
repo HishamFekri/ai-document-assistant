@@ -7,7 +7,7 @@ Providers are replaced with an immediate answer; no network access is used.
 import json
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -183,7 +183,9 @@ def test_sending_moves_a_chat_to_the_top_and_persists_across_reloads(test_databa
         message_time = connection.scalar(text(
             "SELECT max(created_at) FROM messages WHERE chat_id = :id AND role = 'user'"),
             {"id": chats["created last, idle"]})
-    assert datetime.fromisoformat(activity_event["last_activity_at"]) == stored
+    # Explicit UTC on the wire; the stored value is the same instant without a zone.
+    assert activity_event["last_activity_at"].endswith("Z")
+    assert datetime.fromisoformat(activity_event["last_activity_at"]) == stored.replace(tzinfo=timezone.utc)
     assert stored == message_time, "stamped in the same transaction as the message"
 
     titles, _ = listed_titles(client, user_id)
@@ -418,3 +420,88 @@ def test_restoring_from_the_archive_returns_a_chat_to_its_activity_position(test
     assert activity() == before, "archiving and restoring never change last_activity_at"
     for limit in (1, 2, 3):
         assert all_pages(client, user_id, limit) == ["A", "B", "C"]
+
+
+# ---- UTC sessions and explicit offsets ----------------------------------------------
+
+@pytest.fixture
+def foreign_timezone(test_database, monkeypatch):
+    """A database default and a client PGTZ that both disagree with UTC."""
+    engine = test_database.engine
+    with engine.begin() as connection:
+        name = connection.scalar(text("SELECT current_database()"))
+        connection.execute(text(f'ALTER DATABASE "{name}" SET timezone = \'Asia/Tokyo\''))
+    monkeypatch.setenv("PGTZ", "America/New_York")
+    engine.dispose()
+    try:
+        yield engine
+    finally:
+        monkeypatch.delenv("PGTZ")
+        engine.dispose()
+        with engine.begin() as connection:
+            connection.execute(text(f'ALTER DATABASE "{name}" RESET timezone'))
+        engine.dispose()
+
+
+def near_utc_now(value):
+    parsed = datetime.fromisoformat(value)
+    assert value.endswith("Z") and parsed.tzinfo is not None, value
+    return abs(datetime.now(timezone.utc) - parsed) < timedelta(minutes=2)
+
+
+def test_every_connection_runs_in_utc_whatever_the_server_says(foreign_timezone, client):
+    engine = foreign_timezone
+    for _ in range(2):   # a fresh connection, then the same one reused from the pool
+        with engine.connect() as connection:
+            assert connection.scalar(text("SHOW timezone")) == "UTC"
+            session_now = connection.scalar(text("SELECT now()::timestamp"))
+        assert abs(session_now - datetime.now(timezone.utc).replace(tzinfo=None)) < timedelta(minutes=2)
+
+    with engine.begin() as connection:
+        user_id = create_user(connection, "utc")
+    created = client.post("/chats", headers=bearer(user_id), json={"title": "UTC"}).json()
+    assert near_utc_now(created["created_at"]) and near_utc_now(created["last_activity_at"])
+    events = send(client, user_id, created["id"])
+    activity = next(event for event in events if event["type"] == "chat_activity")
+    assert near_utc_now(activity["last_activity_at"])
+    messages = client.get(f"/chats/{created['id']}/messages", headers=bearer(user_id)).json()
+    assert messages and all(near_utc_now(message["created_at"]) for message in messages)
+    assert near_utc_now(client.get("/auth/me", headers=bearer(user_id)).json()["created_at"])
+
+
+def test_offsets_leave_ordering_and_cursors_unchanged(test_database, client):
+    user_id, _ = seed(test_database.engine, "offsets")
+    titles, response = listed_titles(client, user_id)
+    assert titles == EXPECTED_ORDER
+    assert all(chat["created_at"].endswith("Z") and chat["last_activity_at"].endswith("Z")
+               for chat in response.json())
+    # Stored values are unchanged: the wire value is the stored wall time, labelled UTC.
+    with test_database.engine.connect() as connection:
+        stored = connection.scalar(text("SELECT last_activity_at FROM chats WHERE title = 'created first, active last'"))
+    listed = next(chat for chat in response.json() if chat["title"] == "created first, active last")
+    assert datetime.fromisoformat(listed["last_activity_at"]) == stored.replace(tzinfo=timezone.utc)
+    assert stored == BASE + timedelta(days=8)
+    for limit in (1, 2, 3):
+        assert all_pages(client, user_id, limit) == EXPECTED_ORDER
+
+
+def test_migrations_run_in_utc_whatever_the_server_says(foreign_timezone, client):
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    seen = set()
+
+    def record(connection, cursor, statement, parameters, context, executemany):
+        seen.add(connection.connection.dbapi_connection.info.parameter_status("TimeZone"))
+
+    event.listen(Engine, "before_cursor_execute", record)
+    try:
+        command.downgrade(alembic_config(), PREVIOUS_REVISION)
+        user_id, _ = seed(foreign_timezone, "migration-utc")
+        foreign_timezone.dispose()
+        command.upgrade(alembic_config(), "head")
+    finally:
+        event.remove(Engine, "before_cursor_execute", record)
+    assert seen == {"UTC"}
+    titles, _ = listed_titles(client, user_id)
+    assert titles == EXPECTED_ORDER

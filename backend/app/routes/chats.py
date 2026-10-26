@@ -5,6 +5,7 @@ from app.services.database_queries import release_read_transaction
 from fastapi import Response
 from app.services.pagination import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, paginated
 from sqlalchemy import case, func, select, update
+from app.schemas.timestamps import utc_isoformat
 from sqlalchemy.orm import selectinload
 from app.services.admission_dependencies import admit_chat, admit_search
 from app.services.resource_admission import (
@@ -1392,8 +1393,9 @@ def ask_chat_stream(
                     {
                         "type": "chat_activity",
                         "chat_id": chat_id,
+                        # Same explicit-UTC form as every other API timestamp.
                         "last_activity_at": (
-                            last_activity_at.isoformat()
+                            utc_isoformat(last_activity_at)
                             if last_activity_at
                             else None
                         ),

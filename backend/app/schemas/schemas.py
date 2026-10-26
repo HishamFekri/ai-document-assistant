@@ -1,10 +1,10 @@
-from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 from app.services.assets.image_references import normalize_sources
 from app.services.error_service import public_generation_error
+from app.schemas.timestamps import UtcDateTime
 
 
 class UserResponse(BaseModel):
@@ -12,7 +12,7 @@ class UserResponse(BaseModel):
     email: str
     name: str | None
     picture: str | None
-    created_at: datetime
+    created_at: UtcDateTime
 
     model_config = ConfigDict(
         from_attributes=True
@@ -38,7 +38,7 @@ class DocumentResponse(BaseModel):
     # not tracked (processed before this field existed).
     missing_image_count: int | None = None
 
-    created_at: datetime
+    created_at: UtcDateTime
 
     model_config = ConfigDict(
         from_attributes=True
@@ -60,8 +60,8 @@ class ChatResponse(BaseModel):
     title: str | None
     is_pinned: bool
     is_archived: bool
-    created_at: datetime
-    last_activity_at: datetime
+    created_at: UtcDateTime
+    last_activity_at: UtcDateTime
     documents: list[DocumentResponse]
 
     model_config = ConfigDict(
@@ -98,7 +98,7 @@ class MessageResponse(BaseModel):
 
     documents: list[DocumentResponse] = []
 
-    created_at: datetime
+    created_at: UtcDateTime
 
     model_config = ConfigDict(
         from_attributes=True
