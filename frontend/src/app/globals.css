@@ -1272,3 +1272,43 @@ html.dark:has(.aura) body {
     scale: none;
   }
 }
+
+/* Landing: show the Aura capture that matches the active theme. */
+.landing-shot {
+  display: block;
+}
+
+.landing-shot-dark,
+html.dark .landing-shot-light {
+  display: none;
+}
+
+html.dark .landing-shot-dark {
+  display: block;
+}
+
+/* Landing footer: the author's name links to their site. */
+.landing-name-link {
+  border-radius: 4px;
+  text-decoration-line: underline;
+  text-decoration-color: transparent;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+  transition: color 160ms ease, text-decoration-color 160ms ease;
+}
+
+.landing-name-link:hover {
+  color: var(--primary);
+  text-decoration-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+
+.landing-name-link:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-name-link {
+    transition: none;
+  }
+}

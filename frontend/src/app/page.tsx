@@ -8,10 +8,11 @@ import {
 import {
   ArrowRight,
   FileSpreadsheet,
-  FileText,
+  ListChecks,
   MessageSquareText,
-  Search,
-  ShieldCheck,
+  Pin,
+  ScrollText,
+  Sigma,
   X,
 } from "lucide-react";
 
@@ -645,293 +646,9 @@ function ProductPreview() {
           </div>
 
 
-          <div
-            className="
-              grid
-              min-h-[540px]
-              md:grid-cols-[220px_1fr]
-            "
-          >
-            {/* Sidebar preview */}
-            <div
-              className="
-                hidden
-                border-r
-                border-[var(--border)]
-                bg-[var(--background)]
-                p-4
-                md:block
-              "
-            >
-              <div
-                className="
-                  flex
-                  items-center
-                  rounded-xl
-                  px-2
-                  py-2
-                  text-[12px]
-                  font-medium
-                "
-              >
-                New chat
-              </div>
-
-
-              <div
-                className="
-                  mt-6
-                  px-2
-                  text-[10px]
-                  font-medium
-                  uppercase
-                  tracking-[0.08em]
-                  text-[var(--text-muted)]
-                "
-              >
-                Recent
-              </div>
-
-
-              <div className="mt-2 space-y-1">
-                <DemoChatRow
-                  active
-                  text="Technical manual"
-                />
-
-                <DemoChatRow
-                  text="Project requirements"
-                />
-
-                <DemoChatRow
-                  text="Research notes"
-                />
-              </div>
-            </div>
-
-
-            {/* Main preview */}
-            <div
-              className="
-                flex
-                min-w-0
-                flex-col
-                bg-[var(--background)]
-              "
-            >
-              <div
-                className="
-                  flex
-                  h-14
-                  items-center
-                  justify-between
-                  border-b
-                  border-[var(--border)]
-                  px-5
-                "
-              >
-                <p
-                  className="
-                    truncate
-                    text-[13px]
-                    font-medium
-                  "
-                >
-                  Technical manual
-                </p>
-
-
-                <div
-                  className="
-                    flex
-                    items-center
-                    gap-2
-                    text-[11px]
-                    text-[var(--text-muted)]
-                  "
-                >
-                  <FileText size={14} />
-
-                  Documents
-                </div>
-              </div>
-
-
-              <div
-                className="
-                  flex
-                  flex-1
-                  flex-col
-                  justify-between
-                  p-5
-                  sm:p-8
-                "
-              >
-                <div
-                  className="
-                    mx-auto
-                    w-full
-                    max-w-2xl
-                    space-y-8
-                  "
-                >
-                  {/* User message */}
-                  <div className="flex justify-end">
-                    <div
-                      className="
-                        max-w-[75%]
-                        rounded-[20px]
-                        rounded-br-[6px]
-                        bg-[var(--surface-active)]
-                        px-4
-                        py-3
-                        text-[13px]
-                        leading-6
-                        text-[var(--text-primary)]
-                      "
-                    >
-                      What do labels 1 and 2 identify in
-                      the diagram?
-                    </div>
-                  </div>
-
-
-                  {/* AI message */}
-                  <div className="flex gap-3">
-                    <div
-                      className="
-                        mt-0.5
-                        flex
-                        h-7
-                        w-7
-                        shrink-0
-                        items-center
-                        justify-center
-                        rounded-full
-                        border
-                        border-[var(--border)]
-                        bg-[var(--surface)]
-                        text-[9px]
-                        font-semibold
-                        text-[var(--primary)]
-                      "
-                    >
-                      AI
-                    </div>
-
-
-                    <div className="max-w-xl">
-                      <p
-                        className="
-                          text-[13px]
-                          leading-6
-                          text-[var(--text-primary)]
-                        "
-                      >
-                        Labels 1 and 2 identify the vacuum
-                        cells. Label 1 refers to the vacuum
-                        cell for the large flap, while label
-                        2 identifies the vacuum cell for the
-                        small flap.
-                      </p>
-
-
-                      <button
-                        type="button"
-                        className="
-                          mt-4
-                          flex
-                          items-center
-                          gap-2
-                          rounded-lg
-                          border
-                          border-[var(--border)]
-                          bg-[var(--surface)]
-                          px-2.5
-                          py-1.5
-                          text-[10px]
-                          text-[var(--text-secondary)]
-                          transition
-                          hover:bg-[var(--surface-hover)]
-                          hover:text-[var(--primary)]
-                        "
-                      >
-                        <FileText
-                          size={12}
-                          className="
-                            text-[var(--primary)]
-                          "
-                        />
-
-                        Technical Manual · Page 24
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-
-                {/* Fake composer */}
-                <div
-                  className="
-                    mx-auto
-                    mt-12
-                    w-full
-                    max-w-2xl
-                  "
-                >
-                  <div
-                    className="
-                      flex
-                      min-h-[56px]
-                      items-center
-                      gap-3
-                      rounded-[28px]
-                      border
-                      border-[var(--border)]
-                      bg-[var(--surface)]
-                      px-4
-                      shadow-sm
-                    "
-                  >
-                    <span
-                      className="
-                        text-xl
-                        font-light
-                        text-[var(--text-muted)]
-                      "
-                    >
-                      +
-                    </span>
-
-                    <span
-                      className="
-                        flex-1
-                        text-[12px]
-                        text-[var(--text-muted)]
-                      "
-                    >
-                      Ask anything
-                    </span>
-
-                    <div
-                      className="
-                        flex
-                        h-8
-                        w-8
-                        items-center
-                        justify-center
-                        rounded-full
-                        bg-[var(--primary)]
-                        text-white
-                      "
-                    >
-                      <ArrowRight size={14} />
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          {/* The real Aura workspace, captured with demo data. */}
+          <AuraScreenshot theme="light" />
+          <AuraScreenshot theme="dark" />
         </div>
 
 
@@ -953,34 +670,40 @@ function ProductPreview() {
 
 
 /* =========================================================
-   DEMO CHAT ROW
+   AURA SCREENSHOT
 ========================================================= */
 
-function DemoChatRow({
-  text,
-  active = false,
+// One picture per theme; the inactive one is hidden, and lazy loading means
+// it is never downloaded. Phones get a portrait capture of the same chat.
+function AuraScreenshot({
+  theme,
 }: {
-  text: string;
-  active?: boolean;
+  theme: "light" | "dark";
 }) {
   return (
-    <div
-      className={`
-        truncate
-        rounded-lg
-        px-2
-        py-2
-        text-[11px]
+    <picture className={`landing-shot landing-shot-${theme}`}>
+      <source
+        media="(max-width: 639px)"
+        srcSet={`/landing/aura-mobile-${theme}.webp`}
+        width={390}
+        height={960}
+      />
 
-        ${
-          active
-            ? "bg-[var(--surface-active)] text-[var(--text-primary)]"
-            : "text-[var(--text-secondary)]"
-        }
-      `}
-    >
-      {text}
-    </div>
+      <img
+        src={`/landing/aura-desktop-${theme}.webp`}
+        srcSet={`/landing/aura-desktop-${theme}.webp 1x, /landing/aura-desktop-${theme}@2x.webp 2x`}
+        width={1280}
+        height={760}
+        loading="lazy"
+        decoding="async"
+        alt="The AI Document Assistant workspace: a chat about a supplier agreement, answered with page citations, a table and a formula."
+        className="
+          block
+          h-auto
+          w-full
+        "
+      />
+    </picture>
   );
 }
 
@@ -1075,27 +798,39 @@ function Features() {
             "
           >
             <Feature
-              icon={<Search size={18} />}
-              title="Grounded answers"
-              description="Answers are based on your uploaded documents, with relevant context retrieved automatically."
+              icon={<MessageSquareText size={18} />}
+              title="AI document chat"
+              description="Ask questions about your files and get clear answers, with citations that point to the source."
+            />
+
+            <Feature
+              icon={<ListChecks size={18} />}
+              title="Smart summaries"
+              description="Turn long documents into organized summaries that bring the important points forward."
+            />
+
+            <Feature
+              icon={<ScrollText size={18} />}
+              title="Document transcription"
+              description="Read a document's extracted content page by page, in a clean, structured layout."
+            />
+
+            <Feature
+              icon={<Sigma size={18} />}
+              title="Images, tables & equations"
+              description="Figures, tables and math appear properly formatted in answers and summaries, where the file includes them."
             />
 
             <Feature
               icon={<FileSpreadsheet size={18} />}
-              title="One workspace"
-              description="Work across PDFs, Word documents, spreadsheets, and text files together."
+              title="Multiple file formats"
+              description="Upload PDF, Word (DOCX), Excel (XLSX) and plain-text files, and work across them together."
             />
 
             <Feature
-              icon={<ShieldCheck size={18} />}
-              title="Trace the source"
-              description="See the document and location behind an answer instead of trusting a black box."
-            />
-
-            <Feature
-              icon={<MessageSquareText size={18} />}
-              title="Natural conversation"
-              description="Ask follow-up questions naturally without repeatedly searching through files."
+              icon={<Pin size={18} />}
+              title="Organized conversations"
+              description="Pin the chats that matter, archive the rest, and pick up any conversation where you left off."
             />
           </div>
         </div>
@@ -1503,16 +1238,29 @@ function Footer() {
               by
             </span>
 
-            <span
+            <a
+              href="https://hishamjouda.com"
+              target="_blank"
+              rel="noopener noreferrer"
               className="
-                text-sm
-                font-semibold
-                tracking-wide
+                landing-name-link
+                self-start
                 text-[var(--text-primary)]
               "
             >
-              Hesham Jouda
-            </span>
+              {/* Typography stays on the span: the global `a { font: inherit }` reset would override it. */}
+              <span
+                className="
+                  text-sm
+                  font-semibold
+                  tracking-wide
+                "
+              >
+                Hesham Jouda
+              </span>
+
+              <span className="sr-only"> (opens in a new tab)</span>
+            </a>
           </div>
         </div>
 
