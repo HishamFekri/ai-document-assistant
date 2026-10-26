@@ -1461,3 +1461,50 @@ html.dark .brand-github {
 html.dark .brand-linkedin {
   color: #378fe9;
 }
+
+/* Desktop sidebar open/close: the panel that appears grows or shrinks from the
+   other width. Its content keeps its final layout (no squashed text) and is
+   revealed by the panel's clipped edge; the expanded content also fades in. */
+.aura-sidebar-expand {
+  animation: aura-sidebar-expand 240ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+.aura-sidebar-expand > * {
+  min-width: 248px;
+  animation: aura-sidebar-content-in 200ms 60ms ease-out both;
+}
+
+.aura-sidebar-collapse {
+  animation: aura-sidebar-collapse 220ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+.aura-sidebar-collapse > * {
+  min-width: 62px;
+  max-width: 62px;
+}
+
+@keyframes aura-sidebar-expand {
+  from {
+    width: 64px;
+  }
+}
+
+@keyframes aura-sidebar-collapse {
+  from {
+    width: 250px;
+  }
+}
+
+@keyframes aura-sidebar-content-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aura-sidebar-expand,
+  .aura-sidebar-expand > *,
+  .aura-sidebar-collapse {
+    animation: none;
+  }
+}

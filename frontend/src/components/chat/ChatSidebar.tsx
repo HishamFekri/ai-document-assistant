@@ -84,6 +84,13 @@ export default function ChatSidebar({
     setCollapsed,
   ] = useState(false);
 
+  // Which way the last open/close went; the panel that mounts next animates
+  // from the other width. Nothing animates on the first render.
+  const [
+    sidebarMotion,
+    setSidebarMotion,
+  ] = useState<"none" | "expand" | "collapse">("none");
+
 
   const [
     searchOpen,
@@ -407,11 +414,16 @@ export default function ChatSidebar({
           creatingChat
         }
 
-        onOpenSidebar={() =>
+        animate={
+          sidebarMotion === "collapse"
+        }
+
+        onOpenSidebar={() => {
+          setSidebarMotion("expand");
           setCollapsed(
             false
-          )
-        }
+          );
+        }}
 
         onCreateChat={() => {
           onCreateChat();
@@ -440,7 +452,7 @@ export default function ChatSidebar({
         ${
           mobile
             ? "h-full w-[min(86vw,320px)] max-w-[320px] border-r border-[var(--border)]"
-            : "my-2 ml-2 h-[calc(100dvh-1rem)] w-[250px] overflow-hidden rounded-[18px] border border-[var(--border-soft)]"
+            : `my-2 ml-2 h-[calc(100dvh-1rem)] w-[250px] overflow-hidden rounded-[18px] border border-[var(--border-soft)] ${sidebarMotion === "expand" ? "aura-sidebar-expand" : ""}`
         }
       `}
     >
@@ -457,11 +469,12 @@ export default function ChatSidebar({
           )
         }
 
-        onCollapse={() =>
+        onCollapse={() => {
+          setSidebarMotion("collapse");
           setCollapsed(
             true
-          )
-        }
+          );
+        }}
       />
 
 

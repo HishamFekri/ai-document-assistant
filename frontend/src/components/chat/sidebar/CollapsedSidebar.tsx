@@ -25,6 +25,9 @@ type Props = {
 
   creatingChat: boolean;
 
+  // Animate in from the full width (only right after the user collapses it).
+  animate?: boolean;
+
   onOpenSidebar: () => void;
 
   onCreateChat: () => void;
@@ -36,6 +39,7 @@ type Props = {
 export default function CollapsedSidebar({
   user,
   creatingChat,
+  animate = false,
   onOpenSidebar,
   onCreateChat,
   onLogout,
@@ -92,7 +96,8 @@ export default function CollapsedSidebar({
 
   return (
     <aside
-      className="
+      className={`
+        ${animate ? "aura-sidebar-collapse" : ""}
         my-2
         ml-2
         flex
@@ -106,7 +111,7 @@ export default function CollapsedSidebar({
         border-[var(--border-soft)]
         bg-[var(--sidebar)]
         text-[var(--text-primary)]
-      "
+      `}
     >
       <div
         className="
