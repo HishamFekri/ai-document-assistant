@@ -206,6 +206,28 @@ function LandingAmbient() {
 
 
 /* =========================================================
+   SECTION LINKS
+========================================================= */
+
+// Lands the linked section in the middle of the screen rather than under the
+// top edge. The hash still updates, so the address can be shared.
+function scrollToSection(event: React.MouseEvent<HTMLAnchorElement>) {
+  const hash = event.currentTarget.hash;
+  const target = hash ? document.querySelector<HTMLElement>(hash) : null;
+
+  if (!target) {
+    return;
+  }
+
+  event.preventDefault();
+
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  target.scrollIntoView({ block: "center", behavior: reduceMotion ? "auto" : "smooth" });
+  window.history.replaceState(window.history.state, "", hash);
+}
+
+
+/* =========================================================
    THEME TOGGLE
 ========================================================= */
 
@@ -409,6 +431,7 @@ function Navbar() {
         >
           <a
             href="#features"
+            onClick={scrollToSection}
             className="
               transition-colors
               hover:text-[var(--primary)]
@@ -419,6 +442,7 @@ function Navbar() {
 
           <a
             href="#how-it-works"
+            onClick={scrollToSection}
             className="
               transition-colors
               hover:text-[var(--primary)]
@@ -563,6 +587,7 @@ function Hero() {
         >
           <a
             href="#how-it-works"
+            onClick={scrollToSection}
             className="
               group
               flex
@@ -942,7 +967,6 @@ function Features() {
       id="features"
       className="
         relative
-        scroll-mt-24
         border-y
         border-[var(--border)]
       "
@@ -1150,7 +1174,6 @@ function HowItWorks() {
       id="how-it-works"
       className="
         relative
-        scroll-mt-24
         mx-auto
         max-w-6xl
         px-6
