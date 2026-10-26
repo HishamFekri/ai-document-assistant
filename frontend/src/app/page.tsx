@@ -7,12 +7,6 @@ import {
 
 import {
   ArrowRight,
-  FileSpreadsheet,
-  ListChecks,
-  MessageSquareText,
-  Pin,
-  ScrollText,
-  Sigma,
   X,
 } from "lucide-react";
 
@@ -412,9 +406,13 @@ function Hero() {
             sm:text-[18px]
           "
         >
-          Ask questions across PDFs, Word files,
-          spreadsheets, and notes. Get clear answers
-          grounded in the content you actually uploaded.
+          <span className="block">
+            Ask questions across PDFs, Word files, spreadsheets, and notes.
+          </span>
+
+          <span className="block">
+            Get clear answers grounded in the content you actually uploaded.
+          </span>
         </p>
 
 
@@ -444,12 +442,12 @@ function Hero() {
               text-sm
               font-medium
               text-white
-              shadow-[0_10px_35px_rgba(79,70,229,0.20)]
+              shadow-[0_10px_35px_rgba(106,85,216,0.22)]
               transition-all
               duration-200
               hover:-translate-y-0.5
               hover:opacity-90
-              hover:shadow-[0_14px_40px_rgba(79,70,229,0.28)]
+              hover:shadow-[0_14px_40px_rgba(106,85,216,0.30)]
               active:translate-y-0
               active:scale-[0.98]
             "
@@ -568,24 +566,11 @@ function HeroTagline() {
         mb-7
         inline-flex
         items-center
-        gap-2.5
         text-[13px]
         font-medium
         text-[var(--text-secondary)]
       "
     >
-      <span
-        aria-hidden="true"
-        className="
-          h-1.5
-          w-1.5
-          shrink-0
-          rounded-full
-          bg-[var(--primary)]
-          shadow-[0_0_12px_rgba(102,117,232,0.7)]
-        "
-      />
-
       <span className="sr-only">{TAGLINES[0]}</span>
 
       {/* The longest line reserves the width, so nothing shifts while typing. */}
@@ -705,12 +690,6 @@ function ProductPreview() {
               px-5
             "
           >
-            <div className="flex gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
-              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
-              <span className="h-2.5 w-2.5 rounded-full bg-[var(--border)]" />
-            </div>
-
             <span
               className="
                 absolute
@@ -877,37 +856,31 @@ function Features() {
             "
           >
             <Feature
-              icon={<MessageSquareText size={18} />}
               title="AI document chat"
               description="Ask questions about your files and get clear answers, with citations that point to the source."
             />
 
             <Feature
-              icon={<ListChecks size={18} />}
               title="Smart summaries"
               description="Turn long documents into organized summaries that bring the important points forward."
             />
 
             <Feature
-              icon={<ScrollText size={18} />}
               title="Document transcription"
               description="Read a document's extracted content page by page, in a clean, structured layout."
             />
 
             <Feature
-              icon={<Sigma size={18} />}
               title="Images, tables & equations"
               description="Figures, tables and math appear properly formatted in answers and summaries, where the file includes them."
             />
 
             <Feature
-              icon={<FileSpreadsheet size={18} />}
               title="Multiple file formats"
               description="Upload PDF, Word (DOCX), Excel (XLSX) and plain-text files, and work across them together."
             />
 
             <Feature
-              icon={<Pin size={18} />}
               title="Organized conversations"
               description="Pin the chats that matter, archive the rest, and pick up any conversation where you left off."
             />
@@ -924,11 +897,9 @@ function Features() {
 ========================================================= */
 
 function Feature({
-  icon,
   title,
   description,
 }: {
-  icon: React.ReactNode;
   title: string;
   description: string;
 }) {
@@ -942,27 +913,11 @@ function Feature({
         hover:bg-[var(--surface)]
       "
     >
-      <div
-        className="
-          mb-8
-          flex
-          h-9
-          w-9
-          items-center
-          justify-center
-          rounded-lg
-          border
-          border-[var(--border)]
-          text-[var(--primary)]
-        "
-      >
-        {icon}
-      </div>
-
       <h3
         className="
-          text-[14px]
+          text-[15px]
           font-semibold
+          tracking-[-0.01em]
         "
       >
         {title}
@@ -1044,35 +999,118 @@ function HowItWorks() {
       </div>
 
 
-      <div
+      <ol
         className="
-          relative
           mx-auto
           mt-16
           grid
-          max-w-4xl
-          gap-4
+          max-w-5xl
+          gap-14
           md:grid-cols-3
+          md:gap-x-10
+          md:gap-y-0
         "
       >
         <Step
           number="01"
           title="Add your files"
-          description="Upload the documents you want to work with."
-        />
+          description="Upload PDFs, Word documents, spreadsheets or text files. Work with one file or several at once."
+        >
+          <div className="space-y-2">
+            <FileLine name="Supplier Agreement 2026" type="PDF" />
+            <FileLine name="Regional Revenue Q3" type="XLSX" />
+            <FileLine name="Product Research Notes" type="DOCX" />
+          </div>
+        </Step>
 
         <Step
           number="02"
-          title="We prepare them"
-          description="The system extracts, organizes, and indexes their content."
-        />
+          title="Every page is read"
+          description="Text, tables, images and equations are extracted and indexed, so the details are there when you ask."
+        >
+          <div
+            className="
+              rounded-xl
+              border
+              border-[var(--border)]
+              bg-[var(--surface)]
+              px-4
+              py-3.5
+            "
+          >
+            <div
+              className="
+                flex
+                items-baseline
+                justify-between
+                gap-3
+                text-[12px]
+              "
+            >
+              <span className="truncate font-medium">
+                Supplier Agreement 2026
+              </span>
+
+              <span className="shrink-0 text-[var(--text-muted)]">
+                30 of 42 pages
+              </span>
+            </div>
+
+            <div
+              className="
+                mt-3
+                h-1
+                overflow-hidden
+                rounded-full
+                bg-[var(--surface-active)]
+              "
+            >
+              <div className="landing-progress h-full w-[71%] rounded-full bg-[var(--primary)]" />
+            </div>
+          </div>
+        </Step>
 
         <Step
           number="03"
-          title="Start asking"
-          description="Ask naturally and get answers grounded in those files."
-        />
-      </div>
+          title="Ask and check"
+          description="Ask in plain language. Each answer cites the page it came from, so you can verify it in seconds."
+        >
+          <div className="space-y-2.5 text-[12px] leading-5">
+            <p
+              className="
+                ml-auto
+                w-fit
+                max-w-[85%]
+                rounded-2xl
+                rounded-br-md
+                bg-[var(--surface-active)]
+                px-3.5
+                py-2
+              "
+            >
+              When can we end the contract?
+            </p>
+
+            <p className="pr-4 text-[var(--text-secondary)]">
+              Either party can end it with 90 days&apos; notice.{" "}
+              <span
+                className="
+                  whitespace-nowrap
+                  rounded-md
+                  bg-[var(--primary-soft)]
+                  px-1.5
+                  py-0.5
+                  text-[11px]
+                  font-medium
+                  text-[var(--primary)]
+                "
+              >
+                p. 18
+              </span>
+            </p>
+          </div>
+        </Step>
+      </ol>
     </section>
   );
 }
@@ -1082,72 +1120,118 @@ function HowItWorks() {
    STEP
 ========================================================= */
 
+// An open step: a small scene from the product, then a numbered caption under
+// a hairline. No card, so the three read as one flow.
 function Step({
   number,
   title,
   description,
+  children,
 }: {
   number: string;
   title: string;
   description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    // Subgrid rows line the scenes and captions up across the three steps.
+    <li className="grid grid-rows-[auto_auto] md:row-span-2 md:grid-rows-subgrid">
+      <div
+        aria-hidden="true"
+        className="
+          flex
+          flex-col
+          justify-end
+          pb-7
+        "
+      >
+        {children}
+      </div>
+
+      <div
+        className="
+          border-t
+          border-[var(--border)]
+          pt-6
+        "
+      >
+        <div className="flex items-baseline gap-3">
+          <span
+            className="
+              text-[13px]
+              font-semibold
+              tabular-nums
+              text-[var(--primary)]
+            "
+          >
+            {number}
+          </span>
+
+          <h3
+            className="
+              text-[16px]
+              font-semibold
+              tracking-[-0.01em]
+            "
+          >
+            {title}
+          </h3>
+        </div>
+
+        <p
+          className="
+            mt-3
+            text-[14px]
+            leading-6
+            text-[var(--text-secondary)]
+          "
+        >
+          {description}
+        </p>
+      </div>
+    </li>
+  );
+}
+
+
+function FileLine({
+  name,
+  type,
+}: {
+  name: string;
+  type: string;
 }) {
   return (
     <div
       className="
-        rounded-2xl
+        flex
+        items-center
+        justify-between
+        gap-3
+        rounded-xl
         border
         border-[var(--border)]
         bg-[var(--surface)]
-        p-6
+        px-3.5
+        py-2.5
+        text-[12px]
       "
     >
-      <div
-        className="
-          mb-12
-          flex
-          items-center
-          justify-between
-        "
-      >
-        <span
-          className="
-            text-[11px]
-            font-medium
-            text-[var(--text-muted)]
-          "
-        >
-          {number}
-        </span>
+      <span className="truncate font-medium">
+        {name}
+      </span>
 
-        <span
-          className="
-            h-1.5
-            w-1.5
-            rounded-full
-            bg-[var(--primary)]
-          "
-        />
-      </div>
-
-      <h3
+      <span
         className="
-          text-[14px]
+          shrink-0
+          text-[10px]
           font-semibold
+          tracking-[0.06em]
+          text-[var(--text-muted)]
         "
       >
-        {title}
-      </h3>
-
-      <p
-        className="
-          mt-2
-          text-[13px]
-          leading-6
-          text-[var(--text-secondary)]
-        "
-      >
-        {description}
-      </p>
+        {type}
+      </span>
     </div>
   );
 }

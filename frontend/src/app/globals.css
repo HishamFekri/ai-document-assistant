@@ -19,9 +19,9 @@
   --text-secondary: #5d5d5d;
   --text-muted: #8f8f8f;
 
-  --primary: #4169e1;
-  --primary-hover: #3558c8;
-  --primary-soft: #e8edff;
+  --primary: #6a55d8;
+  --primary-hover: #5a46c6;
+  --primary-soft: #efecfd;
 
   --composer: #ffffff;
   --composer-border: #dedede;
@@ -65,9 +65,9 @@ html.dark {
   --text-secondary: #d0d0d0;
   --text-muted: #8e8e8e;
 
-  --primary: #6675e8;
-  --primary-hover: #7481ed;
-  --primary-soft: #1b203d;
+  --primary: #7060e6;
+  --primary-hover: #7d6eeb;
+  --primary-soft: #1f1a3f;
 
   --composer: #171717;
   --composer-border: #303030;
@@ -1332,6 +1332,24 @@ html.dark .landing-shot-dark {
 
 @media (prefers-reduced-motion: reduce) {
   .landing-caret {
+    animation: none;
+  }
+}
+
+/* Landing "How it works": the reading bar fills once when the page loads. */
+.landing-progress {
+  transform-origin: left center;
+  animation: landing-progress-fill 1.6s cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+@keyframes landing-progress-fill {
+  from {
+    transform: scaleX(0.15);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-progress {
     animation: none;
   }
 }
