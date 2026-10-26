@@ -1353,3 +1353,23 @@ html.dark .landing-shot-dark {
     animation: none;
   }
 }
+
+/* Landing navbar: sticky; gains a translucent, blurred backing once scrolled. */
+.landing-navbar {
+  border-bottom: 1px solid transparent;
+  transition: background-color 200ms ease, border-color 200ms ease, backdrop-filter 200ms ease;
+}
+
+.landing-navbar[data-scrolled="true"] {
+  background-color: color-mix(in srgb, var(--background) 72%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--border) 70%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+}
+
+/* In-page links (Features, How it works) glide instead of jumping. */
+@media (prefers-reduced-motion: no-preference) {
+  html:has(.landing-page) {
+    scroll-behavior: smooth;
+  }
+}

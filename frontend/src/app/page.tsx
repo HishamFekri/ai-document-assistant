@@ -21,9 +21,10 @@ export default function Home() {
   return (
     <main
       className="
+        landing-page
         relative
         min-h-screen
-        overflow-hidden
+        overflow-clip
         bg-[var(--background)]
         text-[var(--text-primary)]
         transition-colors
@@ -316,74 +317,97 @@ function ThemedGoogleLoginButton() {
    NAVBAR
 ========================================================= */
 
+function subscribeToScroll(onChange: () => void) {
+  window.addEventListener("scroll", onChange, { passive: true });
+  return () => window.removeEventListener("scroll", onChange);
+}
+
+
 function Navbar() {
+  const scrolled = useSyncExternalStore(
+    subscribeToScroll,
+    () => window.scrollY > 8,
+    () => false
+  );
+
   return (
-    <nav
+    // Stays in view while scrolling, so the section links are always reachable.
+    <header
+      data-scrolled={scrolled}
       className="
-        mx-auto
-        flex
-        max-w-7xl
-        items-center
-        justify-between
-        px-6
-        py-6
-        lg:px-8
+        landing-navbar
+        sticky
+        top-0
+        z-50
       "
     >
-      <div className="flex items-center">
-        <span
-          className="
-            text-[15px]
-            font-semibold
-            tracking-[-0.02em]
-          "
-        >
-          AI Document Assistant
-        </span>
-      </div>
-
-
-      <div
+      <nav
         className="
-          hidden
+          mx-auto
+          flex
+          max-w-7xl
           items-center
-          gap-8
-          text-[13px]
-          text-[var(--text-secondary)]
-          md:flex
+          justify-between
+          px-6
+          py-6
+          lg:px-8
         "
       >
-        <a
-          href="#features"
-          className="
-            transition-colors
-            hover:text-[var(--primary)]
-          "
-        >
-          Features
-        </a>
-
-        <a
-          href="#how-it-works"
-          className="
-            transition-colors
-            hover:text-[var(--primary)]
-          "
-        >
-          How it works
-        </a>
-      </div>
-
-
-      <div className="flex items-center gap-2.5">
-        <LandingThemeToggle />
-
-        {/* Phones use the sign-in button in the hero, just below. */}
-        <div className="hidden sm:block">
-          <ThemedGoogleLoginButton />
+        <div className="flex items-center">
+          <span
+            className="
+              text-[15px]
+              font-semibold
+              tracking-[-0.02em]
+            "
+          >
+            AI Document Assistant
+          </span>
         </div>
-      </div>
-    </nav>
+
+
+        <div
+          className="
+            hidden
+            items-center
+            gap-8
+            text-[13px]
+            text-[var(--text-secondary)]
+            md:flex
+          "
+        >
+          <a
+            href="#features"
+            className="
+              transition-colors
+              hover:text-[var(--primary)]
+            "
+          >
+            Features
+          </a>
+
+          <a
+            href="#how-it-works"
+            className="
+              transition-colors
+              hover:text-[var(--primary)]
+            "
+          >
+            How it works
+          </a>
+        </div>
+
+
+        <div className="flex items-center gap-2.5">
+          <LandingThemeToggle />
+
+          {/* Phones use the sign-in button in the hero, just below. */}
+          <div className="hidden sm:block">
+            <ThemedGoogleLoginButton />
+          </div>
+        </div>
+      </nav>
+    </header>
   );
 }
 
@@ -887,6 +911,7 @@ function Features() {
       id="features"
       className="
         relative
+        scroll-mt-24
         border-y
         border-[var(--border)]
       "
@@ -1094,6 +1119,7 @@ function HowItWorks() {
       id="how-it-works"
       className="
         relative
+        scroll-mt-24
         mx-auto
         max-w-6xl
         px-6
