@@ -139,8 +139,10 @@ function LandingAmbient() {
           w-[900px]
           -translate-x-1/2
           rounded-full
-          bg-blue-500/[0.10]
-          blur-[150px]
+          landing-glow
+          [--glow:var(--color-blue-500)]
+          [--glow-alpha:0.10]
+          [--glow-blur:150px]
         "
       />
 
@@ -153,8 +155,10 @@ function LandingAmbient() {
           h-[430px]
           w-[430px]
           rounded-full
-          bg-indigo-500/[0.08]
-          blur-[140px]
+          landing-glow
+          [--glow:var(--color-indigo-500)]
+          [--glow-alpha:0.08]
+          [--glow-blur:140px]
         "
       />
 
@@ -167,8 +171,10 @@ function LandingAmbient() {
           h-[470px]
           w-[470px]
           rounded-full
-          bg-blue-400/[0.08]
-          blur-[150px]
+          landing-glow
+          [--glow:var(--color-blue-400)]
+          [--glow-alpha:0.08]
+          [--glow-blur:150px]
         "
       />
 
@@ -182,8 +188,10 @@ function LandingAmbient() {
           w-[900px]
           -translate-x-1/2
           rounded-full
-          bg-indigo-500/[0.05]
-          blur-[170px]
+          landing-glow
+          [--glow:var(--color-indigo-500)]
+          [--glow-alpha:0.05]
+          [--glow-blur:170px]
         "
       />
 
@@ -500,8 +508,10 @@ function Hero() {
           -translate-x-1/2
           -translate-y-1/2
           rounded-full
-          bg-blue-500/[0.08]
-          blur-[110px]
+          landing-glow
+          [--glow:var(--color-blue-500)]
+          [--glow-alpha:0.08]
+          [--glow-blur:110px]
         "
       />
 
@@ -821,8 +831,10 @@ function ProductPreview() {
             -translate-x-1/2
             -translate-y-1/2
             rounded-full
-            bg-blue-500/[0.07]
-            blur-[130px]
+            landing-glow
+            [--glow:var(--color-blue-500)]
+            [--glow-alpha:0.07]
+            [--glow-blur:130px]
           "
         />
 
@@ -837,8 +849,10 @@ function ProductPreview() {
           top-[8%]
           h-[300px]
           w-[380px]
-          bg-violet-500/[0.13]
-          blur-[120px]
+          landing-glow
+          [--glow:var(--color-violet-500)]
+          [--glow-alpha:0.13]
+          [--glow-blur:120px]
           "
         />
 
@@ -853,8 +867,10 @@ function ProductPreview() {
           left-[-6%]
           h-[260px]
           w-[340px]
-          bg-indigo-500/[0.11]
-          blur-[120px]
+          landing-glow
+          [--glow:var(--color-indigo-500)]
+          [--glow-alpha:0.11]
+          [--glow-blur:120px]
           "
         />
 
@@ -982,8 +998,10 @@ function Features() {
           top-[18%]
           h-[360px]
           w-[460px]
-          bg-indigo-500/[0.13]
-          blur-[140px]
+          landing-glow
+          [--glow:var(--color-indigo-500)]
+          [--glow-alpha:0.13]
+          [--glow-blur:140px]
           "
         />
 
@@ -998,8 +1016,10 @@ function Features() {
           top-[30%]
           h-[460px]
           w-[560px]
-          bg-violet-500/[0.15]
-          blur-[150px]
+          landing-glow
+          [--glow:var(--color-violet-500)]
+          [--glow-alpha:0.15]
+          [--glow-blur:150px]
           "
         />
 
@@ -1194,8 +1214,10 @@ function HowItWorks() {
           w-[620px]
           max-w-[90vw]
           -translate-x-1/2
-          bg-violet-500/[0.15]
-          blur-[140px]
+          landing-glow
+          [--glow:var(--color-violet-500)]
+          [--glow-alpha:0.15]
+          [--glow-blur:140px]
           "
         />
 
@@ -1210,8 +1232,10 @@ function HowItWorks() {
           top-[40%]
           h-[300px]
           w-[360px]
-          bg-blue-500/[0.12]
-          blur-[130px]
+          landing-glow
+          [--glow:var(--color-blue-500)]
+          [--glow-alpha:0.12]
+          [--glow-blur:130px]
           "
         />
 
@@ -1528,8 +1552,10 @@ function FinalCTA() {
           max-w-[95vw]
           -translate-x-1/2
           -translate-y-1/2
-          bg-indigo-500/[0.13]
-          blur-[150px]
+          landing-glow
+          [--glow:var(--color-indigo-500)]
+          [--glow-alpha:0.13]
+          [--glow-blur:150px]
           "
         />
 
@@ -1564,8 +1590,10 @@ function FinalCTA() {
             -translate-x-1/2
             -translate-y-1/2
             rounded-full
-            bg-blue-500/[0.18]
-            blur-[110px]
+            landing-glow
+            [--glow:var(--color-blue-500)]
+            [--glow-alpha:0.18]
+            [--glow-blur:110px]
           "
         />
 
@@ -1639,8 +1667,10 @@ function Footer() {
           left-[8%]
           h-[260px]
           w-[420px]
-          bg-violet-500/[0.12]
-          blur-[130px]
+          landing-glow
+          [--glow:var(--color-violet-500)]
+          [--glow-alpha:0.12]
+          [--glow-blur:130px]
           "
         />
 
@@ -1676,8 +1706,12 @@ function Footer() {
             "
           >
             <img
-              src="/hj-logo.png"
+              src="/hj-logo-120.webp"
               alt="Hisham Jouda logo"
+              width={40}
+              height={40}
+              loading="lazy"
+              decoding="async"
               className="
                 h-10
                 w-10

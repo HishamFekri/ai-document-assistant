@@ -615,21 +615,15 @@ html:not(.dark) .ambient-noise {
 }
 
 
+/* Opacity only: animating text-shadow repaints the hero (and everything
+   overlapping it) on every frame, which WebKit does very slowly. */
 @keyframes hero-accent-pulse {
   0% {
     opacity: 0.86;
-
-    text-shadow:
-      0 0 18px
-      rgba(143, 126, 231, 0.08);
   }
 
   100% {
     opacity: 1;
-
-    text-shadow:
-      0 0 28px
-      rgba(143, 126, 231, 0.17);
   }
 }
 
@@ -1392,4 +1386,28 @@ html.dark .landing-shot-dark {
   .landing-navbar {
     transition: none;
   }
+}
+
+/* Landing glows: a radial gradient shaped like a Gaussian-blurred ellipse.
+   Same size, colour, strength and softness as the former filter: blur(), but
+   without a filter, which WebKit re-rasterises on every repaint. The element
+   keeps its position classes; the glow extends 2 x blur beyond it, as a blur
+   would. Set --glow (colour), --glow-alpha and --glow-blur on the element. */
+.landing-glow::before {
+  --glow-a: calc(var(--glow-alpha) * 100%);
+  content: "";
+  position: absolute;
+  inset: calc(var(--glow-blur) * -2);
+  pointer-events: none;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.977), transparent) 0%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.841), transparent) 25%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.691), transparent) 37.5%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.5), transparent) 50%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.309), transparent) 62.5%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.159), transparent) 75%,
+    color-mix(in oklab, var(--glow) calc(var(--glow-a) * 0.067), transparent) 87.5%,
+    transparent 100%
+  );
 }
