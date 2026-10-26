@@ -336,8 +336,17 @@ rejected with 400 rather than paging under the old order.
 
 Upgrade adds the column `NOT NULL DEFAULT now()` (no table rewrite on PostgreSQL
 11+), backfills it from each chat's latest user message or its creation time, and
-commits; it then builds the index concurrently in an autocommit block. If the
-build is interrupted, the revision stays at `8e4a1d7c3f25`: drop the invalid
-index after inspecting it as described above and re-run the upgrade (the column
-step is idempotent). Downgrade drops the index concurrently, then the column.
+commits; it then builds the index concurrently in an autocommit block.
+Downgrade drops the index concurrently, then the column.
 `ix_chats_user_archive_pin_created_id` is kept.
+
+Lock waits are bounded so a deploy cannot stall the application. The column and
+backfill run with `SET LOCAL lock_timeout` (`MIGRATION_LOCK_TIMEOUT`, default
+`5s`): a long-running transaction makes the migration fail and roll back instead
+of queueing every chat query behind `ALTER TABLE`. The concurrent build uses
+`MIGRATION_INDEX_LOCK_TIMEOUT` (default `60s`). If the build fails or is
+interrupted, the revision stays at `8e4a1d7c3f25` and the upgrade can simply be
+re-run: the column step is idempotent and an INVALID index left by an earlier
+attempt is dropped automatically. A VALID index of the same name is never
+dropped; the upgrade fails until it is inspected. Recovery and rollback steps are
+in `docs/rollback-runbook.md`.

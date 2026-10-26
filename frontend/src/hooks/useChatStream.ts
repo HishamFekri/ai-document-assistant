@@ -194,6 +194,7 @@ export function useChatStream({
 }: Params) {
   const scope = useRequestScope(String(chatId));
   const stopRunRef = useRef<(() => void) | null>(null);
+  const abandonRunRef = useRef<(() => void) | null>(null);
   const temporaryIdRef = useRef(-1);
   const router =
     useRouter();
@@ -536,6 +537,19 @@ export function useChatStream({
           : message));
       setSending(false); setComposerError(null); sendingRef.current = false;
       abortControllerRef.current = null;
+      scope.cancel("stream");
+    };
+
+    // The user moved on (New chat): cancel this answer like leaving the chat does,
+    // without touching the new view and without navigating when it would have ended.
+    abandonRunRef.current = () => {
+      if (!request.current()) return;
+      answerBatcher.cancel();
+      discardCreatedChat();
+      setSending(false); setComposerError(null); sendingRef.current = false;
+      abortControllerRef.current = null;
+      stopRunRef.current = null;
+      abandonRunRef.current = null;
       scope.cancel("stream");
     };
 
@@ -1128,6 +1142,7 @@ export function useChatStream({
         sendingRef.current = false;
         setSending(false);
         stopRunRef.current = null;
+        abandonRunRef.current = null;
         request.finish();
       }
     }
@@ -1241,6 +1256,8 @@ export function useChatStream({
 
   function stopGeneration() { stopRunRef.current?.(); }
 
+  function abandonGeneration() { abandonRunRef.current?.(); }
+
 
   return {
     question,
@@ -1258,5 +1275,6 @@ export function useChatStream({
     sendQuestionText,
     retryMessage,
     stopGeneration,
+    abandonGeneration,
   };
 }

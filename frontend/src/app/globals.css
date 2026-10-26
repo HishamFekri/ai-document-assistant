@@ -1243,11 +1243,6 @@ html:not(.dark) .aura .aura-orb {
 }
 
 
-.aura-cite-tip[data-placement="above"] {
-  transform: translateY(-100%);
-}
-
-
 @keyframes aura-tip-in {
   from {
     opacity: 0;

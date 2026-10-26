@@ -8,17 +8,17 @@ import {
   useState,
 } from "react";
 
-
-type Anchor = {
-  x: number;
-  y: number;
-  above: boolean;
-};
-
-const VIEWPORT_GUTTER = 12;
+import {
+  CLOSED,
+  nextPopoverState,
+  placeTip,
+  type PopoverEvent,
+} from "@/lib/citation-popover";
 
 
-// Short source label inside an answer; the full reference opens on hover, focus or tap.
+// Short source label inside an answer. Mouse: hover previews, click pins.
+// Touch: a tap opens and a second tap (or a tap elsewhere) closes.
+// Keyboard: focus previews, Enter or Space pins, Escape closes.
 export default function CitationChip({
   label,
   full,
@@ -36,130 +36,108 @@ export default function CitationChip({
       null
     );
 
+  // Pointer type of the press in progress; click events do not carry it everywhere.
+  const pressPointer =
+    useRef("mouse");
+
   const tipId =
     useId();
 
   const [
-    anchor,
-    setAnchor,
-  ] = useState<Anchor | null>(
-    null
-  );
+    state,
+    setState,
+  ] = useState(CLOSED);
 
 
-  function show() {
-    const rect =
-      chipRef.current
-        ?.getBoundingClientRect();
-
-    if (!rect) {
-      return;
-    }
-
-    const above =
-      rect.top > 120;
-
-    setAnchor({
-      x: rect.left + rect.width / 2,
-      y: above
-        ? rect.top - 8
-        : rect.bottom + 8,
-      above,
-    });
+  function send(event: PopoverEvent) {
+    setState((current) => nextPopoverState(current, event));
   }
 
 
-  function hide() {
-    setAnchor(null);
-  }
-
-
-  // Centre on the chip, then clamp to the viewport once the width is known.
+  // Measure first, then place inside the viewport.
   useLayoutEffect(() => {
-    const tip =
-      tipRef.current;
+    const chip = chipRef.current;
+    const tip = tipRef.current;
 
-    if (
-      !anchor
-      || !tip
-    ) {
+    if (!state.open || !chip || !tip) {
       return;
     }
 
-    const width =
-      tip.offsetWidth;
+    const placed = placeTip(
+      chip.getBoundingClientRect(),
+      { width: tip.offsetWidth, height: tip.offsetHeight },
+      { width: window.innerWidth, height: window.innerHeight }
+    );
 
-    const left =
-      Math.min(
-        Math.max(
-          VIEWPORT_GUTTER,
-          anchor.x - width / 2
-        ),
-        window.innerWidth - width - VIEWPORT_GUTTER
-      );
-
-    tip.style.left = `${left}px`;
+    tip.style.left = `${placed.left}px`;
+    tip.style.top = `${placed.top}px`;
+    tip.dataset.placement = placed.placement;
+    tip.style.visibility = "visible";
   }, [
-    anchor,
+    state.open,
   ]);
 
 
   useEffect(() => {
-    if (!anchor) {
+    if (!state.open) {
       return;
     }
 
-    window.addEventListener(
-      "scroll",
-      hide,
-      true
-    );
+    const dismiss = () => setState(CLOSED);
 
-    window.addEventListener(
-      "resize",
-      hide
-    );
+    const outside = (event: PointerEvent) => {
+      if (!chipRef.current?.contains(event.target as Node)) {
+        dismiss();
+      }
+    };
+
+    window.addEventListener("scroll", dismiss, true);
+    window.addEventListener("resize", dismiss);
+    document.addEventListener("pointerdown", outside);
 
     return () => {
-      window.removeEventListener(
-        "scroll",
-        hide,
-        true
-      );
-
-      window.removeEventListener(
-        "resize",
-        hide
-      );
+      window.removeEventListener("scroll", dismiss, true);
+      window.removeEventListener("resize", dismiss);
+      document.removeEventListener("pointerdown", outside);
     };
   }, [
-    anchor,
+    state.open,
   ]);
 
 
   return (
     <span
       ref={chipRef}
+      role="button"
       tabIndex={0}
+      aria-expanded={state.open}
       aria-describedby={
-        anchor
+        state.open
           ? tipId
           : undefined
       }
-      onMouseEnter={show}
-      onMouseLeave={hide}
-      onFocus={show}
-      onBlur={hide}
+      onPointerDown={(event) => {
+        pressPointer.current = event.pointerType || "mouse";
+      }}
+      onPointerEnter={(event) => {
+        send({ type: "pointer-enter", pointerType: event.pointerType });
+      }}
+      onPointerLeave={(event) => {
+        send({ type: "pointer-leave", pointerType: event.pointerType });
+      }}
       onClick={() => {
-        if (anchor) {
-          hide();
-        } else {
-          show();
-        }
+        send({ type: "press", pointerType: pressPointer.current });
+      }}
+      onFocus={(event) => {
+        send({ type: "focus", keyboard: event.currentTarget.matches(":focus-visible") });
+      }}
+      onBlur={() => {
+        send({ type: "blur" });
       }}
       onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          hide();
+        if (event.key === "Enter" || event.key === " " || event.key === "Escape") {
+          event.preventDefault();
+          send({ type: "key", key: event.key });
         }
       }}
       className="aura-cite"
@@ -171,19 +149,15 @@ export default function CitationChip({
 
       {label}
 
-      {anchor && (
+      {state.open && (
         <span
           ref={tipRef}
           id={tipId}
           role="tooltip"
-          data-placement={
-            anchor.above
-              ? "above"
-              : "below"
-          }
           style={{
-            top: anchor.y,
-            left: anchor.x,
+            left: 0,
+            top: 0,
+            visibility: "hidden",
           }}
           className="aura-cite-tip"
         >

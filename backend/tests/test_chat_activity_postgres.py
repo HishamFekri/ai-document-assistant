@@ -5,9 +5,13 @@ Providers are replaced with an immediate answer; no network access is used.
 """
 
 import json
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from alembic import command
 from alembic.config import Config
@@ -256,3 +260,130 @@ def test_new_chats_start_with_activity_equal_to_creation(test_database, client):
     assert response.status_code == 200
     body = response.json()
     assert body["last_activity_at"] == body["created_at"]
+
+
+# ---- Migration lock safety -------------------------------------------------------
+
+def revision_and_schema(engine):
+    with engine.connect() as connection:
+        return {
+            "revision": connection.scalar(text("SELECT version_num FROM alembic_version")),
+            "column": "last_activity_at" in {c["name"] for c in inspect(connection).get_columns("chats")},
+            "index": connection.execute(text(
+                "SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = 'ix_chats_user_archive_pin_activity_id'")).scalar(),
+        }
+
+
+def at_previous_revision(test_database):
+    engine = test_database.engine
+    engine.dispose()
+    command.downgrade(alembic_config(), PREVIOUS_REVISION)
+    return engine
+
+
+def test_migration_fails_fast_under_table_lock_and_retries_cleanly(test_database, client, monkeypatch):
+    monkeypatch.setenv("MIGRATION_LOCK_TIMEOUT", "1s")
+    engine = at_previous_revision(test_database)
+    user_id, _ = seed(engine, "table-lock")
+
+    holder = engine.connect()
+    held = holder.begin()
+    holder.execute(text("SELECT count(*) FROM chats"))   # a transaction still reading chats
+    reads = []
+
+    def chat_read_during_migration():
+        time.sleep(0.3)
+        start = time.monotonic()
+        with engine.connect() as connection:
+            connection.execute(text("SELECT count(*) FROM chats"))
+        reads.append(time.monotonic() - start)
+
+    reader = threading.Thread(target=chat_read_during_migration)
+    reader.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception, match="lock timeout"):
+            command.upgrade(alembic_config(), "head")
+        elapsed = time.monotonic() - started
+        reader.join(10)
+    finally:
+        held.rollback()
+        holder.close()
+
+    assert elapsed < 6, "fails fast instead of waiting for the blocking transaction"
+    assert reads and reads[0] < 3, "queued chat reads are released when the migration gives up"
+    # Nothing applied: the column and backfill rolled back together; the revision is unchanged.
+    assert revision_and_schema(engine) == {"revision": PREVIOUS_REVISION, "column": False, "index": None}
+
+    engine.dispose()
+    command.upgrade(alembic_config(), "head")
+    assert revision_and_schema(engine) == {"revision": "4b8d2e6f1a93", "column": True, "index": True}
+    assert listed_titles(client, user_id)[0] == EXPECTED_ORDER
+
+
+def test_blocked_index_build_leaves_no_invalid_index_and_retries_cleanly(test_database, client, monkeypatch):
+    monkeypatch.setenv("MIGRATION_INDEX_LOCK_TIMEOUT", "1s")
+    engine = at_previous_revision(test_database)
+    user_id, _ = seed(engine, "index-lock")
+
+    # An old snapshot that a concurrent build must wait for (no lock on chats itself).
+    holder = engine.connect()
+    held = holder.begin()
+    holder.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+    holder.execute(text("SELECT count(*) FROM users"))
+    try:
+        with pytest.raises(Exception, match="lock timeout"):
+            command.upgrade(alembic_config(), "head")
+    finally:
+        held.rollback()
+        holder.close()
+
+    # The column step committed; the failed build left nothing behind; the revision is unchanged.
+    assert revision_and_schema(engine) == {"revision": PREVIOUS_REVISION, "column": True, "index": None}
+
+    engine.dispose()
+    command.upgrade(alembic_config(), "head")
+    assert revision_and_schema(engine) == {"revision": "4b8d2e6f1a93", "column": True, "index": True}
+    assert listed_titles(client, user_id)[0] == EXPECTED_ORDER
+
+
+def test_invalid_leftover_index_is_replaced_but_a_valid_one_is_never_dropped(test_database):
+    engine = at_previous_revision(test_database)
+    with engine.begin() as connection:
+        connection.execute(text("ALTER TABLE chats ADD COLUMN last_activity_at TIMESTAMP NOT NULL DEFAULT now()"))
+        connection.execute(text("CREATE INDEX ix_chats_user_archive_pin_activity_id ON chats (user_id)"))
+        # What an interrupted CREATE INDEX CONCURRENTLY leaves behind.
+        connection.execute(text("UPDATE pg_index SET indisvalid = false "
+                                "WHERE indexrelid = 'public.ix_chats_user_archive_pin_activity_id'::regclass"))
+    engine.dispose()
+    command.upgrade(alembic_config(), "head")
+    assert revision_and_schema(engine) == {"revision": "4b8d2e6f1a93", "column": True, "index": True}
+    with engine.connect() as connection:
+        definition = connection.scalar(text(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'ix_chats_user_archive_pin_activity_id'"))
+    assert "CASE" in definition, "rebuilt with the real definition"
+
+    # A valid index of the same name is someone else's: fail loudly, never drop it.
+    engine = at_previous_revision(test_database)
+    with engine.begin() as connection:
+        connection.execute(text("CREATE INDEX ix_chats_user_archive_pin_activity_id ON chats (user_id)"))
+    engine.dispose()
+    with pytest.raises(Exception, match="already exists"):
+        command.upgrade(alembic_config(), "head")
+    assert revision_and_schema(engine)["index"] is True
+    with engine.begin() as connection:
+        connection.execute(text("DROP INDEX ix_chats_user_archive_pin_activity_id"))
+    engine.dispose()
+    command.upgrade(alembic_config(), "head")
+    assert revision_and_schema(engine) == {"revision": "4b8d2e6f1a93", "column": True, "index": True}
+
+
+def test_lock_timeout_settings_are_validated():
+    module = migration()
+    for bad in ("0s", "5 minutes", "5s; DROP TABLE chats", "", "-1s"):
+        with patch.dict("os.environ", {"MIGRATION_LOCK_TIMEOUT": bad}):
+            with pytest.raises(ValueError):
+                module.lock_timeout("MIGRATION_LOCK_TIMEOUT", "5s")
+    with patch.dict("os.environ", {"MIGRATION_LOCK_TIMEOUT": "750ms"}):
+        assert module.lock_timeout("MIGRATION_LOCK_TIMEOUT", "5s") == "750ms"

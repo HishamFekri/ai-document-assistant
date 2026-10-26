@@ -158,10 +158,12 @@ test("a streamed answer renders completely and at most once per frame", async ()
 const { runtime, deferred, tick } = await import("./helpers/hook-runtime.mjs");
 
 function streamBody() {
-  let controller;
-  const body = new ReadableStream({ start(c) { controller = c; } });
+  let controller, cancelled = false;
+  const body = new ReadableStream({ start(c) { controller = c; }, cancel() { cancelled = true; } });
   const encoder = new TextEncoder();
-  return { body, send: (text) => controller.enqueue(encoder.encode(text)), end: () => controller.close() };
+  // Writes after the reader cancelled the response are dropped, as on a closed socket.
+  return { body, send: (text) => { if (!cancelled) controller.enqueue(encoder.encode(text)); },
+    end: () => { if (!cancelled) controller.close(); }, cancelled: () => cancelled };
 }
 
 function draftRuntime(fetch, createPersistedChat) {
@@ -271,4 +273,80 @@ test("the stream reports the stored activity time for its own chat only", async 
   await pending;
   assert.deepEqual(plain(activity), [{ chatId: 4, lastActivityAt: "2026-11-01T10:00:00.250000" }]);
   app.unmount();
+});
+
+
+// New chat while a new chat's first answer is still streaming.
+test("leaving for a new chat mid-answer never navigates back and frees the composer", async () => {
+  const source = streamBody();
+  let cancelled = false;
+  const draft = draftRuntime(async (url, options) => {
+    options.signal.addEventListener("abort", () => { cancelled = true; });
+    return new Response(source.body);
+  }, async () => ({ id: 9, title: "New chat", documents: [] }));
+  const pending = draft.render().sendQuestionText("First question");
+  await tick(); await tick();
+  source.send('{"type":"chat_activity","chat_id":9,"last_activity_at":"2026-11-01T10:00:00"}\n{"type":"token","content":"Partial"}\n');
+  await tick(); await tick();
+  const before = JSON.stringify(draft.messages());
+
+  draft.render().abandonGeneration();
+  assert.equal(draft.render().sending, false, "the fresh chat can be used immediately");
+  assert.equal(cancelled, true, "the answer is cancelled like leaving the chat");
+  await tick(); await tick();
+  assert.equal(source.cancelled(), true, "the response stream is closed");
+
+  source.send('{"type":"token","content":" more"}\n{"type":"done","sources":[]}\n');
+  source.end();
+  await pending;
+  assert.deepEqual(plain(draft.app.events.filter(([kind]) => kind === "replace" || kind === "push")), [],
+    "no navigation back to the abandoned chat");
+  assert.equal(JSON.stringify(draft.messages()), before, "the abandoned answer no longer writes into the view");
+  assert.deepEqual(plain(draft.calls.discarded), [], "a chat whose first message was stored stays in Recent");
+  draft.app.unmount();
+});
+
+
+test("leaving before the first message is stored removes the new chat again", async () => {
+  const response = deferred();
+  const draft = draftRuntime(() => response.promise, async () => ({ id: 9, title: "New chat", documents: [] }));
+  const pending = draft.render().sendQuestionText("First question");
+  await tick(); await tick();
+  draft.render().abandonGeneration();
+  assert.deepEqual(plain(draft.calls.discarded), [9]);
+  response.resolve(new Response(streamBody().body));
+  await pending;
+  assert.deepEqual(plain(draft.app.events.filter(([kind]) => kind === "replace")), []);
+  draft.app.unmount();
+});
+
+
+test("a new question right after leaving starts normally", async () => {
+  const first = streamBody(), second = streamBody();
+  const bodies = [first, second];
+  let created = 0;
+  const draft = draftRuntime(async () => new Response(bodies.shift().body),
+    async () => ({ id: 9 + created++, title: "New chat", documents: [] }));
+  const abandoned = draft.render().sendQuestionText("First question");
+  await tick(); await tick();
+  draft.render().abandonGeneration();
+  const next = draft.render().sendQuestionText("Second question");
+  await tick(); await tick();
+  assert.equal(draft.render().sending, true, "the second question is sending");
+  second.send('{"type":"token","content":"Answer two."}\n{"type":"done","sources":[]}\n');
+  second.end();
+  first.end();
+  await Promise.all([abandoned, next]);
+  assert.equal(draft.messages().find((m) => m.role === "assistant" && m.content === "Answer two.")?.status, "completed");
+  assert.deepEqual(plain(draft.calls.created), [9, 10]);
+  draft.app.unmount();
+});
+
+
+test("abandoning with nothing in progress does nothing", () => {
+  const draft = draftRuntime(async () => { throw new Error("No request expected"); }, async () => ({ id: 9, documents: [] }));
+  draft.render().abandonGeneration();
+  assert.equal(draft.render().sending, false);
+  assert.deepEqual(plain(draft.calls.discarded), []);
+  draft.app.unmount();
 });

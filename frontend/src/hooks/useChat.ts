@@ -629,10 +629,6 @@ export function useChat(
 
 
   async function handleCreateChat() {
-    if (creatingChat) {
-      return;
-    }
-
     /*
       New Chat is a local draft.
 

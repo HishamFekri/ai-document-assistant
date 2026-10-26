@@ -467,6 +467,7 @@ function ChatWorkspace({
 
     sendQuestion,
     sendQuestionText,
+    abandonGeneration,
   } = useChatStream({
     chatId:
       chatId ?? 0,
@@ -929,6 +930,14 @@ function ChatWorkspace({
     ) ?? false;
 
 
+  // New chat while an answer streams: leave that answer behind first, so its
+  // completion cannot pull the user back to the previous conversation.
+  function startNewChat() {
+    abandonGeneration();
+    void handleCreateChat();
+  }
+
+
   function renameCurrentChat() {
     if (
       !chat
@@ -1066,7 +1075,7 @@ function ChatWorkspace({
         }
 
         onCreateChat={
-          handleCreateChat
+          startNewChat
         }
 
         onOpenChat={(
@@ -1172,7 +1181,7 @@ function ChatWorkspace({
         }
 
         onCreateChat={
-          handleCreateChat
+          startNewChat
         }
 
         onOpenChat={(
