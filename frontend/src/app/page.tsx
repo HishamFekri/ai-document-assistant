@@ -3,10 +3,13 @@
 import {
   useEffect,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import {
   ArrowRight,
+  Moon,
+  Sun,
   X,
 } from "lucide-react";
 
@@ -202,6 +205,75 @@ function LandingAmbient() {
 
 
 /* =========================================================
+   THEME TOGGLE
+========================================================= */
+
+// Reads the theme from the <html> class the layout script sets before paint,
+// so the first client render matches the page and the server renders neither.
+function subscribeToTheme(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
+function readTheme() {
+  return document.documentElement.classList.contains("dark") ? "dark" : "light";
+}
+
+function LandingThemeToggle() {
+  const theme = useSyncExternalStore(subscribeToTheme, readTheme, () => null);
+  const next = theme === "dark" ? "light" : "dark";
+
+  function toggle() {
+    document.documentElement.classList.toggle("dark", next === "dark");
+
+    try {
+      localStorage.setItem("theme", next);
+    } catch {
+      // Private mode: the choice still applies to this visit.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+      title={theme === "dark" ? "Light mode" : "Dark mode"}
+      className="
+        flex
+        h-10
+        w-10
+        shrink-0
+        items-center
+        justify-center
+        rounded-full
+        border
+        border-[var(--border)]
+        bg-[var(--surface)]
+        text-[var(--text-secondary)]
+        shadow-sm
+        transition-all
+        duration-200
+        hover:-translate-y-0.5
+        hover:bg-[var(--surface-hover)]
+        hover:text-[var(--text-primary)]
+        focus-visible:outline-2
+        focus-visible:outline-offset-2
+        focus-visible:outline-[var(--primary)]
+      "
+    >
+      {theme === "dark" ? (
+        <Sun size={17} strokeWidth={1.8} />
+      ) : (
+        <Moon size={17} strokeWidth={1.8} className={theme === null ? "opacity-0" : undefined} />
+      )}
+    </button>
+  );
+}
+
+
+/* =========================================================
    GOOGLE BUTTON THEME WRAPPER
 ========================================================= */
 
@@ -303,7 +375,14 @@ function Navbar() {
       </div>
 
 
-      <ThemedGoogleLoginButton />
+      <div className="flex items-center gap-2.5">
+        <LandingThemeToggle />
+
+        {/* Phones use the sign-in button in the hero, just below. */}
+        <div className="hidden sm:block">
+          <ThemedGoogleLoginButton />
+        </div>
+      </div>
     </nav>
   );
 }
@@ -667,6 +746,38 @@ function ProductPreview() {
           "
         />
 
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          right-[-8%]
+          top-[8%]
+          h-[300px]
+          w-[380px]
+          bg-violet-500/[0.13]
+          blur-[120px]
+          "
+        />
+
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          bottom-[-6%]
+          left-[-6%]
+          h-[260px]
+          w-[340px]
+          bg-indigo-500/[0.11]
+          blur-[120px]
+          "
+        />
+
 
         <div
           className="
@@ -775,10 +886,43 @@ function Features() {
     <section
       id="features"
       className="
+        relative
         border-y
         border-[var(--border)]
       "
     >
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          left-[4%]
+          top-[18%]
+          h-[360px]
+          w-[460px]
+          bg-indigo-500/[0.13]
+          blur-[140px]
+          "
+        />
+
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          right-[2%]
+          top-[30%]
+          h-[460px]
+          w-[560px]
+          bg-violet-500/[0.15]
+          blur-[150px]
+          "
+        />
+
       <div
         className="
           mx-auto
@@ -833,6 +977,7 @@ function Features() {
                 max-w-md
                 text-[15px]
                 leading-7
+                text-balance
                 text-[var(--text-secondary)]
               "
             >
@@ -928,6 +1073,7 @@ function Feature({
           mt-2
           text-[13px]
           leading-6
+          text-pretty
           text-[var(--text-secondary)]
         "
       >
@@ -947,6 +1093,7 @@ function HowItWorks() {
     <section
       id="how-it-works"
       className="
+        relative
         mx-auto
         max-w-6xl
         px-6
@@ -954,6 +1101,40 @@ function HowItWorks() {
         lg:px-8
       "
     >
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          left-1/2
+          top-[52%]
+          h-[360px]
+          w-[620px]
+          max-w-[90vw]
+          -translate-x-1/2
+          bg-violet-500/[0.15]
+          blur-[140px]
+          "
+        />
+
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          right-[-4%]
+          top-[40%]
+          h-[300px]
+          w-[360px]
+          bg-blue-500/[0.12]
+          blur-[130px]
+          "
+        />
+
       <div
         className="
           mx-auto
@@ -1183,6 +1364,7 @@ function Step({
             mt-3
             text-[14px]
             leading-6
+            text-pretty
             text-[var(--text-secondary)]
           "
         >
@@ -1245,12 +1427,32 @@ function FinalCTA() {
   return (
     <section
       className="
+        relative
         px-6
         pb-28
         pt-8
         lg:px-8
       "
     >
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          left-1/2
+          top-[45%]
+          h-[380px]
+          w-[760px]
+          max-w-[95vw]
+          -translate-x-1/2
+          -translate-y-1/2
+          bg-indigo-500/[0.13]
+          blur-[150px]
+          "
+        />
+
       <div
         className="
           relative
@@ -1341,10 +1543,27 @@ function Footer() {
   return (
     <footer
       className="
+        relative
         border-t
         border-[var(--border)]
       "
     >
+        <div
+          aria-hidden="true"
+          className="
+          pointer-events-none
+          absolute
+          -z-10
+          rounded-full
+          bottom-[-40%]
+          left-[8%]
+          h-[260px]
+          w-[420px]
+          bg-violet-500/[0.12]
+          blur-[130px]
+          "
+        />
+
       <div
         className="
           mx-auto
@@ -1378,7 +1597,7 @@ function Footer() {
           >
             <img
               src="/hj-logo.png"
-              alt="Hesham Jouda logo"
+              alt="Hisham Jouda logo"
               className="
                 h-10
                 w-10
@@ -1419,7 +1638,7 @@ function Footer() {
                   tracking-wide
                 "
               >
-                Hesham Jouda
+                Hisham Jouda
               </span>
 
               <span className="sr-only"> (opens in a new tab)</span>
