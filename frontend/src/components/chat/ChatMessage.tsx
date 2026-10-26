@@ -14,6 +14,7 @@ import {
   memo,
   useMemo,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 import ReactMarkdown from "react-markdown";
@@ -41,6 +42,14 @@ import {
   rehypeCitations,
 } from "@/lib/citations";
 
+import {
+  formatFullTimestamp,
+  formatMessageTimestamp,
+  getDisplayClockSnapshot,
+  getServerDisplayClockSnapshot,
+  subscribeDisplayClock,
+} from "@/lib/datetime";
+
 
 type Props = {
   message: Message;
@@ -51,36 +60,6 @@ type Props = {
 
   retryDisabled?: boolean;
 };
-
-
-function formatMessageTime(
-  createdAt: string
-) {
-  if (!createdAt) {
-    return "";
-  }
-
-  const date =
-    new Date(createdAt);
-
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-  ) {
-    return "";
-  }
-
-  return (
-    new Intl.DateTimeFormat(
-      undefined,
-      {
-        hour: "2-digit",
-        minute: "2-digit",
-      }
-    ).format(date)
-  );
-}
 
 
 function attachmentLabel(
@@ -667,10 +646,28 @@ function ChatMessage({
   ] = useState(false);
 
 
-  const time =
-    formatMessageTime(
-      message.created_at
+  // Re-renders when the device time zone or calendar day changes; empty during
+  // server rendering so hydration never compares two different clocks.
+  const displayClock =
+    useSyncExternalStore(
+      subscribeDisplayClock,
+      getDisplayClockSnapshot,
+      getServerDisplayClockSnapshot
     );
+
+  const time =
+    displayClock
+      ? formatMessageTimestamp(
+          message.created_at
+        )
+      : "";
+
+  const fullTime =
+    displayClock
+      ? formatFullTimestamp(
+          message.created_at
+        )
+      : "";
 
   const documents =
     message.documents
@@ -699,6 +696,14 @@ function ChatMessage({
         message.sources,
       ]
     );
+
+
+  // Only messages created in this session (temporary negative ids) animate in;
+  // loaded history and the later swap to the saved id never do.
+  const entering =
+    message.id < 0
+      ? "aura-message-enter"
+      : "";
 
 
   async function copyMessage() {
@@ -736,12 +741,13 @@ function ChatMessage({
   if (isUser) {
     return (
       <div
-        className="
+        className={`
           group
           flex
           w-full
           justify-end
-        "
+          ${entering}
+        `}
       >
         <div
           className="
@@ -952,7 +958,13 @@ function ChatMessage({
             "
           >
             {time && (
-              <span
+              <time
+                dateTime={
+                  message.created_at
+                }
+                title={
+                  fullTime
+                }
                 className="
                   mr-1
                   text-[10px]
@@ -960,7 +972,7 @@ function ChatMessage({
                 "
               >
                 {time}
-              </span>
+              </time>
             )}
 
 
@@ -1078,40 +1090,17 @@ function ChatMessage({
 
   return (
     <div
-      className="
+      className={`
         group
         w-full
-      "
+        ${entering}
+      `}
     >
       <div
         className="
           flex
-          gap-3
         "
       >
-        <div
-          aria-hidden="true"
-          className="
-            mt-0.5
-            flex
-            h-7
-            w-7
-            shrink-0
-            items-center
-            justify-center
-          "
-        >
-          <span
-            className={`aura-orb ${
-              !assistantContent
-              || message.status === "processing"
-                ? "is-thinking"
-                : ""
-            }`}
-          />
-        </div>
-
-
         <div
           className="
             min-w-0
@@ -1187,7 +1176,13 @@ function ChatMessage({
             "
           >
             {time && (
-              <span
+              <time
+                dateTime={
+                  message.created_at
+                }
+                title={
+                  fullTime
+                }
                 className="
                   mr-1
                   text-[10px]
@@ -1195,7 +1190,7 @@ function ChatMessage({
                 "
               >
                 {time}
-              </span>
+              </time>
             )}
 
 

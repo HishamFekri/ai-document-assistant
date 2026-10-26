@@ -980,64 +980,6 @@ html.dark:has(.aura) body {
 }
 
 
-/* Luminous orb: product mark and assistant avatar. */
-
-.aura-orb {
-  display: inline-block;
-  flex: none;
-
-  width: 22px;
-  height: 22px;
-
-  border-radius: 999px;
-
-  background:
-    radial-gradient(
-      circle at 34% 28%,
-      #ffffff 0%,
-      #dcdce1 32%,
-      #8b8b93 72%,
-      #45454b 100%
-    );
-
-  box-shadow:
-    0 0 16px -2px rgba(255, 255, 255, 0.32);
-}
-
-
-html:not(.dark) .aura .aura-orb {
-  background:
-    radial-gradient(
-      circle at 34% 28%,
-      #8c8c94 0%,
-      #3a3a40 45%,
-      #0b0b0c 100%
-    );
-
-  box-shadow:
-    0 2px 10px -3px rgba(0, 0, 0, 0.4);
-}
-
-
-.aura-orb.is-thinking {
-  animation: aura-breathe 1.8s ease-in-out infinite;
-}
-
-
-@keyframes aura-breathe {
-  0%,
-  100% {
-    transform: scale(0.94);
-    opacity: 0.8;
-  }
-
-  50% {
-    transform: scale(1.04);
-    opacity: 1;
-  }
-}
-
-
 /* Press feedback. Layered so a button's own transition utility still wins. */
 
 @layer base {
@@ -1172,6 +1114,32 @@ html:not(.dark) .aura .aura-orb {
 }
 
 
+/* Conversation motion: history fades in once, new messages rise in once. */
+
+.aura-thread-enter {
+  animation: aura-fade-in 200ms ease-out both;
+}
+
+
+.aura-message-enter {
+  animation: aura-message-in 220ms cubic-bezier(0.2, 0.9, 0.2, 1) both;
+}
+
+
+@keyframes aura-message-in {
+  from {
+    opacity: 0;
+    translate: 0 6px;
+  }
+}
+
+
+/* Shown only when loading is slow enough to notice. */
+.aura-delayed-fade {
+  animation: aura-fade-in 200ms ease-out 300ms both;
+}
+
+
 /* Source references inside answers: quiet metadata, not prose. */
 
 .aura-cite {
@@ -1277,8 +1245,10 @@ html:not(.dark) .aura .aura-orb {
   reduce
 ) {
   .aura-view,
+  .aura-thread-enter,
+  .aura-message-enter,
+  .aura-delayed-fade,
   .aura-ambient.is-active,
-  .aura-orb.is-thinking,
   .aura-file-row,
   .aura-cite-tip,
   .aura-files[data-state="open"],

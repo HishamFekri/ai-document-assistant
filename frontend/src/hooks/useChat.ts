@@ -3,6 +3,8 @@ import { useRequestScope } from "@/hooks/useRequestScope";
 import { useDocumentStatusPolling } from "@/hooks/useDocumentStatusPolling";
 import { mergePageItems } from "@/lib/pagination";
 import { logoutSession } from "@/lib/logout";
+import { withUpdatedFlags } from "@/lib/chat-list";
+import { clearWorkspaceCache, workspaceCache } from "@/lib/workspace-cache";
 
 import {
   ChangeEvent,
@@ -73,7 +75,7 @@ export function useChat(
     user,
     setUser,
   ] = useState<User | null>(
-    null
+    () => workspaceCache.current?.user ?? null
   );
 
 
@@ -89,7 +91,7 @@ export function useChat(
     chats,
     setChats,
   ] = useState<ChatListItem[]>(
-    []
+    () => workspaceCache.current?.chats ?? []
   );
 
 
@@ -151,7 +153,9 @@ export function useChat(
     && chatId > 0;
 
 
-  const [chatCursor, setChatCursor] = useState<string | null>(null);
+  const [chatCursor, setChatCursor] = useState<string | null>(
+    () => workspaceCache.current?.chatCursor ?? null
+  );
   const [messageCursor, setMessageCursor] = useState<string | null>(null);
   const [loadingMoreChats, setLoadingMoreChats] = useState(false);
   const [loadingOlderMessages, setLoadingOlderMessages] = useState(false);
@@ -212,6 +216,17 @@ export function useChat(
     onDocuments: updatePolledAttachment,
   });
 
+  useEffect(() => {
+    if (user) {
+      workspaceCache.current = { user, chats, chatCursor };
+    }
+  }, [
+    user,
+    chats,
+    chatCursor,
+  ]);
+
+
   const getToken =
     useCallback(() => {
       return "__cookie__";
@@ -233,6 +248,7 @@ export function useChat(
   useEffect(() => {
     const handleAuthExpired = () => {
       scope.dispose();
+      clearWorkspaceCache();
       setUser(null);
       setChat(null);
       setMessages([]);
@@ -1053,20 +1069,10 @@ export function useChat(
 
       setChats(
         (current) =>
-          current.map(
-            (item) =>
-              item.id ===
-              targetChatId
-                ? {
-                    ...item,
-
-                    is_pinned:
-                      updatedChat.is_pinned,
-
-                    is_archived:
-                      updatedChat.is_archived,
-                  }
-                : item
+          withUpdatedFlags(
+            current,
+            targetChatId,
+            updatedChat
           )
       );
 
@@ -1110,21 +1116,13 @@ export function useChat(
         );
         if (!scope.isActive()) return;
 
+      // Re-sort, so a restored chat returns to its place by latest activity
+      // instead of staying where its archived entry was.
       const updatedChats =
-        chats.map(
-          (item) =>
-            item.id ===
-            targetChatId
-              ? {
-                  ...item,
-
-                  is_pinned:
-                    updatedChat.is_pinned,
-
-                  is_archived:
-                    updatedChat.is_archived,
-                }
-              : item
+        withUpdatedFlags(
+          chats,
+          targetChatId,
+          updatedChat
         );
 
       setChats(
@@ -1331,6 +1329,7 @@ export function useChat(
   async function logout() {
     await logoutSession(() => {
       scope.dispose();
+      clearWorkspaceCache();
       appLoadedRef.current = false;
       setUser(null);
       setChat(null);

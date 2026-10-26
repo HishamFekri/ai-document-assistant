@@ -7,6 +7,7 @@ import {
 import {
   Dispatch,
   SetStateAction,
+  useRef,
 } from "react";
 
 import {
@@ -14,6 +15,7 @@ import {
 } from "@/types/chat";
 
 import ChatRow from "@/components/chat/sidebar/ChatRow";
+import { useListMotion } from "@/hooks/useListMotion";
 
 
 type Props = {
@@ -103,6 +105,18 @@ export default function SidebarSection({
   onArchive,
   onDelete,
 }: Props) {
+  // Rows glide to their new place when the order changes (for example when a
+  // chat gets a new message or is restored from the archive).
+  const listRef =
+    useRef<HTMLDivElement | null>(
+      null
+    );
+
+  useListMotion(
+    listRef,
+    chats.map((chat) => chat.id).join(",")
+  );
+
   return (
     <section
       className={`${
@@ -224,12 +238,18 @@ export default function SidebarSection({
                 {emptyText}
               </div>
             ) : (
-              <div className="space-y-0.5">
+              <div
+                ref={listRef}
+                className="relative space-y-0.5"
+              >
 
                 {chats.map(
                   (chat) => (
-                    <ChatRow
+                    <div
                       key={chat.id}
+                      data-motion-id={chat.id}
+                    >
+                    <ChatRow
                       chat={chat}
                       active={
                         chat.id ===
@@ -292,6 +312,7 @@ export default function SidebarSection({
                         onDelete
                       }
                     />
+                    </div>
                   )
                 )}
 

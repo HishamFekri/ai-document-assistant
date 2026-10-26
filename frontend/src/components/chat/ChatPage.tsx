@@ -5,6 +5,7 @@ import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 import {
   type CSSProperties,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -611,7 +612,8 @@ function ChatWorkspace({
   // Scroll events from our own smooth scroll must not count as the reader leaving.
   const autoScrollUntil = useRef(0);
 
-  useEffect(() => {
+  // Before paint, so history is never shown at the wrong scroll position first.
+  useLayoutEffect(() => {
     if (
       chatLoading
       || activeView
@@ -639,10 +641,27 @@ function ChatWorkspace({
       messages.length
       > previousMessageCount.current;
 
+    const firstLoad =
+      previousMessageCount.current === 0;
+
     previousMessageCount.current =
       messages.length;
 
-    // A new message (sent, received or loaded): glide to it.
+    // Opening a conversation: start at the latest message, without scrolling
+    // through the whole history to get there.
+    if (
+      appended
+      && firstLoad
+      && container
+    ) {
+      followingRef.current = true;
+      container.scrollTop =
+        container.scrollHeight;
+
+      return;
+    }
+
+    // A new message (sent or received): glide to it.
     if (appended) {
       followingRef.current = true;
       autoScrollUntil.current = performance.now() + 700;
@@ -1438,6 +1457,7 @@ function ChatWorkspace({
                   >
                     <div
                       className="
+                        aura-delayed-fade
                         flex
                         items-center
                         gap-2
@@ -1518,6 +1538,7 @@ function ChatWorkspace({
                     0 ? (
                       <div
                         className="
+                          aura-thread-enter
                           flex
                           flex-1
                           flex-col
@@ -1557,6 +1578,7 @@ function ChatWorkspace({
                     ) : (
                       <div
                         className="
+                          aura-thread-enter
                           space-y-8
                           pb-8
                         "

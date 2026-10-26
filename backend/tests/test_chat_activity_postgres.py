@@ -387,3 +387,34 @@ def test_lock_timeout_settings_are_validated():
                 module.lock_timeout("MIGRATION_LOCK_TIMEOUT", "5s")
     with patch.dict("os.environ", {"MIGRATION_LOCK_TIMEOUT": "750ms"}):
         assert module.lock_timeout("MIGRATION_LOCK_TIMEOUT", "5s") == "750ms"
+
+
+def test_restoring_from_the_archive_returns_a_chat_to_its_activity_position(test_database, client):
+    # A: 15:00 today, B: 13:00 today, C: yesterday (all created earlier, in a different order).
+    with test_database.engine.begin() as connection:
+        user_id = create_user(connection, "restore")
+        ids = {
+            "C": create_chat(connection, user_id, "C", BASE),
+            "A": create_chat(connection, user_id, "A", BASE + timedelta(hours=1)),
+            "B": create_chat(connection, user_id, "B", BASE + timedelta(hours=2)),
+        }
+        today = BASE + timedelta(days=20)
+        add_message(connection, ids["A"], "user", today.replace(hour=15))
+        add_message(connection, ids["B"], "user", today.replace(hour=13))
+        add_message(connection, ids["C"], "user", today - timedelta(days=1))
+        connection.execute(text(migration().BACKFILL))
+
+    def activity():
+        with test_database.engine.connect() as connection:
+            return dict(connection.execute(text("SELECT title, last_activity_at FROM chats")).all())
+
+    before = activity()
+    assert listed_titles(client, user_id)[0] == ["A", "B", "C"]
+    for title, expected in (("A", ["B", "C", "A"]), ("C", ["A", "B", "C"])):
+        assert client.patch(f"/chats/{ids[title]}/archive", headers=bearer(user_id)).status_code == 200
+        assert listed_titles(client, user_id)[0] == expected, f"{title} archived"
+        assert client.patch(f"/chats/{ids[title]}/archive", headers=bearer(user_id)).status_code == 200
+        assert listed_titles(client, user_id)[0] == ["A", "B", "C"], f"{title} restored to its activity position"
+    assert activity() == before, "archiving and restoring never change last_activity_at"
+    for limit in (1, 2, 3):
+        assert all_pages(client, user_id, limit) == ["A", "B", "C"]

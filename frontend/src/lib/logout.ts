@@ -1,3 +1,5 @@
+import { clearWorkspaceCache } from "@/lib/workspace-cache";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export const LOGOUT_ERROR = "Could not confirm sign out. You may still be signed in. Please try again.";
@@ -13,5 +15,7 @@ export async function logoutSession(onSuccess: () => void, onFailure: (message: 
     onFailure(LOGOUT_ERROR);
     return;
   }
+  // No cached chat list may outlive the session, whichever page signed out.
+  clearWorkspaceCache();
   onSuccess();
 }

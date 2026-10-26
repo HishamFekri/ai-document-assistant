@@ -21,7 +21,8 @@ function application(fetch) {
     useRef: (current) => ({ current }),
     useState: (initial) => {
       const index = states.length;
-      const value = index === 0 ? { id: 1, name: "Synthetic", email: "user@example.test" } : initial === true ? false : initial;
+      const start = typeof initial === "function" ? initial() : initial;   // lazy initialisers, as in React
+      const value = index === 0 ? { id: 1, name: "Synthetic", email: "user@example.test" } : start === true ? false : start;
       states.push(value);
       return [value, (next) => { states[index] = next; events.push(["state", index]); }];
     },
@@ -40,6 +41,9 @@ function application(fetch) {
       if (name === "@/lib/request-scope") return load("src/lib/request-scope.ts");
       if (name === "@/lib/pagination") return load("src/lib/pagination.ts");
       if (name === "@/lib/logout") return load("src/lib/logout.ts");
+      if (name === "@/lib/datetime") return load("src/lib/datetime.ts");
+      if (name === "@/lib/chat-list") return load("src/lib/chat-list.ts");
+      if (name === "@/lib/workspace-cache") return load("src/lib/workspace-cache.ts");
       if (name === "@/lib/document-warnings") return load("src/lib/document-warnings.ts");
       if (name === "@/lib/chat-api") return {};
       if (name === "@/hooks/useUploadPolicy") return { useUploadPolicy: () => ({ policy: null }) };

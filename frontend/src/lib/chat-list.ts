@@ -42,3 +42,29 @@ export function retitleChatListItem(
       : item
   );
 }
+
+
+// Applies a pin or archive change from the server and re-sorts, so the chat
+// lands where GET /chats would place it (Recent by latest activity, pinned and
+// archived by creation time). Activity itself is never changed here.
+export function withUpdatedFlags(
+  chats: ChatListItem[],
+  chatId: number,
+  updated: Pick<ChatListItem, "is_pinned" | "is_archived"> & { last_activity_at?: string }
+): ChatListItem[] {
+  const item =
+    chats.find(
+      (chat) => chat.id === chatId
+    );
+
+  if (!item) {
+    return chats;
+  }
+
+  return upsertChatListItem(chats, {
+    ...item,
+    is_pinned: updated.is_pinned,
+    is_archived: updated.is_archived,
+    last_activity_at: updated.last_activity_at ?? item.last_activity_at,
+  });
+}
