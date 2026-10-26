@@ -377,7 +377,7 @@ function CleanTable({
   return (
     <div
       className="
-        overflow-x-auto
+        aura-table-scroll
         rounded-lg
         border
         border-[var(--border)]

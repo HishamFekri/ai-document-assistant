@@ -580,7 +580,7 @@ function Hero() {
           </span>
 
           <span className="block sm:hidden">
-            Get clear, source-backed answers in seconds.
+            Get clear answers with citations in seconds.
           </span>
 
           <span className="hidden sm:block">
@@ -1131,7 +1131,7 @@ function Features() {
 
             <Feature
               title="Multiple file formats"
-              description="Upload PDF, Word (DOCX), Excel (XLSX) and plain-text files, and work across them together."
+              description="Upload PDF, Word (DOCX), Excel (XLSX) and text files, and work across them together."
             />
 
             <Feature

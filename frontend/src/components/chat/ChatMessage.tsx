@@ -382,9 +382,9 @@ function AssistantMarkdown({
             return (
               <div
                 className="
+                  aura-table-scroll
                   my-4
                   w-full
-                  overflow-x-auto
                   rounded-xl
                   border
                   border-[var(--border)]

@@ -1,5 +1,5 @@
 "use client";
-import UploadGuidance from "@/components/documents/UploadGuidance";
+import UploadMenu from "@/components/chat/UploadMenu";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
@@ -12,7 +12,6 @@ import {
 import {
   FileText,
   Loader2,
-  Plus,
   Send,
   Square,
   X,
@@ -391,48 +390,20 @@ export default function ChatComposer({
               gap-1.5
             "
           >
-            <button
-              type="button"
-              onClick={() =>
-                fileInputRef
-                  .current
-                  ?.click()
-              }
+            <UploadMenu
+              policy={uploadPolicy.policy}
+              uploading={uploading}
               disabled={
                 uploading
                 || sending
                 || !uploadPolicy.policy
               }
-              title="Attach file"
-              className="
-                flex
-                h-9
-                w-9
-                shrink-0
-                items-center
-                justify-center
-                rounded-full
-                text-[var(--text-secondary)]
-                transition
-                hover:bg-[var(--surface-hover)]
-                hover:text-[var(--text-primary)]
-                disabled:cursor-not-allowed
-                disabled:opacity-40
-              "
-            >
-              {uploading ? (
-                <Loader2
-                  size={18}
-                  className="
-                    animate-spin
-                  "
-                />
-              ) : (
-                <Plus
-                  size={19}
-                />
-              )}
-            </button>
+              onChooseFile={() =>
+                fileInputRef
+                  .current
+                  ?.click()
+              }
+            />
 
 
             <textarea
@@ -594,7 +565,6 @@ export default function ChatComposer({
             )}
           </div>
         </form>
-        <UploadGuidance {...uploadPolicy} />
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 "use client";
-import UploadGuidance from "@/components/documents/UploadGuidance";
+import UploadMenu from "@/components/chat/UploadMenu";
 import { useUploadPolicy } from "@/hooks/useUploadPolicy";
 
 import {
@@ -16,7 +16,6 @@ import type {
 
 import {
   Loader2,
-  Plus,
   Square,
 } from "lucide-react";
 
@@ -292,13 +291,9 @@ export default function SummaryAssistant({
               gap-1.5
             "
           >
-            <button
-              type="button"
-              onClick={() =>
-                fileInputRef
-                  ?.current
-                  ?.click()
-              }
+            <UploadMenu
+              policy={uploadPolicy.policy}
+              uploading={uploading}
               disabled={
                 unavailable
                 || uploading
@@ -307,37 +302,12 @@ export default function SummaryAssistant({
                 || !onUpload
                 || !uploadPolicy.policy
               }
-              title="Attach file"
-              aria-label="Attach file"
-              className="
-                flex
-                h-9
-                w-9
-                shrink-0
-                items-center
-                justify-center
-                rounded-full
-                text-[var(--text-secondary)]
-                transition
-                hover:bg-[var(--surface-hover)]
-                hover:text-[var(--text-primary)]
-                disabled:cursor-not-allowed
-                disabled:opacity-40
-              "
-            >
-              {uploading ? (
-                <Loader2
-                  size={18}
-                  className="
-                    animate-spin
-                  "
-                />
-              ) : (
-                <Plus
-                  size={19}
-                />
-              )}
-            </button>
+              onChooseFile={() =>
+                fileInputRef
+                  ?.current
+                  ?.click()
+              }
+            />
 
 
             <textarea
@@ -500,7 +470,6 @@ export default function SummaryAssistant({
             )}
           </div>
         </form>
-        {onUpload && <UploadGuidance {...uploadPolicy} />}
       </div>
     </div>
   );

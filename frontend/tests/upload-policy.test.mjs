@@ -76,6 +76,13 @@ test("renders supported types, configured file size and PDF pages before upload"
   assert.match(renderToStaticMarkup(React.createElement(Guidance, { policy: null, error: true })), /Refresh the page/);
 });
 
+test("the composer's + menu describes the same limits as the upload policy", () => {
+  const { helpers } = application();
+  assert.equal(helpers.uploadMenuDescription(policy), "PDF, DOCX, XLSX, TXT · 50 MB max · 500 PDF pages max");
+  assert.equal(helpers.uploadMenuDescription({ ...policy, max_file_bytes: 20 * 1024 ** 2, max_pdf_pages: 12 }),
+    "PDF, DOCX, XLSX, TXT · 20 MB max · 12 PDF pages max");
+});
+
 test("phones get a compact version of the same limits; desktop wording is unchanged", () => {
   const { load, helpers } = application();
   assert.equal(helpers.compactUploadGuidance(policy), "PDF, DOCX, XLSX & TXT · Max 50 MB · PDFs up to 500 pages");

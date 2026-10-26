@@ -22,6 +22,12 @@ export function uploadGuidance(policy: UploadPolicy): string {
   return `Supported: ${types}. Maximum file size: ${policy.max_file_bytes / 1024 ** 2} MB. PDFs: up to ${policy.max_pdf_pages} pages.`;
 }
 
+// The composer's + menu: "PDF, DOCX, XLSX, TXT · 50 MB max · 500 PDF pages max".
+export function uploadMenuDescription(policy: UploadPolicy): string {
+  const types = policy.supported_extensions.map((extension) => extension.slice(1).toUpperCase()).join(", ");
+  return `${types} · ${policy.max_file_bytes / 1024 ** 2} MB max · ${policy.max_pdf_pages} PDF pages max`;
+}
+
 // Phones: "PDF, DOCX, XLSX & TXT · Max 50 MB · PDFs up to 500 pages".
 export function compactUploadGuidance(policy: UploadPolicy): string {
   const types = policy.supported_extensions.map((extension) => extension.slice(1).toUpperCase());
