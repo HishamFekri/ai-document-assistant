@@ -363,37 +363,7 @@ function Hero() {
       >
         <LoginNotice />
 
-        <div
-          className="
-            mb-7
-            inline-flex
-            items-center
-            gap-2
-            rounded-full
-            border
-            border-[var(--border)]
-            bg-[var(--surface)]
-            px-3.5
-            py-1.5
-            text-[12px]
-            font-medium
-            text-[var(--text-secondary)]
-            shadow-sm
-            backdrop-blur-xl
-          "
-        >
-          <span
-            className="
-              h-1.5
-              w-1.5
-              rounded-full
-              bg-[var(--primary)]
-              shadow-[0_0_12px_rgba(102,117,232,0.7)]
-            "
-          />
-
-          AI that understands your files
-        </div>
+        <HeroTagline />
 
 
         <h1
@@ -529,6 +499,115 @@ function Hero() {
         </div>
       </div>
     </section>
+  );
+}
+
+
+/* =========================================================
+   HERO TAGLINE
+========================================================= */
+
+const TAGLINES = [
+  "AI that understands your files",
+  "Answers you can trace to the page",
+  "From long reads to clear summaries",
+];
+
+const LONGEST_TAGLINE = TAGLINES.reduce(
+  (longest, line) => line.length > longest.length ? line : longest
+);
+
+
+// Types each line like a fast typist, holds it, erases it and moves on.
+// People who prefer reduced motion see the first line, still.
+function HeroTagline() {
+  const [text, setText] = useState("");
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      const timeoutId = window.setTimeout(() => setText(TAGLINES[0]), 0);
+      return () => window.clearTimeout(timeoutId);
+    }
+
+    let line = 0;
+    let length = 0;
+    let erasing = false;
+    let timeoutId = 0;
+
+    const step = () => {
+      const target = TAGLINES[line];
+      let delay: number;
+
+      if (!erasing) {
+        length += 1;
+        // Slightly uneven keystrokes read as typing rather than a ticker.
+        delay = length < target.length ? 38 + Math.random() * 34 : 2200;
+        erasing = length >= target.length;
+      } else {
+        length -= 1;
+        delay = 22;
+
+        if (length === 0) {
+          erasing = false;
+          line = (line + 1) % TAGLINES.length;
+          delay = 420;
+        }
+      }
+
+      setText(target.slice(0, length));
+      timeoutId = window.setTimeout(step, delay);
+    };
+
+    timeoutId = window.setTimeout(step, 500);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
+
+  return (
+    <div
+      className="
+        mb-7
+        inline-flex
+        items-center
+        gap-2.5
+        text-[13px]
+        font-medium
+        text-[var(--text-secondary)]
+      "
+    >
+      <span
+        aria-hidden="true"
+        className="
+          h-1.5
+          w-1.5
+          shrink-0
+          rounded-full
+          bg-[var(--primary)]
+          shadow-[0_0_12px_rgba(102,117,232,0.7)]
+        "
+      />
+
+      <span className="sr-only">{TAGLINES[0]}</span>
+
+      {/* The longest line reserves the width, so nothing shifts while typing. */}
+      <span
+        aria-hidden="true"
+        className="
+          grid
+          text-left
+          whitespace-nowrap
+        "
+      >
+        <span className="invisible col-start-1 row-start-1">
+          {LONGEST_TAGLINE}
+          <span className="landing-caret" />
+        </span>
+
+        <span className="col-start-1 row-start-1">
+          {text}
+          <span className="landing-caret" />
+        </span>
+      </span>
+    </div>
   );
 }
 

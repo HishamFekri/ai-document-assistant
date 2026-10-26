@@ -1312,3 +1312,26 @@ html.dark .landing-shot-dark {
     transition: none;
   }
 }
+
+/* Landing hero: typing caret after the tagline. */
+.landing-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--primary);
+  animation: landing-caret-blink 1s steps(1) infinite;
+}
+
+@keyframes landing-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-caret {
+    animation: none;
+  }
+}
