@@ -317,23 +317,54 @@ function ThemedGoogleLoginButton() {
    NAVBAR
 ========================================================= */
 
-function subscribeToScroll(onChange: () => void) {
-  window.addEventListener("scroll", onChange, { passive: true });
-  return () => window.removeEventListener("scroll", onChange);
+type NavbarMode = "top" | "shown" | "hidden";
+
+// "top" at the start of the page, "hidden" while scrolling down, "shown" as
+// soon as the visitor scrolls back up. Small movements are ignored.
+const navbarScroll = { mode: "top" as NavbarMode, lastY: 0 };
+
+function subscribeToNavbarScroll(onChange: () => void) {
+  navbarScroll.lastY = window.scrollY;
+
+  const onScroll = () => {
+    const y = window.scrollY;
+    const delta = y - navbarScroll.lastY;
+    let mode = navbarScroll.mode;
+
+    if (y <= 8) {
+      mode = "top";
+    } else if (delta > 6) {
+      mode = "hidden";
+    } else if (delta < -6) {
+      mode = "shown";
+    }
+
+    if (Math.abs(delta) > 6 || y <= 8) {
+      navbarScroll.lastY = y;
+    }
+
+    if (mode !== navbarScroll.mode) {
+      navbarScroll.mode = mode;
+      onChange();
+    }
+  };
+
+  window.addEventListener("scroll", onScroll, { passive: true });
+  return () => window.removeEventListener("scroll", onScroll);
 }
 
 
 function Navbar() {
-  const scrolled = useSyncExternalStore(
-    subscribeToScroll,
-    () => window.scrollY > 8,
-    () => false
+  const mode = useSyncExternalStore(
+    subscribeToNavbarScroll,
+    () => navbarScroll.mode,
+    () => "top" as NavbarMode
   );
 
   return (
-    // Stays in view while scrolling, so the section links are always reachable.
+    // Gets out of the way while reading down, comes back on any scroll up.
     <header
-      data-scrolled={scrolled}
+      data-mode={mode}
       className="
         landing-navbar
         sticky

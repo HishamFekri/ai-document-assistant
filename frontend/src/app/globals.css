@@ -1354,13 +1354,27 @@ html.dark .landing-shot-dark {
   }
 }
 
-/* Landing navbar: sticky; gains a translucent, blurred backing once scrolled. */
+/* Landing navbar: hides while scrolling down, returns on scroll up with a
+   translucent, blurred backing; plain at the top of the page. */
 .landing-navbar {
   border-bottom: 1px solid transparent;
-  transition: background-color 200ms ease, border-color 200ms ease, backdrop-filter 200ms ease;
+  transition:
+    transform 260ms cubic-bezier(0.2, 0.9, 0.2, 1),
+    background-color 200ms ease,
+    border-color 200ms ease,
+    backdrop-filter 200ms ease;
 }
 
-.landing-navbar[data-scrolled="true"] {
+.landing-navbar[data-mode="hidden"] {
+  transform: translateY(-100%);
+}
+
+/* Keyboard users tabbing into the bar always see it. */
+.landing-navbar:has(:focus-visible) {
+  transform: none;
+}
+
+.landing-navbar:not([data-mode="top"]) {
   background-color: color-mix(in srgb, var(--background) 72%, transparent);
   border-bottom-color: color-mix(in srgb, var(--border) 70%, transparent);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
@@ -1371,5 +1385,11 @@ html.dark .landing-shot-dark {
 @media (prefers-reduced-motion: no-preference) {
   html:has(.landing-page) {
     scroll-behavior: smooth;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-navbar {
+    transition: none;
   }
 }
