@@ -1444,3 +1444,20 @@ html.dark .landing-shot-dark {
   overscroll-behavior-x: contain;
   touch-action: pan-x pan-y;
 }
+
+/* Footer social icons in their brand colours (LinkedIn's dark-theme blue). */
+.brand-github {
+  color: #181717;
+}
+
+.brand-linkedin {
+  color: #0a66c2;
+}
+
+html.dark .brand-github {
+  color: #f0f6fc;
+}
+
+html.dark .brand-linkedin {
+  color: #378fe9;
+}

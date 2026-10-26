@@ -593,15 +593,19 @@ function Hero() {
         </p>
 
 
+        {/* Phones: a one-column grid, so both buttons share one width. */}
         <div
           className="
+            mx-auto
             mt-9
-            flex
-            flex-col
-            items-center
-            justify-center
+            grid
+            w-fit
             gap-3
+            sm:flex
+            sm:w-auto
             sm:flex-row
+            sm:items-center
+            sm:justify-center
           "
         >
           <a
@@ -645,10 +649,12 @@ function Hero() {
 
           <div
             className="
-              flex
+              grid
               h-12
-              items-center
-              px-1
+              max-sm:[&_button]:!w-full
+              sm:flex
+              sm:items-center
+              sm:px-1
             "
           >
             <ThemedGoogleLoginButton />
@@ -1287,8 +1293,8 @@ function HowItWorks() {
             text-[var(--text-secondary)]
           "
         >
-          No complicated setup. Add your documents and
-          start asking questions.
+          <span className="block sm:inline">No complicated setup.</span>{" "}
+          <span className="block sm:inline">Add your documents and start asking questions.</span>
         </p>
       </div>
 
@@ -1308,6 +1314,7 @@ function HowItWorks() {
         <Step
           number="01"
           title="Add your files"
+          hideSceneOnPhones
           description="Upload PDFs, Word documents, spreadsheets or text files. Work with one file or several at once."
         >
           <div className="space-y-2">
@@ -1420,11 +1427,13 @@ function Step({
   number,
   title,
   description,
+  hideSceneOnPhones = false,
   children,
 }: {
   number: string;
   title: string;
   description: string;
+  hideSceneOnPhones?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -1432,12 +1441,13 @@ function Step({
     <li className="grid grid-rows-[auto_auto] md:row-span-2 md:grid-rows-subgrid">
       <div
         aria-hidden="true"
-        className="
+        className={`
           flex
           flex-col
           justify-end
           pb-7
-        "
+          ${hideSceneOnPhones ? "max-sm:hidden" : ""}
+        `}
       >
         {children}
       </div>
@@ -1782,6 +1792,7 @@ function Footer() {
             aria-label="GitHub"
             title="GitHub"
             className="
+              brand-github
               flex
               h-9
               w-9
@@ -1790,14 +1801,12 @@ function Footer() {
               rounded-full
               border
               border-[var(--border)]
-              text-[var(--text-secondary)]
               sm:h-10
               sm:w-10
               transition-all
               duration-200
               hover:-translate-y-0.5
               hover:bg-[var(--surface-hover)]
-              hover:text-[var(--text-primary)]
             "
           >
             <svg
@@ -1818,6 +1827,7 @@ function Footer() {
             aria-label="LinkedIn"
             title="LinkedIn"
             className="
+              brand-linkedin
               flex
               h-9
               w-9
@@ -1826,14 +1836,12 @@ function Footer() {
               rounded-full
               border
               border-[var(--border)]
-              text-[var(--text-secondary)]
               sm:h-10
               sm:w-10
               transition-all
               duration-200
               hover:-translate-y-0.5
               hover:bg-[var(--surface-hover)]
-              hover:text-[var(--text-primary)]
             "
           >
             <svg
