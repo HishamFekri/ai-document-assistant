@@ -568,17 +568,26 @@ function Hero() {
             mx-auto
             mt-7
             max-w-2xl
-            text-[17px]
+            text-[clamp(15px,4vw,17px)]
             leading-7
             text-[var(--text-secondary)]
             sm:text-[18px]
           "
         >
-          <span className="block">
+          {/* Phones get a shorter version; from sm up the copy is unchanged. */}
+          <span className="block sm:hidden">
+            Ask questions about your documents.
+          </span>
+
+          <span className="block sm:hidden">
+            Get clear, source-backed answers in seconds.
+          </span>
+
+          <span className="hidden sm:block">
             Ask questions across PDFs, Word files, spreadsheets, and notes.
           </span>
 
-          <span className="block">
+          <span className="hidden sm:block">
             Get clear answers grounded in the content you actually uploaded.
           </span>
         </p>
@@ -1679,23 +1688,26 @@ function Footer() {
           mx-auto
           flex
           max-w-7xl
-          flex-col
           items-center
-          gap-6
+          justify-between
+          gap-3
           px-6
-          py-8
-          sm:flex-row
-          sm:justify-between
+          py-4
+          sm:gap-6
+          sm:py-8
           lg:px-8
         "
       >
-        <div className="flex items-center gap-3">
+        {/* Phones: one compact row (logo, name, icons). From sm up: unchanged. */}
+        <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
           <div
             className="
               flex
-              h-12
-              w-12
+              h-10
+              w-10
               shrink-0
+              sm:h-12
+              sm:w-12
               items-center
               justify-center
               overflow-hidden
@@ -1713,9 +1725,11 @@ function Footer() {
               loading="lazy"
               decoding="async"
               className="
-                h-10
-                w-10
+                h-8
+                w-8
                 object-contain
+                sm:h-10
+                sm:w-10
               "
             />
           </div>
@@ -1760,7 +1774,7 @@ function Footer() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <a
             href="https://github.com/HishamFekri"
             target="_blank"
@@ -1769,14 +1783,16 @@ function Footer() {
             title="GitHub"
             className="
               flex
-              h-10
-              w-10
+              h-9
+              w-9
               items-center
               justify-center
               rounded-full
               border
               border-[var(--border)]
               text-[var(--text-secondary)]
+              sm:h-10
+              sm:w-10
               transition-all
               duration-200
               hover:-translate-y-0.5
@@ -1803,14 +1819,16 @@ function Footer() {
             title="LinkedIn"
             className="
               flex
-              h-10
-              w-10
+              h-9
+              w-9
               items-center
               justify-center
               rounded-full
               border
               border-[var(--border)]
               text-[var(--text-secondary)]
+              sm:h-10
+              sm:w-10
               transition-all
               duration-200
               hover:-translate-y-0.5
@@ -1838,8 +1856,9 @@ function Footer() {
           border-t
           border-[var(--border)]
           px-6
-          py-5
+          py-4
           text-center
+          sm:py-5
           text-[11px]
           text-[var(--text-muted)]
           lg:px-8

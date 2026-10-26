@@ -76,6 +76,17 @@ test("renders supported types, configured file size and PDF pages before upload"
   assert.match(renderToStaticMarkup(React.createElement(Guidance, { policy: null, error: true })), /Refresh the page/);
 });
 
+test("phones get a compact version of the same limits; desktop wording is unchanged", () => {
+  const { load, helpers } = application();
+  assert.equal(helpers.compactUploadGuidance(policy), "PDF, DOCX, XLSX & TXT · Max 50 MB · PDFs up to 500 pages");
+  assert.equal(helpers.compactUploadGuidance({ ...policy, supported_extensions: [".pdf"], max_pdf_pages: 12 }),
+    "PDF · Max 50 MB · PDFs up to 12 pages");
+  const Guidance = load("src/components/documents/UploadGuidance.tsx").default;
+  const html = renderToStaticMarkup(React.createElement(Guidance, { policy }));
+  assert.match(html, /<span class="[^"]*sm:hidden">PDF, DOCX, XLSX &amp; TXT · Max 50 MB · PDFs up to 500 pages<\/span>/);
+  assert.match(html, /<span class="hidden sm:inline">Supported: PDF, DOCX, XLSX, TXT\. Maximum file size: 50 MB\. PDFs: up to 500 pages\.<\/span>/);
+});
+
 test("PDF page rejection preserves the current server limit in the upload error", async () => {
   const { api } = application(async (url) => url.endsWith("upload-policy")
     ? Response.json(policy)

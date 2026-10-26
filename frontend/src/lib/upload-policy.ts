@@ -22,6 +22,13 @@ export function uploadGuidance(policy: UploadPolicy): string {
   return `Supported: ${types}. Maximum file size: ${policy.max_file_bytes / 1024 ** 2} MB. PDFs: up to ${policy.max_pdf_pages} pages.`;
 }
 
+// Phones: "PDF, DOCX, XLSX & TXT · Max 50 MB · PDFs up to 500 pages".
+export function compactUploadGuidance(policy: UploadPolicy): string {
+  const types = policy.supported_extensions.map((extension) => extension.slice(1).toUpperCase());
+  const list = types.length > 1 ? `${types.slice(0, -1).join(", ")} & ${types.at(-1)}` : types[0];
+  return `${list} · Max ${policy.max_file_bytes / 1024 ** 2} MB · PDFs up to ${policy.max_pdf_pages} pages`;
+}
+
 export function validateUpload(file: Pick<File, "name" | "size">, policy: UploadPolicy): string | null {
   const dot = file.name.lastIndexOf(".");
   const extension = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";

@@ -6,6 +6,8 @@ import {
   Geist,
 } from "next/font/google";
 
+import localFont from "next/font/local";
+
 import "./globals.css";
 
 import Providers from "@/components/providers";
@@ -17,6 +19,27 @@ const geist = Geist({
   subsets: ["latin"],
   variable: "--font-geist",
   display: "swap",
+});
+
+
+// Arabic text everywhere (Noto Sans Arabic, SIL OFL, see fonts/OFL.txt). Placed
+// first in each font stack but limited by unicode-range to Arabic characters, so
+// Latin text keeps its font and pages without Arabic never download it. Static
+// files remap weights: regular text renders Medium (500), medium and heavier
+// render SemiBold (600).
+const arabic = localFont({
+  src: [
+    { path: "./fonts/NotoSansArabic-Medium-arabic.woff2", weight: "100 450", style: "normal" },
+    { path: "./fonts/NotoSansArabic-SemiBold-arabic.woff2", weight: "451 900", style: "normal" },
+  ],
+  variable: "--font-arabic",
+  display: "swap",
+  preload: false,
+  adjustFontFallback: false,
+  declarations: [{
+    prop: "unicode-range",
+    value: "U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC",
+  }],
 });
 
 
@@ -155,7 +178,7 @@ export default function RootLayout({
         />
       </head>
 
-      <body className={geist.variable}>
+      <body className={`${geist.variable} ${arabic.variable}`}>
         <Providers>
           <BackendWarmup />
 

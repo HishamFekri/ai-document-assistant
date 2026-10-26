@@ -116,6 +116,7 @@ body {
   color: var(--foreground);
 
   font-family:
+    var(--font-arabic),
     Arial,
     Helvetica,
     sans-serif;
@@ -704,6 +705,7 @@ html:not(.dark) .ambient-noise {
   color: var(--foreground);
 
   font-family:
+    var(--font-arabic),
     var(--font-geist),
     ui-sans-serif,
     system-ui,
