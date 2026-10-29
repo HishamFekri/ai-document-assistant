@@ -11,16 +11,19 @@ Run with:
 from __future__ import annotations
 
 import email.message
+import errno as errno_mod
 import io
 import json
 import logging
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -315,13 +318,22 @@ class DeployTestCase(unittest.TestCase):
         with open(self.cfg.candidate_path, "w", encoding="utf-8") as fh:
             fh.write(raw if raw is not None else json.dumps({"version": 1, "sha": sha}))
 
-    def deployer(self, stat_fn=server_stat, code_paths=()):
+    probe_result = None  # None: every identity-switch step succeeds
+
+    def deployer(self, stat_fn=server_stat, code_paths=(), euid=0):
         def sleep(seconds):
             self.clock[0] += seconds
+
+        def probe(uid, gid):
+            self.probed = (uid, gid)
+            if self.probe_result is not None:
+                return self.probe_result
+            return [(label, "ok") for label, _ in ad.identity_switch_steps(uid, gid)]
         return ad.Deployer(self.cfg, self.store, runner=self.server, github=self.gh,
                            stat_fn=stat_fn, sleep=sleep, monotonic=lambda: self.clock[0],
                            code_paths=code_paths, checker_uid=os.stat(self.check_dir).st_uid,
-                           docker_group_members=lambda: list(self.members))
+                           docker_group_members=lambda: list(self.members),
+                           identity_probe=probe, euid=lambda: euid)
 
     def state(self):
         return self.store.load()
@@ -1465,6 +1477,8 @@ class OperatorCommandTests(DeployTestCase):
 # ---------------------------------------------------------------------------
 
 class DoctorTests(DeployTestCase):
+    probed = None
+
     def doctor(self, **kw):
         out = io.StringIO()
         stdout, sys.stdout = sys.stdout, out
@@ -1556,6 +1570,25 @@ class DoctorTests(DeployTestCase):
         code, report = self.doctor(stat_fn=writable, code_paths=["/opt/x/autodeploy.py"])
         self.assertTrue(self.line(report, "installed code").startswith("FAIL"))
 
+    def test_identity_switch_passes_as_checkout_owner(self):
+        code, report = self.doctor()
+        self.assertTrue(self.line(report, "git identity switch").startswith("PASS"), report)
+        self.assertEqual(self.probed, REPO_OWNER)
+
+    def test_identity_switch_failure_names_the_refused_step(self):
+        self.probe_result = [("exec, no switch", "ok"), ("+setgroups([])", "ok"),
+                             ("+setregid", "ok"), ("+setreuid", "FAILED EPERM at pre-exec")]
+        code, report = self.doctor()
+        self.assertEqual(code, ad.EXIT_UNSAFE)
+        line = self.line(report, "git identity switch")
+        self.assertTrue(line.startswith("FAIL"))
+        self.assertIn("+setreuid: FAILED EPERM at pre-exec", line)
+        self.assertIn("uid 1000/gid 1000", line)
+
+    def test_identity_switch_skipped_when_not_root(self):
+        code, report = self.doctor(euid=1000)
+        self.assertTrue(self.line(report, "git identity switch").startswith("WARN"))
+
     def test_missing_rollback_image_fails(self):
         self.deploy_c()
         self.write_candidate(C)
@@ -1564,6 +1597,120 @@ class DoctorTests(DeployTestCase):
         self.gh.head = C
         code, report = self.doctor()
         self.assertTrue(self.line(report, "rollback images").startswith("FAIL"), report)
+
+
+# ---------------------------------------------------------------------------
+# Spawn diagnostics: distinguish fork/credential, chdir and exec failures
+# ---------------------------------------------------------------------------
+
+EPERM = errno_mod.EPERM
+
+
+class SpawnDiagnosticsTests(unittest.TestCase):
+    def test_classify_by_cpython_error_reporting(self):
+        self.assertEqual(ad.classify_spawn_error(PermissionError(EPERM, "Operation not permitted"), "/"),
+                         "pre-exec")
+        self.assertEqual(ad.classify_spawn_error(OSError(errno_mod.ENOENT, "No such file", "/"), "/"), "chdir")
+        self.assertEqual(ad.classify_spawn_error(PermissionError(EPERM, "Operation not permitted", "git"), "/"),
+                         "exec")
+
+    def test_security_context_parsing(self):
+        status = ("Name:\tpython3\nCapEff:\t00000000000000e4\nCapBnd:\t00000000000000e4\n"
+                  "NoNewPrivs:\t1\nSeccomp:\t2\nSeccomp_filters:\t3\nUid:\t0\t0\t0\t0\n")
+        fields = ad.parse_security_context(status)
+        self.assertEqual(fields["Seccomp"], "2")
+        self.assertNotIn("Uid", fields)
+        self.assertEqual(ad.describe_caps(fields["CapEff"]),
+                         "CAP_DAC_READ_SEARCH+CAP_KILL+CAP_SETGID+CAP_SETUID")
+        self.assertEqual(ad.describe_caps("0000000000000024"), "CAP_DAC_READ_SEARCH+CAP_KILL")
+        self.assertEqual(ad.describe_caps("0"), "none")
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "status")
+            with open(path, "w") as fh:
+                fh.write(status)
+            text = ad.security_context(path)
+        self.assertIn("CapEff=00000000000000e4(CAP_DAC_READ_SEARCH+CAP_KILL+CAP_SETGID+CAP_SETUID)", text)
+        self.assertIn("NoNewPrivs=1", text)
+        self.assertIn("Seccomp_filters=3", text)
+        self.assertEqual(ad.security_context(os.path.join(d, "missing")), "security context unavailable")
+
+    def runner_error(self, exc, euid=0):
+        def fake_run(*args, **kwargs):
+            self.spawn_kwargs = kwargs
+            raise exc
+        with mock.patch.object(ad.subprocess, "run", fake_run), \
+                mock.patch.object(ad.os, "geteuid", create=True, return_value=euid):
+            with self.assertRaises(ad.DeployError) as ctx:
+                ad.Runner().run(["git", "-C", REPO_DIR, "status"], 10, as_user=REPO_OWNER)
+        return str(ctx.exception)
+
+    def test_runner_reports_pre_exec_credential_failure(self):
+        message = self.runner_error(PermissionError(EPERM, "Operation not permitted"))
+        self.assertEqual(self.spawn_kwargs["user"], 1000)
+        self.assertEqual(self.spawn_kwargs["extra_groups"], [])
+        self.assertIn("Operation not permitted", message)
+        self.assertIn("stage=pre-exec", message)
+        self.assertIn("setgroups/setregid/setreuid", message)
+        self.assertIn("errno=EPERM", message)
+        self.assertIn("uid/gid switch to 1000/1000", message)
+
+    def test_runner_reports_exec_failure(self):
+        message = self.runner_error(PermissionError(EPERM, "Operation not permitted", "git"))
+        self.assertIn("stage=exec: execve failed", message)
+
+    def test_runner_without_switch_says_so(self):
+        message = self.runner_error(PermissionError(EPERM, "Operation not permitted"), euid=1000)
+        self.assertNotIn("user", self.spawn_kwargs)
+        self.assertIn("no uid/gid switch", message)
+
+    def test_runner_diagnostics_never_include_environment(self):
+        os.environ["DATABASE_URL"] = "postgresql://u:secret@h/db"
+        try:
+            message = self.runner_error(PermissionError(EPERM, "Operation not permitted"))
+        finally:
+            del os.environ["DATABASE_URL"]
+        self.assertNotIn("secret", message)
+
+    def probe(self, fail_when):
+        calls = []
+
+        def spawn(argv, **kwargs):
+            calls.append(kwargs)
+            exc = fail_when(kwargs)
+            if exc:
+                raise exc
+            return subprocess.CompletedProcess(argv, 0, "git version 2.43.0\n", "")
+        return ad.probe_identity_switch(1000, 1000, spawn=spawn), calls
+
+    def test_probe_all_steps_ok(self):
+        results, calls = self.probe(lambda kw: None)
+        self.assertEqual([r for _, r in results], ["ok"] * 4)
+        self.assertEqual(calls[-1]["user"], 1000)
+        self.assertEqual(calls[-1]["group"], 1000)
+        self.assertEqual(calls[-1]["extra_groups"], [])
+        for kw in calls:  # same spawn settings as Runner
+            self.assertEqual(kw["cwd"], "/")
+            self.assertEqual(kw["env"]["GIT_CONFIG_GLOBAL"], "/dev/null")
+
+    def test_probe_pinpoints_setreuid(self):
+        results, _ = self.probe(lambda kw: PermissionError(EPERM, "x") if "user" in kw else None)
+        self.assertEqual(results[-1], ("+setreuid", "FAILED EPERM at pre-exec"))
+        self.assertEqual([r for _, r in results[:3]], ["ok"] * 3)
+
+    def test_probe_pinpoints_setgroups_and_stops(self):
+        results, calls = self.probe(lambda kw: PermissionError(EPERM, "x") if "extra_groups" in kw else None)
+        self.assertEqual(results, [("exec, no switch", "ok"), ("+setgroups([])", "FAILED EPERM at pre-exec")])
+        self.assertEqual(len(calls), 2)
+
+    def test_probe_distinguishes_exec_failure(self):
+        results, _ = self.probe(lambda kw: PermissionError(EPERM, "x", "git"))
+        self.assertEqual(results, [("exec, no switch", "FAILED EPERM at exec")])
+
+    def test_probe_command_is_allowed_but_nothing_else_new(self):
+        ad.assert_command_allowed(["git", "--version"])
+        for argv in (["git", "--version", "push"], ["git", "-C", "/r", "--version"]):
+            with self.assertRaises(ad.DeployError):
+                ad.assert_command_allowed(argv)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "flock is Linux-only")

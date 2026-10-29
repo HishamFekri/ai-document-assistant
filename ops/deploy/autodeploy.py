@@ -32,11 +32,13 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import errno
 import json
 import logging
 import os
 import posixpath
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -250,6 +252,8 @@ def assert_command_allowed(argv: Sequence[str]) -> None:
     if program in ("systemctl", "service", "rm", "sudo", "su", "dockerd", "sh", "bash", "chown", "chmod"):
         raise DeployError(f"refusing to run {program}")
     if program == "git":
+        if args[1:] == ["--version"]:
+            return  # used only by the identity-switch probe
         if any(a in ("--force", "-f") for a in args):
             raise DeployError("refusing forced git command")
         sub = _git_subcommand(args)
@@ -332,6 +336,112 @@ def minimal_env(program: str = "") -> dict[str, str]:
     return env
 
 
+# --------------------------------------------------------------------------
+# Spawn diagnostics (no secrets: only stage, errno, ids and process security state)
+# --------------------------------------------------------------------------
+
+# The capabilities the executor unit grants, by bit number (linux/capability.h).
+_CAP_BITS = {2: "CAP_DAC_READ_SEARCH", 5: "CAP_KILL", 6: "CAP_SETGID", 7: "CAP_SETUID"}
+_STATUS_KEYS = ("CapEff", "CapBnd", "NoNewPrivs", "Seccomp", "Seccomp_filters")
+_STAGE_HINTS = {
+    "pre-exec": "fork, or setgroups/setregid/setreuid in the child, failed before exec",
+    "chdir": "chdir to the working directory failed",
+    "exec": "execve failed",
+}
+
+
+def classify_spawn_error(exc: OSError, cwd: str) -> str:
+    """Where a child failed to start, from CPython's _posixsubprocess reporting.
+
+    The child reports setgroups/setregid/setreuid failures without a filename,
+    a failed chdir with the cwd, and a failed execve with the executable (the
+    first non-ENOENT error across PATH). A failed fork raises in the parent,
+    also without a filename.
+    """
+    if exc.filename is None:
+        return "pre-exec"
+    if exc.filename == cwd:
+        return "chdir"
+    return "exec"
+
+
+def parse_security_context(status: str) -> dict[str, str]:
+    fields = {}
+    for line in status.splitlines():
+        key, _, value = line.partition(":")
+        if key in _STATUS_KEYS:
+            fields[key] = value.strip()
+    return fields
+
+
+def describe_caps(hex_value: str) -> str:
+    try:
+        bits = int(hex_value, 16)
+    except ValueError:
+        return "?"
+    return "+".join(name for bit, name in sorted(_CAP_BITS.items()) if bits >> bit & 1) or "none"
+
+
+def security_context(path: str = "/proc/self/status") -> str:
+    """This process's capabilities, no_new_privs and seccomp mode."""
+    try:
+        with open(path, encoding="ascii", errors="replace") as fh:
+            fields = parse_security_context(fh.read())
+    except OSError:
+        return "security context unavailable"
+    return " ".join(f"{k}={fields[k]}" + (f"({describe_caps(fields[k])})" if k.startswith("Cap") else "")
+                    for k in _STATUS_KEYS if k in fields)
+
+
+def spawn_failure_detail(argv: Sequence[str], exc: OSError, cwd: str,
+                         switch: tuple[int, int] | None) -> str:
+    stage = classify_spawn_error(exc, cwd)
+    code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+    resolved = shutil.which(argv[0], path=minimal_env()["PATH"]) or "not found on PATH"
+    who = f"uid/gid switch to {switch[0]}/{switch[1]}" if switch else "no uid/gid switch"
+    return (f"{exc.strerror} [stage={stage}: {_STAGE_HINTS[stage]}; errno={code}; {who}; "
+            f"executable={resolved}; {security_context()}]")
+
+
+def identity_switch_steps(uid: int, gid: int) -> tuple[tuple[str, dict[str, Any]], ...]:
+    """Each step adds one credential change, in the order the child applies them."""
+    return (
+        ("exec, no switch", {}),
+        ("+setgroups([])", {"extra_groups": []}),
+        ("+setregid", {"extra_groups": [], "group": gid}),
+        ("+setreuid", {"extra_groups": [], "group": gid, "user": uid}),
+    )
+
+
+def probe_identity_switch(uid: int, gid: int,
+                          spawn: Callable[..., Any] = subprocess.run) -> list[tuple[str, str]]:
+    """Run `git --version` with the same spawn settings as Runner, one change at a time.
+
+    Stops at the first failing step, which names the syscall that is refused.
+    Read-only: `git --version` touches no repository.
+    """
+    argv = ["git", "--version"]
+    assert_command_allowed(argv)
+    results: list[tuple[str, str]] = []
+    for label, kwargs in identity_switch_steps(uid, gid):
+        try:
+            proc = spawn(argv, env=minimal_env("git"), cwd="/", stdin=subprocess.DEVNULL,
+                         capture_output=True, text=True, errors="replace", timeout=30,
+                         check=False, **kwargs)
+        except subprocess.TimeoutExpired:
+            results.append((label, "timed out"))
+            break
+        except OSError as exc:
+            code = errno.errorcode.get(exc.errno or 0, str(exc.errno))
+            results.append((label, f"FAILED {code} at {classify_spawn_error(exc, '/')}"))
+            break
+        if proc.returncode != 0:
+            results.append((label, f"exit {proc.returncode}"))
+            break
+        results.append((label, "ok"))
+    return results
+
+
 class Runner:
     """Runs guarded commands with timeouts. Output is captured, never echoed."""
 
@@ -353,7 +463,9 @@ class Runner:
         except subprocess.TimeoutExpired as exc:
             raise DeployError(f"timed out after {timeout}s: {describe(argv)}") from exc
         except OSError as exc:
-            raise DeployError(f"could not run {describe(argv)}: {exc.strerror}") from exc
+            switch = (kwargs["user"], kwargs["group"]) if kwargs else None
+            raise DeployError(f"could not run {describe(argv)}: "
+                              f"{spawn_failure_detail(argv, exc, '/', switch)}") from exc
         return Result(proc.returncode, proc.stdout, proc.stderr)
 
 
@@ -860,11 +972,15 @@ class Deployer:
                  monotonic: Callable[[], float] = time.monotonic,
                  code_paths: Sequence[str] = (),
                  checker_uid: int | None = None,
-                 docker_group_members: Callable[[], list[str]] | None = None):
+                 docker_group_members: Callable[[], list[str]] | None = None,
+                 identity_probe: Callable[[int, int], list[tuple[str, str]]] = probe_identity_switch,
+                 euid: Callable[[], int] = lambda: os.geteuid()):
         self.cfg = cfg
         self.store = store
         self.runner = runner or Runner()
         self.docker_group_members = docker_group_members or _docker_group_members
+        self.identity_probe = identity_probe
+        self.euid = euid
         self._github = github
         self.stat = stat_fn
         self.sleep = sleep
@@ -1648,6 +1764,18 @@ class Deployer:
                 raise UnsafeStateError(recovery_advice(ip))
             return ("PASS", f"deployed {ctx['state']['deployed_commit'][:12]}")
 
+        def identity_switch():
+            uid, gid = self.repo_identity()
+            if self.euid() != 0:
+                return ("WARN", "not running as root; skipped")
+            if uid == 0:
+                return ("PASS", "checkout is root-owned; git runs without a uid switch")
+            steps = self.identity_probe(uid, gid)
+            summary = "; ".join(f"{label}: {result}" for label, result in steps)
+            if len(steps) == len(identity_switch_steps(uid, gid)) and all(r == "ok" for _, r in steps):
+                return ("PASS", f"git --version as uid {uid}/gid {gid} ({summary})")
+            raise DeployError(f"git --version as uid {uid}/gid {gid}: {summary}; {security_context()}")
+
         def repository():
             uid, gid = self.repo_identity()
             expected = ctx["state"]["deployed_commit"] if "state" in ctx else None
@@ -1719,6 +1847,7 @@ class Deployer:
 
         check("installed code", installation)
         check("deployment state", state_check)
+        check("git identity switch", identity_switch)
         check("production checkout", repository)
         check("SSD verification", storage)
         if check("compose labels, paths, build contexts", compose) != "FAIL":

@@ -365,6 +365,69 @@ docker inspect --format '{{.Image}} {{.State.Health.Status}}' ai-backend
 If the previous images are gone, `git reset --keep <sha>` as the checkout owner,
 then `dc build <service>` and the `up` line rebuild that version.
 
+## Troubleshooting: git fails with "Operation not permitted" in the sandbox
+
+As root, the executor starts git with `subprocess.run(user=<owner uid>,
+group=<owner gid>, extra_groups=[])`. The child calls `setgroups`, `setregid`,
+`setreuid`, then `execve`. Spawn errors now report which step failed:
+
+```text
+could not run git -C …: Operation not permitted [stage=pre-exec: fork, or setgroups/setregid/setreuid
+in the child, failed before exec; errno=EPERM; uid/gid switch to 1000/1000; executable=/usr/bin/git;
+CapEff=…(CAP_…) CapBnd=… NoNewPrivs=1 Seccomp=2 Seccomp_filters=N]
+```
+
+`doctor` also has a **git identity switch** check. It runs `git --version` four
+times, adding one credential change each time (no switch → `setgroups([])` →
+`setregid` → `setreuid`), and stops at the first refused step. Everything it
+prints is read from `/proc/self/status`, so it contains no secrets.
+
+1. Run the doctor unit and keep its "git identity switch" line:
+   `sudo systemctl start ai-document-assistant-deploy-doctor.service; journalctl -u ai-document-assistant-deploy-doctor.service -n 40 --no-pager`
+2. Confirm the installed unit is the reviewed one:
+   `systemctl cat ai-document-assistant-deploy-doctor.service` (look for drop-ins)
+   and `systemd-delta --type=extended`.
+3. Reproduce with the unit's exact properties, then drop one at a time. Run
+   this on the server (read-only: only `git --version` runs):
+   ```bash
+   read -r UID_ GID_ < <(stat -c '%u %g' /srv/storage/projects/ai-document-assistant)
+   PROPS=(UMask=0077 NoNewPrivileges=yes PrivateTmp=yes ProtectSystem=strict ProtectHome=yes
+     ReadWritePaths=/srv/storage/projects/ai-document-assistant ProtectKernelTunables=yes
+     ProtectKernelModules=yes ProtectKernelLogs=yes ProtectControlGroups=yes ProtectClock=yes
+     ProtectHostname=yes "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6" RestrictNamespaces=yes
+     RestrictRealtime=yes RestrictSUIDSGID=yes LockPersonality=yes SystemCallArchitectures=native
+     "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH" AmbientCapabilities=)
+   probe() {
+     local args=(); for p in "$@"; do args+=(-p "$p"); done
+     sudo systemd-run --wait --pipe --collect --quiet -p User=root "${args[@]}" /usr/bin/python3 -I -c \
+       "import sys; sys.path.insert(0, '/opt/ai-document-assistant-deploy'); import autodeploy as a
+   print(a.security_context())
+   for step in a.probe_identity_switch($UID_, $GID_): print(*step)"
+   }
+   echo '== all properties'; probe "${PROPS[@]}"
+   for i in "${!PROPS[@]}"; do
+     echo "== without ${PROPS[$i]}"; probe "${PROPS[@]:0:$i}" "${PROPS[@]:$((i+1))}"
+   done
+   ```
+4. Compare `CapEff`, `NoNewPrivs`, `Seccomp` and `Seccomp_filters` between the
+   doctor unit's output and the "all properties" probe. If they differ, the
+   transient probe is not equivalent: `systemctl show` both units and compare
+   the implied properties (`SystemCallFilter`, `DevicePolicy`, `DeviceAllow`,
+   `CapabilityBoundingSet`).
+
+| Evidence | Points to | Smallest fix |
+| --- | --- | --- |
+| First failing step is `+setgroups`, `+setregid` or `+setreuid`, and `CapEff` lacks `CAP_SETGID`/`CAP_SETUID` | The capabilities are not effective (drop-in, edited unit, different `User=`) | Restore the reviewed unit. Nothing is weakened. |
+| Same step fails, `CapEff` has both, and one removed property makes the probe pass | A seccomp `ERRNO(EPERM)` filter from that property (these do not write audit records) | Remove only that property from the executor and doctor units, with the probe output recorded as the justification in the unit comment |
+| `stage=exec` | `execve` refused: file capabilities (`getcap /usr/bin/git`), an LSM transition under `NoNewPrivileges` (`aa-status`), or a `git` earlier in `PATH` (`executable=` shows which) | Fix that cause. Do not drop `NoNewPrivileges`. |
+| The probe passes in the doctor unit but git still fails | Not the credential switch | Compare the full `could not run` detail |
+
+If a policy that should not be relaxed turns out to block credential changes,
+a different design avoids them: git would run in a separate unit whose
+`User=` is the checkout owner, and the executor would lose `CAP_SETUID` and
+`CAP_SETGID` entirely. That is a larger change, so it is only proposed on
+that evidence.
+
 ## Limitations and open risks
 
 - **Trust in `main`** and **Docker root-equivalence**: see "Privileges".
