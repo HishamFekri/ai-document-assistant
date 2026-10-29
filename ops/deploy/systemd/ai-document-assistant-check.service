@@ -1,0 +1,49 @@
+[Unit]
+Description=AI Document Assistant release checker (unprivileged; GitHub only)
+Documentation=file:///opt/ai-document-assistant-deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# No Docker access, no write access to the production checkout.
+User=ai-deploy-check
+Group=ai-deploy-check
+ExecStart=/usr/bin/python3 -I /opt/ai-document-assistant-deploy/autodeploy.py --config /etc/ai-document-assistant-deploy/deploy.conf check
+TimeoutStartSec=5min
+# Exit 75 means another check holds the lock: not a failure.
+SuccessExitStatus=75
+
+# candidate.json is read by the root executor; the directory stays traversable.
+StateDirectory=ai-document-assistant-check
+StateDirectoryMode=0755
+# Optional read-only token, kept out of the environment and arguments:
+#LoadCredential=github-token:/etc/ai-document-assistant-deploy/github-token
+
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+# The Docker socket must stay unreachable from this unit.
+InaccessiblePaths=-/run/docker.sock -/var/run/docker.sock -/srv/docker

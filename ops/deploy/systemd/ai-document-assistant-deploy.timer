@@ -1,0 +1,14 @@
+[Unit]
+Description=Backstop for the AI Document Assistant executor (retries, approvals)
+
+[Timer]
+OnBootSec=10min
+# The path unit starts the executor as soon as a candidate appears; this timer
+# retries after transient errors and picks up approvals.
+OnUnitInactiveSec=15min
+RandomizedDelaySec=60
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

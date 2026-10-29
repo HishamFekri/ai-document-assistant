@@ -1,0 +1,49 @@
+[Unit]
+Description=AI Document Assistant deployment executor (root; re-verifies every gate)
+Documentation=file:///opt/ai-document-assistant-deploy/README.md
+# Requisite, not Requires: never start (or restart) Docker Engine from here.
+Requisite=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/storage
+
+[Service]
+Type=oneshot
+# Root is required to use the Docker socket (Docker access is root-equivalent
+# either way). Git runs as the checkout's owner; see README "Privileges".
+User=root
+ExecStart=/usr/bin/python3 -I /opt/ai-document-assistant-deploy/autodeploy.py --config /etc/ai-document-assistant-deploy/deploy.conf run
+# Covers git, two storage checks, the build, both health waits and a rollback.
+TimeoutStartSec=55min
+SuccessExitStatus=75
+
+StateDirectory=ai-document-assistant-deploy
+StateDirectoryMode=0700
+Environment=HOME=/var/lib/ai-document-assistant-deploy
+Environment=DOCKER_CONFIG=/var/lib/ai-document-assistant-deploy/docker
+#LoadCredential=github-token:/etc/ai-document-assistant-deploy/github-token
+
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+# No PrivateDevices: the SSD UUID check may need /dev/disk/by-uuid.
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/storage/projects/ai-document-assistant
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+# SETUID/SETGID: drop to the checkout owner for git. KILL: stop that git on
+# timeout. DAC_READ_SEARCH: read .env, compose.yaml and candidate.json without
+# changing their permissions. Nothing else.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH
+AmbientCapabilities=

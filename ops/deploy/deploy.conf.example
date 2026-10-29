@@ -1,0 +1,34 @@
+# /etc/ai-document-assistant-deploy/deploy.conf  (root:root 0644)
+# KEY=VALUE only; nothing here is executed. Never put secrets in this file.
+# Every value below is the built-in default.
+
+REPO_SLUG=HishamFekri/ai-document-assistant
+BRANCH=main
+WORKFLOW_FILE=ci.yml
+
+REPO_DIR=/srv/storage/projects/ai-document-assistant
+COMPOSE_FILE=/srv/docker/ai-document-assistant/compose.yaml
+STORAGE_CHECK=/srv/docker/apps/check-storage.sh
+
+# Executor (root) state, and the unprivileged checker's state + candidate.json.
+STATE_DIR=/var/lib/ai-document-assistant-deploy
+CHECK_STATE_DIR=/var/lib/ai-document-assistant-check
+CHECKER_USER=ai-deploy-check
+
+# Deploy order. Only ai-backend and ai-frontend are accepted.
+CONTAINERS=ai-backend,ai-frontend
+
+# Optional read-only GitHub token (only if the 60 requests/hour anonymous limit
+# is ever reached). Leave empty to use systemd's LoadCredential=github-token.
+GITHUB_TOKEN_FILE=
+
+# Timeouts in seconds.
+GIT_TIMEOUT=120
+API_TIMEOUT=20
+STORAGE_CHECK_TIMEOUT=60
+BUILD_TIMEOUT=1800
+UP_TIMEOUT=300
+HEALTH_TIMEOUT=300
+
+# Previous releases kept as rollback images (per container).
+ROLLBACK_KEEP=3
