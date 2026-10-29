@@ -23,6 +23,8 @@ def validate_runtime():
         raise ValueError("Invalid TASK_QUEUE")
     from app.services.recovery_settings import recovery_settings
     recovery_settings()
+    from app.services.storage_settings import storage_backend, validate_local_storage_root
+    backend = storage_backend()
     if not production:
         return
     if configured_queue is None:
@@ -51,18 +53,26 @@ def validate_runtime():
         valid = False
     if not valid:
         raise ValueError("Invalid or missing DATABASE_URL") from None
-    try:
-        cloudinary_url = urlsplit(os.getenv("CLOUDINARY_URL", ""))
-        valid = (
-            cloudinary_url.scheme == "cloudinary"
-            and bool(cloudinary_url.username)
-            and bool(cloudinary_url.password)
-            and bool(cloudinary_url.hostname)
-        )
-    except ValueError:
-        valid = False
-    if not valid:
-        raise ValueError("Invalid or missing CLOUDINARY_URL") from None
+    if backend == "local":
+        # Render's filesystem is ephemeral: local originals/images would be lost.
+        if os.getenv("RENDER"):
+            raise ValueError("STORAGE_BACKEND=local is not supported on Render")
+        # Root, mount sentinel and write access; CLOUDINARY_URL is optional and
+        # only used to deliver images stored before the switch.
+        validate_local_storage_root()
+    else:
+        try:
+            cloudinary_url = urlsplit(os.getenv("CLOUDINARY_URL", ""))
+            valid = (
+                cloudinary_url.scheme == "cloudinary"
+                and bool(cloudinary_url.username)
+                and bool(cloudinary_url.password)
+                and bool(cloudinary_url.hostname)
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ValueError("Invalid or missing CLOUDINARY_URL") from None
     secret = os.getenv("JWT_SECRET_KEY", "")
     if len(secret) < 32 or secret in {"generate-a-long-random-secret", "replace-me"}:
         raise ValueError("JWT_SECRET_KEY must be a strong deployment secret of at least 32 characters")

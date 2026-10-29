@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 from app.services.document_processing_errors import RetryableDocumentProcessingError
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.resource_limits import upload_limits
+from app.services.storage_settings import LocalStorageUnavailable, uses_local_storage
+from app.services.assets.local_image_storage import LocalImageRejected, save_local_image
 
 
 load_dotenv()
@@ -31,7 +33,8 @@ CLOUDINARY_URL = os.getenv(
     "CLOUDINARY_URL"
 )
 
-if not CLOUDINARY_URL:
+# Self-hosted deployments (STORAGE_BACKEND=local) store images on their volume.
+if not CLOUDINARY_URL and not uses_local_storage():
     raise RuntimeError(
         "CLOUDINARY_URL is not set"
     )
@@ -713,11 +716,29 @@ def _upload_image(
     ), None, retries
 
 
+def _save_local_image(image_bytes: bytes, document_id: int):
+    """(stored path or None, failure category or None) for one distinct image.
+
+    Rejected content counts as a missing image. An unusable volume fails the
+    job (retryable) instead of completing with silently missing images.
+    """
+    try:
+        return save_local_image(image_bytes, document_id), None
+    except LocalImageRejected as error:
+        log_event(logger, logging.WARNING, "datalab_image_rejected",
+                  failure_category=error.category)
+        return None, error.category
+    except (LocalStorageUnavailable, OSError) as error:
+        log_exception(logger, "datalab_image_store", error, failure_category="storage_unavailable")
+        raise RetryableDocumentProcessingError("Local image storage unavailable") from None
+
+
 def save_datalab_images(
     images: dict,
     output_directory,
     upload_cache: dict | None = None,
     report: dict | None = None,
+    document_id: int | None = None,
 ):
     """
     Upload newly extracted images with authenticated Cloudinary delivery.
@@ -740,9 +761,24 @@ def save_datalab_images(
     upload failed, or no URL returned). Every occurrence of a failed duplicate
     counts, across all batches that share the dict.
 
+    With STORAGE_BACKEND=local, images are instead written under the uploads
+    root for document_id (required), whatever output_directory says, and the
+    values are those stored local paths.
+
     Return shape and order remain:
         {original_filename: cloudinary_secure_url}
     """
+    local = uses_local_storage()
+
+    if local and (
+        not isinstance(document_id, int)
+        or isinstance(document_id, bool)
+        or document_id <= 0
+    ):
+        raise ValueError(
+            "Local image storage requires a document ID"
+        )
+
     output_path = (
         Path(output_directory)
     )
@@ -753,7 +789,9 @@ def save_datalab_images(
     )
 
     cloudinary_folder = (
-        "ai-document-assistant/"
+        f"local:document_{document_id}"
+        if local
+        else "ai-document-assistant/"
         f"{document_folder}"
     )
 
@@ -816,7 +854,16 @@ def save_datalab_images(
     failed = 0
     retries = 0
 
-    if pending:
+    if pending and local:
+        for image_hash in pending:
+            stored_path, failure = _save_local_image(unique_images[image_hash], document_id)
+
+            if stored_path:
+                urls[image_hash] = stored_path
+            elif failure:
+                failed += 1
+
+    elif pending:
         workers = min(IMAGE_UPLOAD_CONCURRENCY, len(pending))
         retries_stopped = threading.Event()
         # The executor joins every upload before results are read; no thread outlives this call.
@@ -874,8 +921,9 @@ def save_datalab_images(
 
     logger.info(
         "Uploaded %s Datalab images "
-        "to Cloudinary",
+        "to %s",
         len(saved_images),
+        "local storage" if local else "Cloudinary",
     )
 
     return saved_images

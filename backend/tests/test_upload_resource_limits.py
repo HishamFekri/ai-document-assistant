@@ -255,7 +255,7 @@ class UploadResourceTests(unittest.TestCase):
         self.configure(DATALAB_BATCH_SIZE=1)
         reports, caches = [], []
 
-        def save(images, directory, upload_cache=None, report=None):
+        def save(images, directory, upload_cache=None, report=None, document_id=None):
             reports.append(report)
             caches.append(upload_cache)
             report["missing_images"] = report.get("missing_images", 0) + len(images)   # every occurrence fails

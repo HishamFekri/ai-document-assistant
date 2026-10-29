@@ -15,14 +15,17 @@ from fastapi import HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
+from app.services.assets.local_image_storage import MAX_STORED_IMAGE_BYTES
+from app.services.storage_settings import assets_root
+
 
 PRIVATE_IMAGE_HEADERS = {
     "Cache-Control": "private, no-cache",
     "Vary": "Cookie, Authorization, Origin",
     "X-Content-Type-Options": "nosniff",
 }
-ASSET_ROOT = Path("uploads/assets")
-MAX_IMAGE_BYTES = 20 * 1024 * 1024
+ASSET_ROOT = assets_root()
+MAX_IMAGE_BYTES = MAX_STORED_IMAGE_BYTES
 SPOOL_MEMORY_BYTES = 1024 * 1024
 READ_CHUNK_BYTES = 64 * 1024
 REMOTE_TIMEOUT = (5, 15)
