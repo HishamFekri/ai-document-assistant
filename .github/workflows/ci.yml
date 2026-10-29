@@ -198,3 +198,13 @@ jobs:
 
       - name: Check non-root image identity (no services or providers)
         run: test "$(docker run --rm --network none --entrypoint id assistant-ci -u)" = '10001'
+
+      - name: Build frontend self-hosting image (placeholder public build arguments)
+        run: >-
+          docker build --tag assistant-frontend-ci
+          --build-arg NEXT_PUBLIC_SITE_URL=https://ci.example.test
+          --build-arg NEXT_PUBLIC_GOOGLE_CLIENT_ID=ci-test-client.apps.googleusercontent.com
+          frontend
+
+      - name: Check non-root frontend image identity (no network)
+        run: test "$(docker run --rm --network none --entrypoint id assistant-frontend-ci -u)" = '10001'
