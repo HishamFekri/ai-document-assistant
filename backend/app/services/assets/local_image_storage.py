@@ -26,6 +26,12 @@ from app.services.storage_settings import (
 # Shared with image delivery: nothing larger is ever stored or served.
 MAX_STORED_IMAGE_BYTES = 20 * 1024 * 1024
 DOCUMENT_DIRECTORY_PATTERN = re.compile(r"document_[1-9][0-9]*")
+WINDOWS_LINK_REPARSE_TAGS = frozenset(
+    tag for tag in (
+        getattr(stat, "IO_REPARSE_TAG_SYMLINK", None),
+        getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None),
+    ) if tag is not None
+)
 logger = logging.getLogger(__name__)
 
 
@@ -51,10 +57,12 @@ def detect_image_extension(data: bytes) -> str | None:
 
 
 def _is_link(info: os.stat_result) -> bool:
-    # Windows junctions are links without S_IFLNK (development only).
-    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", 0) in (
-        stat.IO_REPARSE_TAG_SYMLINK, stat.IO_REPARSE_TAG_MOUNT_POINT,
-    )
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    # Windows junctions are links without S_IFLNK (development only). The tag
+    # constants and st_reparse_tag only exist on Windows.
+    tag = getattr(info, "st_reparse_tag", 0)
+    return bool(tag) and tag in WINDOWS_LINK_REPARSE_TAGS
 
 
 def _real_directory(path: Path) -> None:

@@ -12,6 +12,7 @@ import importlib
 import io
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
@@ -252,6 +253,43 @@ class LocalStorageTests(unittest.TestCase):
                 self.assertEqual(self.local.detect_image_extension(data), extension)
         for data in (SVG, HTML, b"", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8, b"RIFF\x00\x00\x00\x00WAVE", b"GIF90a"):
             self.assertIsNone(self.local.detect_image_extension(data))
+
+    def test_link_detection_is_portable(self):
+        is_link = self.local._is_link
+        self.assertTrue(is_link(SimpleNamespace(st_mode=stat.S_IFLNK | 0o777)))
+        # POSIX stat results have no st_reparse_tag attribute at all.
+        self.assertFalse(is_link(SimpleNamespace(st_mode=stat.S_IFDIR | 0o750)))
+        self.assertFalse(is_link(SimpleNamespace(st_mode=stat.S_IFREG | 0o640)))
+        self.assertFalse(is_link(os.lstat(__file__)))
+        # Non-link reparse points (e.g. OneDrive cloud files) are not links.
+        self.assertFalse(is_link(SimpleNamespace(st_mode=stat.S_IFREG, st_reparse_tag=0x9000001A)))
+        for name in ("IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_MOUNT_POINT"):
+            if hasattr(stat, name):
+                with self.subTest(tag=name):
+                    self.assertTrue(is_link(SimpleNamespace(st_mode=stat.S_IFDIR, st_reparse_tag=getattr(stat, name))))
+        self.assertEqual(len(self.local.WINDOWS_LINK_REPARSE_TAGS), 2 if os.name == "nt" else 0)
+
+    def test_storage_works_without_windows_stat_constants(self):
+        # Linux's stat module lacks IO_REPARSE_TAG_*; simulate it on any platform.
+        script = """
+import os, stat, sys
+for name in ("IO_REPARSE_TAG_SYMLINK", "IO_REPARSE_TAG_MOUNT_POINT"):
+    if hasattr(stat, name):
+        delattr(stat, name)
+from app.services.assets import local_image_storage as storage
+assert storage.WINDOWS_LINK_REPARSE_TAGS == frozenset()
+path = storage.save_local_image(bytes.fromhex(sys.argv[1]), 7)
+assert storage.save_local_image(bytes.fromhex(sys.argv[1]), 7) == path
+assert storage.delete_local_document_images(7) and not os.path.exists(path)
+print("ok")
+"""
+        backend = Path(__file__).resolve().parents[1]
+        environment = {key: value for key, value in os.environ.items() if key.upper() in {"PATH", "SYSTEMROOT", "TEMP", "TMP"}}
+        environment.update(PYTHON_DOTENV_DISABLED="1", ENVIRONMENT="test", STORAGE_BACKEND="local",
+                           UPLOADS_ROOT=str(self.root))
+        result = subprocess.run([sys.executable, "-B", "-c", script, PNG.hex()], cwd=backend, env=environment,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual((result.returncode, result.stdout.strip()), (0, "ok"), result.stderr)
 
     def test_images_use_content_hash_names_and_validated_extensions(self):
         result = self.save({"../../evil.svg": encode(PNG), "photo.png": encode(JPEG)}, report=(report := {}))
