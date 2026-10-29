@@ -1,0 +1,34 @@
+# Dependencies and build output are recreated inside the image.
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+next-env.d.ts
+
+# Local environment files and secrets never enter the build context.
+.env
+.env.*
+**/.env
+**/.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.vercel
+.npmrc
+
+# Development artifacts not needed to build or run the application.
+.git
+.gitignore
+.dockerignore
+Dockerfile
+tests
+docs
+*.md
+*.log
+.DS_Store
+.vscode
+.idea
+.playwright-mcp

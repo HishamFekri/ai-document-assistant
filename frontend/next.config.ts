@@ -1,10 +1,12 @@
 import type { NextConfig } from "next";
 
 import { backendProxyRewrite } from "./src/lib/backend-proxy";
+import { standaloneConfig } from "./src/lib/build-output";
 import { securityHeaders } from "./src/lib/security-headers";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  ...standaloneConfig(process.env),
 
   async headers() {
     return [

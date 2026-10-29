@@ -51,6 +51,13 @@ test("rewrite keeps the current default destination", () => {
   assert.equal(proxy.backendProxyOrigin({ BACKEND_PROXY_ORIGIN: "   " }), proxy.DEFAULT_BACKEND_PROXY_ORIGIN);
 });
 
+test("self-hosted Docker backend origin is accepted", () => {
+  assert.deepEqual({ ...proxy.backendProxyRewrite({ BACKEND_PROXY_ORIGIN: "http://ai-backend:8000" }) }, {
+    source: "/api/backend/:path*",
+    destination: "http://ai-backend:8000/:path*",
+  });
+});
+
 test("rewrite override accepts only a bare http(s) origin", () => {
   assert.equal(proxy.backendProxyOrigin({ BACKEND_PROXY_ORIGIN: "https://api.example.test/" }), "https://api.example.test");
   for (const value of ["https://api.example.test/path", "ftp://api.example.test", "not a url",

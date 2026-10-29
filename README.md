@@ -157,6 +157,9 @@ The backend runs on:
 http://localhost:8000
 ```
 
+To self-host the frontend with Docker, see
+[frontend/docs/self-hosting.md](frontend/docs/self-hosting.md).
+
 ## Background Processing
 
 Document processing can run with FastAPI BackgroundTasks in an explicitly
