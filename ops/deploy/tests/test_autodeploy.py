@@ -1713,6 +1713,111 @@ class SpawnDiagnosticsTests(unittest.TestCase):
                 ad.assert_command_allowed(argv)
 
 
+# ---------------------------------------------------------------------------
+# systemd units: privileges and sandbox must not regress
+# ---------------------------------------------------------------------------
+
+UNIT_DIR = os.path.join(os.path.dirname(__file__), "..", "systemd")
+EXECUTOR_UNIT = "ai-document-assistant-deploy.service"
+DOCTOR_UNIT = "ai-document-assistant-deploy-doctor.service"
+CHECKER_UNIT = "ai-document-assistant-check.service"
+ROOT_SANDBOX = {
+    "NoNewPrivileges": "yes",
+    "CapabilityBoundingSet": "CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH",
+    "AmbientCapabilities": "",
+    "UMask": "0077",
+    "PrivateTmp": "yes",
+    "ProtectSystem": "strict",
+    "ProtectHome": "yes",
+    "ReadWritePaths": REPO_DIR,
+    "ProtectKernelTunables": "yes",
+    "ProtectKernelModules": "yes",
+    "ProtectKernelLogs": "yes",
+    "ProtectControlGroups": "yes",
+    "ProtectClock": "yes",
+    "ProtectHostname": "yes",
+    "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
+    "RestrictNamespaces": "yes",
+    "RestrictRealtime": "yes",
+    "RestrictSUIDSGID": "yes",
+    "LockPersonality": "yes",
+    "SystemCallArchitectures": "native",
+}
+
+
+def read_unit(name):
+    """Return ({section: {key: [values]}}, raw text). Comments are ignored."""
+    with open(os.path.join(UNIT_DIR, name), encoding="utf-8") as fh:
+        text = fh.read()
+    sections: dict[str, dict[str, list[str]]] = {}
+    current = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = sections.setdefault(line[1:-1], {})
+            continue
+        key, _, value = line.partition("=")
+        current.setdefault(key.strip(), []).append(value.strip())
+    return sections, text
+
+
+class SystemdUnitTests(unittest.TestCase):
+    def service(self, name):
+        return read_unit(name)[0]["Service"]
+
+    def test_executor_and_doctor_do_not_set_user(self):
+        # systemd v255 drops CAP_SETUID for an explicit User= (even root)
+        # under NoNewPrivileges; git can then not switch to the checkout owner.
+        for name in (EXECUTOR_UNIT, DOCTOR_UNIT):
+            with self.subTest(name):
+                service = self.service(name)
+                self.assertNotIn("User", service)
+                self.assertNotIn("DynamicUser", service)
+                self.assertNotIn("Group", service)
+
+    def test_root_sandbox_is_unchanged(self):
+        for name in (EXECUTOR_UNIT, DOCTOR_UNIT):
+            service = self.service(name)
+            for key, want in ROOT_SANDBOX.items():
+                with self.subTest(unit=name, key=key):
+                    self.assertEqual(service.get(key), [want])
+
+    def test_ambient_capabilities_are_not_used_as_a_workaround(self):
+        for name in (EXECUTOR_UNIT, DOCTOR_UNIT, CHECKER_UNIT):
+            with self.subTest(name):
+                self.assertEqual(self.service(name).get("AmbientCapabilities"), [""])
+
+    def test_doctor_uses_the_executor_sandbox(self):
+        ignore = {"ExecStart", "TimeoutStartSec", "SuccessExitStatus"}
+        executor = {k: v for k, v in self.service(EXECUTOR_UNIT).items() if k not in ignore}
+        doctor = {k: v for k, v in self.service(DOCTOR_UNIT).items() if k not in ignore}
+        self.assertEqual(executor, doctor)
+        self.assertTrue(self.service(EXECUTOR_UNIT)["ExecStart"][0].endswith(" run"))
+        self.assertTrue(self.service(DOCTOR_UNIT)["ExecStart"][0].endswith(" doctor"))
+
+    def test_docker_engine_is_never_started_by_these_units(self):
+        for name in (EXECUTOR_UNIT, DOCTOR_UNIT):
+            unit = read_unit(name)[0]["Unit"]
+            self.assertEqual(unit.get("Requisite"), ["docker.service"])
+            self.assertNotIn("Requires", unit)
+
+    def test_units_explain_why_user_is_unset(self):
+        for name in (EXECUTOR_UNIT, DOCTOR_UNIT):
+            with self.subTest(name):
+                self.assertIn("Do NOT set User=", read_unit(name)[1])
+
+    def test_checker_keeps_its_unprivileged_user_and_sandbox(self):
+        service = self.service(CHECKER_UNIT)
+        self.assertEqual(service["User"], ["ai-deploy-check"])
+        self.assertEqual(service["Group"], ["ai-deploy-check"])
+        self.assertEqual(service["CapabilityBoundingSet"], [""])
+        self.assertEqual(service["NoNewPrivileges"], ["yes"])
+        self.assertIn("-/run/docker.sock", service["InaccessiblePaths"][0])
+        self.assertTrue(service["ExecStart"][0].endswith(" check"))
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "flock is Linux-only")
 class LockTests(unittest.TestCase):
     def test_second_lock_is_refused(self):

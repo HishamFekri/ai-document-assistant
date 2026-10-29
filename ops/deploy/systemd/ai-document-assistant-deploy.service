@@ -9,9 +9,19 @@ RequiresMountsFor=/srv/storage
 
 [Service]
 Type=oneshot
-# Root is required to use the Docker socket (Docker access is root-equivalent
-# either way). Git runs as the checkout's owner; see README "Privileges".
-User=root
+# Runs as root, the default for system services. Root is required to use the
+# Docker socket (Docker access is root-equivalent either way). Git runs as the
+# checkout's owner; see README "Privileges".
+#
+# Do NOT set User= here, not even User=root. In systemd v255 (Ubuntu 24.04),
+# an explicit User= together with any seccomp-based option below (for example
+# RestrictNamespaces=, LockPersonality=) takes the keep_seccomp_privileges
+# path in src/core/exec-invoke.c. After the user switch, that path calls
+# drop_capability(CAP_SETUID) unless CAP_SETUID is in AmbientCapabilities=.
+# With NoNewPrivileges=yes, execve() cannot regain it, so the process ends up
+# with CAP_SETUID in CapBnd but not in CapEff, and dropping to the checkout
+# owner fails with EPERM at setreuid(). Leaving User= unset keeps the uid
+# unset in systemd and skips that path. All restrictions below are unchanged.
 ExecStart=/usr/bin/python3 -I /opt/ai-document-assistant-deploy/autodeploy.py --config /etc/ai-document-assistant-deploy/deploy.conf run
 # Covers git, two storage checks, the build, both health waits and a rollback.
 TimeoutStartSec=55min
