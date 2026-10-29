@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the AI Document Assistant executor when the checker publishes a candidate
+
+[Path]
+# The checker replaces this file atomically (rename) only when the candidate changes.
+PathChanged=/var/lib/ai-document-assistant-check/candidate.json
+Unit=ai-document-assistant-deploy.service
+
+[Install]
+WantedBy=paths.target

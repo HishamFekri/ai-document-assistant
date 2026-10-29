@@ -1,0 +1,13 @@
+[Unit]
+Description=Check GitHub for AI Document Assistant releases every 5 minutes
+
+[Timer]
+OnBootSec=5min
+# Measured from the end of the previous check, so runs never pile up.
+OnUnitInactiveSec=5min
+RandomizedDelaySec=60
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target
