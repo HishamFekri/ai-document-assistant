@@ -1,4 +1,5 @@
 # AI Document Assistant
+🌐 **[Live Demo](https://ai.hishamjouda.com/)**
 
 AI Document Assistant is a full-stack application for working with your own documents. Upload a PDF, Word file, spreadsheet, or text file, attach documents to a chat, and ask questions in English or Arabic. The assistant retrieves relevant content before answering, streams its responses, and can generate saved summaries or detailed page-by-page walkthroughs.
 
