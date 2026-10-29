@@ -121,7 +121,7 @@ each run also compares the live image IDs with the recorded ones.
 | Role | Runs as | Can |
 | --- | --- | --- |
 | Checker | `ai-deploy-check`: system user, no login shell, **not** in the `docker` group | HTTPS to GitHub; write `/var/lib/ai-document-assistant-check` |
-| Executor, doctor | `root`, in a systemd sandbox | Docker socket; write the checkout and `/var/lib/ai-document-assistant-deploy`; capabilities limited to `CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH` |
+| Executor, doctor | `root` (the systemd default; `User=` is deliberately unset, see "Known cause" below), in a systemd sandbox | Docker socket; write the checkout and `/var/lib/ai-document-assistant-deploy`; capabilities limited to `CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH` |
 | git (inside the executor) | the checkout's existing owner (uid/gid read from the directory) | read/write the checkout, nothing else root could |
 
 **Unavoidable risk: Docker access is root-equivalent.** Anything that can
@@ -365,6 +365,40 @@ docker inspect --format '{{.Image}} {{.State.Health.Status}}' ai-backend
 If the previous images are gone, `git reset --keep <sha>` as the checkout owner,
 then `dc build <service>` and the `up` line rebuild that version.
 
+## Reconciling a checkout that moved outside the executor
+
+If someone runs `git pull` in the production checkout, `HEAD` no longer
+matches `deployed_commit`. Every `run`, `rollback` and `approve` then refuses
+with "HEAD … is not the recorded deployed commit". This is intended: the
+running containers were built from the recorded commit, not from `HEAD`.
+Do not start the executor until this is resolved. Pause the timers and the
+path unit first (see "Day to day").
+
+1. Read-only checks:
+   ```bash
+   deployctl status                      # deployed_commit, images, no in_progress
+   R=/srv/storage/projects/ai-document-assistant
+   OLD=<deployed_commit>; NEW=$(git -C "$R" rev-parse HEAD)
+   git -C "$R" merge-base --is-ancestor "$OLD" "$NEW" && echo linear
+   git -C "$R" diff --name-only "$OLD" "$NEW"                              # what moved
+   git -C "$R" diff --name-only "$OLD" "$NEW" -- . ':(exclude)ops/deploy'  # app changes
+   git -C "$R" diff --name-only "$OLD" "$NEW" -- backend/migrations backend/alembic.ini
+   git -C "$R" status --porcelain=v1 --untracked-files=all                 # must be empty
+   deployctl doctor --offline            # every line except the checkout check must pass
+   ```
+2. Decide:
+   - **Only `ops/deploy/` (or other non-build files) changed**, history is
+     linear, the tree is clean, and doctor shows the running images match the
+     recorded ones: the containers are equivalent to a build of `HEAD`. Record
+     it explicitly with `deployctl recover --adopt --commit <NEW>`. That writes
+     only the state file; no container is touched. If `ops/deploy/` changed,
+     install the reviewed files to `/opt` first (Install step 2).
+   - **Application files or migrations changed**: the running containers do
+     **not** match `HEAD`. Do not adopt. Move the checkout back as its owner
+     (`sudo -u <owner> git -C "$R" reset --keep "$OLD"`) and let the executor
+     deploy `NEW` through its gates, with approval if migrations changed.
+3. Re-run `deployctl doctor` and confirm 0 failures before resuming the timers.
+
 ## Troubleshooting: git fails with "Operation not permitted" in the sandbox
 
 As root, the executor starts git with `subprocess.run(user=<owner uid>,
@@ -377,6 +411,46 @@ in the child, failed before exec; errno=EPERM; uid/gid switch to 1000/1000; exec
 CapEff=…(CAP_…) CapBnd=… NoNewPrivs=1 Seccomp=2 Seccomp_filters=N]
 ```
 
+### Known cause: `User=root` with systemd v255
+
+Seen on Ubuntu 24.04 (systemd 255): `+setreuid: FAILED EPERM at pre-exec`,
+with `CapBnd=…e4` (includes `CAP_SETUID`) but `CapEff=…64` (does not).
+
+In `src/core/exec-invoke.c`, an explicit `User=` (even `User=root`) gives
+systemd a valid uid. Together with any seccomp-based sandbox option
+(`RestrictNamespaces=`, `LockPersonality=`, `ProtectClock=`, …) and no
+`SystemCallFilter=` that forbids dropping privileges, that selects the
+`keep_seccomp_privileges` path. After the user switch, that path calls
+`drop_capability(CAP_SETUID)` unless `CAP_SETUID` is in `AmbientCapabilities=`.
+`drop_capability` clears the inheritable, permitted and effective sets. Under
+`NoNewPrivileges=yes`, `execve()` cannot regain a capability that was not
+already permitted, so the service starts without `CAP_SETUID` even though the
+bounding set contains it. `CAP_SETGID` is not dropped, which is why
+`setgroups` and `setregid` still succeed. Capability checks write no audit
+records.
+
+The executor and doctor units therefore **do not set `User=`**. Root is the
+default for system services, so the uid stays unset in systemd and the path is
+skipped. Nothing else changes: same bounding set, empty ambient set,
+`NoNewPrivileges=yes`, same filesystem and syscall restrictions. A regression
+test fails if either unit sets `User=` or loses one of these restrictions. The
+checker unit keeps `User=ai-deploy-check`, because it needs no capabilities.
+
+Rejected alternatives: `AmbientCapabilities=CAP_SETUID` also skips the drop,
+but it keeps the path active (it briefly raises `CAP_SYS_ADMIN`/`CAP_SETPCAP`
+before exec) and hands the capability to every child explicitly. Disabling
+`NoNewPrivileges` removes a protection for no gain.
+
+Reproduce it (read-only; `grep` prints its own capabilities):
+
+```bash
+P=(-p NoNewPrivileges=yes -p ProtectClock=yes -p "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH")
+sudo systemd-run --wait --pipe --collect -q -p User=root "${P[@]}" grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status  # CapEff ...64
+sudo systemd-run --wait --pipe --collect -q "${P[@]}" grep -E '^Cap(Prm|Eff|Bnd)' /proc/self/status               # CapEff ...e4
+```
+
+### Diagnosing other causes
+
 `doctor` also has a **git identity switch** check. It runs `git --version` four
 times, adding one credential change each time (no switch → `setgroups([])` →
 `setregid` → `setreuid`), and stops at the first refused step. Everything it
@@ -386,7 +460,8 @@ prints is read from `/proc/self/status`, so it contains no secrets.
    `sudo systemctl start ai-document-assistant-deploy-doctor.service; journalctl -u ai-document-assistant-deploy-doctor.service -n 40 --no-pager`
 2. Confirm the installed unit is the reviewed one:
    `systemctl cat ai-document-assistant-deploy-doctor.service` (look for drop-ins)
-   and `systemd-delta --type=extended`.
+   and `systemd-delta --type=extended`. `systemctl show -p User` must print
+   an empty `User=` for the executor and doctor units.
 3. Reproduce with the unit's exact properties, then drop one at a time. Run
    this on the server (read-only: only `git --version` runs):
    ```bash
@@ -399,7 +474,7 @@ prints is read from `/proc/self/status`, so it contains no secrets.
      "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH" AmbientCapabilities=)
    probe() {
      local args=(); for p in "$@"; do args+=(-p "$p"); done
-     sudo systemd-run --wait --pipe --collect --quiet -p User=root "${args[@]}" /usr/bin/python3 -I -c \
+     sudo systemd-run --wait --pipe --collect --quiet "${args[@]}" /usr/bin/python3 -I -c \
        "import sys; sys.path.insert(0, '/opt/ai-document-assistant-deploy'); import autodeploy as a
    print(a.security_context())
    for step in a.probe_identity_switch($UID_, $GID_): print(*step)"
@@ -417,7 +492,8 @@ prints is read from `/proc/self/status`, so it contains no secrets.
 
 | Evidence | Points to | Smallest fix |
 | --- | --- | --- |
-| First failing step is `+setgroups`, `+setregid` or `+setreuid`, and `CapEff` lacks `CAP_SETGID`/`CAP_SETUID` | The capabilities are not effective (drop-in, edited unit, different `User=`) | Restore the reviewed unit. Nothing is weakened. |
+| `+setreuid` fails, `CapBnd` has `CAP_SETUID` but `CapEff` does not | systemd v255 dropped it because `User=` is set (see "Known cause") | Remove `User=` from the unit or drop-in. Nothing is weakened. |
+| First failing step is `+setgroups`, `+setregid` or `+setreuid`, and `CapEff` lacks `CAP_SETGID`/`CAP_SETUID` | The capabilities are not effective (drop-in, edited unit) | Restore the reviewed unit. Nothing is weakened. |
 | Same step fails, `CapEff` has both, and one removed property makes the probe pass | A seccomp `ERRNO(EPERM)` filter from that property (these do not write audit records) | Remove only that property from the executor and doctor units, with the probe output recorded as the justification in the unit comment |
 | `stage=exec` | `execve` refused: file capabilities (`getcap /usr/bin/git`), an LSM transition under `NoNewPrivileges` (`aa-status`), or a `git` earlier in `PATH` (`executable=` shows which) | Fix that cause. Do not drop `NoNewPrivileges`. |
 | The probe passes in the doctor unit but git still fails | Not the credential switch | Compare the full `could not run` detail |

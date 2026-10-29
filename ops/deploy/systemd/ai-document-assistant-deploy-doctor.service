@@ -12,7 +12,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
+# Root by default. Do NOT set User= (not even User=root): in systemd v255 it
+# makes the process lose CAP_SETUID from its effective set under
+# NoNewPrivileges=yes. See the comment in ai-document-assistant-deploy.service.
 ExecStart=/usr/bin/python3 -I /opt/ai-document-assistant-deploy/autodeploy.py --config /etc/ai-document-assistant-deploy/deploy.conf doctor
 TimeoutStartSec=5min
 
