@@ -8,10 +8,15 @@ import {
 } from "lucide-react";
 
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
 } from "react";
+
+import {
+  createPortal,
+} from "react-dom";
 
 import ThemeToggle from "@/components/theme/ThemeToggle";
 
@@ -56,14 +61,82 @@ export default function CollapsedSidebar({
     );
 
 
+  const menuRef =
+    useRef<HTMLDivElement | null>(
+      null
+    );
+
+
+  // The rail clips its content (overflow-hidden, needed for the rounded
+  // panel and the collapse animation), so the menu is portaled to <body>
+  // and placed beside the button: 52px from its left edge, bottom-aligned.
+  const [
+    menuPosition,
+    setMenuPosition,
+  ] = useState({
+    left: 0,
+    bottom: 0,
+  });
+
+
+  const updateMenuPosition =
+    useCallback(() => {
+      const rect =
+        settingsRef.current
+          ?.getBoundingClientRect();
+
+      if (!rect) {
+        return;
+      }
+
+      setMenuPosition({
+        left:
+          rect.left
+          + 52,
+
+        bottom:
+          window.innerHeight
+          - rect.bottom,
+      });
+    }, []);
+
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      return;
+    }
+
+    window.addEventListener(
+      "resize",
+      updateMenuPosition
+    );
+
+    return () => {
+      window.removeEventListener(
+        "resize",
+        updateMenuPosition
+      );
+    };
+  }, [
+    settingsOpen,
+    updateMenuPosition,
+  ]);
+
+
   useEffect(() => {
     function handleOutsideClick(
       event: MouseEvent
     ) {
+      const target =
+        event.target as Node;
+
       if (
         settingsRef.current
         && !settingsRef.current.contains(
-          event.target as Node
+          target
+        )
+        && !menuRef.current?.contains(
+          target
         )
       ) {
         setSettingsOpen(
@@ -207,12 +280,21 @@ export default function CollapsedSidebar({
             relative
           "
         >
-          {settingsOpen && (
+          {settingsOpen && createPortal(
             <div
+              ref={
+                menuRef
+              }
+              style={{
+                left:
+                  menuPosition.left,
+
+                bottom:
+                  menuPosition.bottom,
+              }}
               className="
-                absolute
-                bottom-0
-                left-[52px]
+                aura
+                fixed
                 z-50
                 w-[210px]
                 rounded-xl
@@ -295,19 +377,22 @@ export default function CollapsedSidebar({
                   Log out
                 </span>
               </button>
-            </div>
+            </div>,
+            document.body
           )}
 
 
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
+              updateMenuPosition();
+
               setSettingsOpen(
                 (
                   current
                 ) => !current
-              )
-            }
+              );
+            }}
             title="Settings"
             className={`
               flex
