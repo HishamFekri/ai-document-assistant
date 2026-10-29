@@ -31,6 +31,7 @@ from app.services.upload_validation import validated_pdf_reader, PDFTextBudget
 from app.services.document_resource_errors import DocumentResourceError
 from app.services.content_budget import ContentBudget, check_content
 from app.services.datalab_admission import AdvancedPageBudget
+from app.services.storage_settings import document_asset_directory
 
 
 class PreparedPDFContent(list):
@@ -833,19 +834,16 @@ def get_asset_directory(
     pdf_path: Path,
     document_id: int | None,
 ) -> Path:
-    base_directory = (
-        pdf_path.parent
-        / "assets"
-    )
-
+    # Never relative to the PDF: a Cloudinary original is materialized in a
+    # temporary directory, and images placed beside it would be lost.
     if document_id is not None:
-        return (
-            base_directory
-            / f"document_{document_id}"
+        return document_asset_directory(
+            document_id
         )
 
     return (
-        base_directory
+        pdf_path.parent
+        / "assets"
         / pdf_path.stem
     )
 
@@ -972,7 +970,8 @@ def extract_content_from_hybrid_pdf(file_path, document_id: int | None = None):
             with timed_stage("extraction.image_upload", batch=result["batch_number"],
                              images=len(result["images"] or {})):
                 saved = save_datalab_images(result["images"], asset_directory / f"batch_{result['batch_number']}",
-                                            upload_cache=upload_cache, report=image_report) if result["images"] else {}
+                                            upload_cache=upload_cache, report=image_report,
+                                            document_id=document_id) if result["images"] else {}
             if not bind_saved_image_paths(result["blocks"], result["preview"], saved):
                 # Partial/ambiguous uploads retain the prior exact reassignment logic.
                 result["blocks"] = extract_datalab_blocks(

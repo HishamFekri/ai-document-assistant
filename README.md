@@ -182,6 +182,12 @@ Run the worker with:
 celery -A app.worker.celery_app worker --loglevel=info
 ```
 
+## Storage
+
+Cloudinary is the default storage backend. To self-host with original documents
+and extracted images on a persistent volume instead, set `STORAGE_BACKEND=local`
+and see [backend/docs/self-hosting.md](backend/docs/self-hosting.md).
+
 ## Testing
 
 Backend tests require an explicit **process environment variable**

@@ -55,6 +55,8 @@ from app.services.original_storage import (
     delete_stored_original,
     store_original,
 )
+from app.services.assets.local_image_storage import discard_local_document_images
+from app.services.storage_settings import requires_storage_sentinel, uploads_root
 
 
 load_dotenv()
@@ -76,11 +78,13 @@ router = APIRouter(
 )
 
 
-UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR = uploads_root()
 
-UPLOAD_DIR.mkdir(
-    exist_ok=True
-)
+# A mounted production volume must already exist; startup validation reports it.
+if not requires_storage_sentinel():
+    UPLOAD_DIR.mkdir(
+        exist_ok=True
+    )
 
 
 def get_owned_document(
@@ -422,6 +426,8 @@ def delete_document(
         ) from error
 
     cleanup_original_storage(file_path, storage_key, document_id=document_id)
+    # Only this document's directory; Cloudinary-stored images are unchanged.
+    discard_local_document_images(document_id)
 
     return {
         "message": (

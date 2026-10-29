@@ -20,6 +20,7 @@ import requests
 
 from app.services.environment import is_production_environment
 from app.services.document_resource_errors import DocumentResourceError
+from app.services.storage_settings import ensure_local_storage_ready, uses_local_storage
 
 
 load_dotenv()
@@ -69,8 +70,9 @@ class _NonClosingStream:
 
 
 def uses_shared_original_storage() -> bool:
-    """Production and staging have separate web/worker filesystems."""
-    return is_production_environment()
+    """Production and staging have separate web/worker filesystems, unless a
+    self-hosted deployment shares one persistent volume (STORAGE_BACKEND=local)."""
+    return not uses_local_storage() and is_production_environment()
 
 
 def _validated_extension(extension: str) -> str:
@@ -166,6 +168,9 @@ def store_original(source, extension: str, expected_size: int, max_size: int, up
             source.seek(0)
         return StoredOriginal(None, storage_key, expected_size, checksum)
 
+    if uses_local_storage():
+        # Never write originals to an unmounted placeholder directory.
+        ensure_local_storage_ready()
     upload_dir.mkdir(exist_ok=True)
     file_path = upload_dir / f"{uuid4().hex}{extension}"
     bytes_written = 0

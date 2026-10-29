@@ -83,6 +83,10 @@ def readiness_status():
                 log_exception(logger, "readiness", error, dependency=name)
 
         probe("database", check_database)
+        from app.services.storage_settings import requires_storage_sentinel, validate_local_storage_root
+        if requires_storage_sentinel():
+            # Reports a volume that was unmounted or turned read-only after startup.
+            probe("storage", validate_local_storage_root)
         redis_targets = {"resource_redis": resource_limits().redis_url}
         if os.getenv("TASK_QUEUE", "background").lower() == "celery":
             redis_targets.update(

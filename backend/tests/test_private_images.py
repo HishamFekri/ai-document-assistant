@@ -208,6 +208,26 @@ class PrivateImageTests(unittest.TestCase):
                     self.assertEqual(self.get(path, user).status_code, status)
         self.http.assert_not_called()
 
+    def test_locally_stored_extracted_image_keeps_ownership_checks(self):
+        storage = importlib.import_module("app.services.assets.local_image_storage")
+        with patch.dict(os.environ, {"STORAGE_BACKEND": "local", "UPLOADS_ROOT": str(self.directory)}), \
+                patch.object(self.delivery, "ASSET_ROOT", self.directory / "assets"):
+            stored = storage.save_local_image(self.image_bytes, 7)
+            self.asset.file_path = stored
+            self.asset.asset_metadata = {"asset_filename": Path(stored).name, "asset_path": stored}
+            self.chunk.chunk_metadata = copy.deepcopy(self.asset.asset_metadata)
+            for path in ("/documents/7/assets/11/file", "/documents/7/image-chunks/21/file"):
+                with self.subTest(path=path):
+                    response = self.get(path)
+                    self.assertEqual((response.status_code, response.content), (200, self.image_bytes))
+                    self.assert_private(response)
+                    for user, status in (("2", 404), (None, 401)):
+                        self.assertEqual(self.get(path, user).status_code, status)
+            # Another document's route never reaches this document's stored file.
+            self.asset.document_id = 8
+            self.assertEqual(self.get("/documents/8/assets/11/file", "2").status_code, 400)
+        self.http.assert_not_called()
+
     def test_cookie_authentication_still_works(self):
         self.client.cookies.set("access_token", "1")
         self.assertEqual(self.get(user=None).status_code, 200)

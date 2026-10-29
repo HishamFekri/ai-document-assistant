@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.database.models import Document
 from app.services.resource_admission import AdmissionUnavailable, ResourceRejected, user_operation
 from app.services.resource_limits import resource_limits, upload_limits
+from app.services.storage_settings import uploads_root
 
 
 PROCESSING_STALE_SECONDS = 15 * 60
@@ -68,10 +69,12 @@ def reconcile_stale_processing(db, user_id):
             raise
 
 
-def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload_root=Path("uploads")):
+def check_upload_quota(rows, incoming_bytes=None, retry_document_id=None, upload_root=None):
     limits = resource_limits()
     if incoming_bytes is None:
         return
+    if upload_root is None:
+        upload_root = uploads_root()
     if len(rows) >= limits.max_documents:
         raise ResourceRejected("document_quota", "Your document limit has been reached. Delete a document before uploading another.", 60)
     total = incoming_bytes

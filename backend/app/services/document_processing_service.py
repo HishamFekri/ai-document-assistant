@@ -32,6 +32,7 @@ from app.services.document_resource_errors import DocumentResourceError
 from app.services.upload_validation import validate_document_source
 from app.services.queued_message_service import process_waiting_messages_for_document
 from app.services.original_storage import materialize_original
+from app.services.assets.local_image_storage import discard_local_document_images
 from app.services.processing_recovery import processing_heartbeat
 
 
@@ -303,6 +304,8 @@ def process_document(
                 )
             except DocumentDeletedDuringProcessing:
                 log_event(logger, logging.INFO, "processing_deleted_document_skipped", document_id=document_id)
+                # Images written after the delete request's own cleanup ran.
+                discard_local_document_images(document_id)
                 return "deleted"
             except Exception as error:
                 retryable = is_retryable_processing_error(error)
@@ -314,6 +317,7 @@ def process_document(
                         document.processing_stage = "retryable_failure" if retryable else "permanent_failure"
                         document.processing_error = public_error
                 except DocumentDeletedDuringProcessing:
+                    discard_local_document_images(document_id)
                     return "deleted"
                 except Exception as state_error:
                     log_generation_failure(state_error, "document", document_id=document_id)
