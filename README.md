@@ -1,264 +1,214 @@
-# AI Document Assistant
+AI Document Assistant
 
-AI Document Assistant is a full-stack web application for uploading documents, asking questions about their content, generating summaries, and searching through them using semantic search and RAG.
+AI Document Assistant is a full-stack application for working with your own documents. Upload a PDF, Word file, spreadsheet, or text file, attach documents to a chat, and ask questions in English or Arabic. The assistant retrieves relevant content before answering, streams its responses, and can generate saved summaries or detailed page-by-page walkthroughs.
 
-The project uses a Next.js frontend with a FastAPI backend, PostgreSQL, pgvector, and DeepSeek.
+The project focuses on three practical problems: extracting useful information from complex PDFs without sending every page to a paid conversion service, retrieving the right context across multiple documents, and keeping long-running processing jobs recoverable when services fail or restart.
 
-## Features
+Features
 
-- Google authentication
-- PDF, DOCX, XLSX, and TXT uploads
-- Chat with one or multiple documents
-- Semantic search with pgvector
-- Retrieval-Augmented Generation (RAG)
-- Streaming AI responses
-- Document summaries
-- Exact page questions
-- Image, table, equation, and chart support
-- Hybrid PDF parsing with PyPDF and Datalab
-- Pinned and archived chats
-- Celery + Redis background processing
-- Alembic database migrations
-- Automated backend tests
-- User-specific document and chat access
+Document chat: Ask questions across one or more attached documents, with streaming responses, follow-up context, and optional general knowledge.
 
-## Tech Stack
+Document search: PostgreSQL and pgvector retrieve relevant chunks; lexical matching helps re-rank vector candidates. Questions about an exact page use page-based retrieval.
 
-**Frontend**
-- Next.js
-- React
-- TypeScript
+PDF extraction: Simple pages use pypdf. Complex pages can use Datalab for tables, figures, equations, and scanned content, within a configurable conversion budget.
 
-**Backend**
-- FastAPI
-- Python
-- SQLAlchemy
+Visual content: Extracted PDF images and charts can appear alongside answers. Tables and equations are rendered with Markdown and KaTeX.
 
-**Database**
-- PostgreSQL
-- pgvector
-- HNSW vector indexing
+Summaries: Generate versioned summaries or detailed page-by-page walkthroughs, including specific page ranges.
 
-**AI**
-- DeepSeek
-- Sentence Transformers
-- RAG
+Document management: Upload PDF, DOCX, XLSX, and TXT files; track processing progress, retry failures, and organize chats with pinning and archiving.
 
-**Document Processing**
-- PyPDF
-- Datalab
-- python-docx
-- openpyxl
+Background jobs: Run processing through FastAPI BackgroundTasks or Celery with Redis. Checkpoints reduce repeated extraction and embedding work.
 
-**Other**
-- Celery
-- Redis
-- Alembic
-- Pytest
+User isolation: Google sign-in, authenticated document access, upload validation, rate limits, and ownership checks.
 
-## How It Works
+PDF support is richer than Office-file support: DOCX extraction reads paragraphs, not embedded images or tables. Answer text may mention sources, but those references are not currently verified citations. See Current limitations.
 
-When a document is uploaded:
+Technology stack
 
-```text
-Upload
-  ↓
-Content extraction
-  ↓
-Chunking
-  ↓
-Embedding generation
-  ↓
-PostgreSQL + pgvector
-```
+Area
 
-When the user asks a question:
+Technology
 
-```text
-Question
-  ↓
-Query embedding
-  ↓
-Vector search
-  ↓
-Relevant document chunks
-  ↓
-RAG context
-  ↓
-LLM response
-```
+Frontend
 
-The search system uses cosine similarity together with lexical matching and retrieval limits to select relevant chunks.
+Next.js 16, React 19, TypeScript, Tailwind CSS
 
-## PDF Processing
+Backend
 
-PDFs use a hybrid parsing approach.
+Python 3.11, FastAPI, SQLAlchemy 2, Alembic
 
-Regular text pages are processed locally with PyPDF. More complex pages can be processed with Datalab to extract structured content such as:
+Database
 
-- Images
-- Charts
-- Tables
-- Equations
-- Diagrams
+PostgreSQL, pgvector, HNSW cosine index
 
-Extracted images can also be linked back to their document page and displayed with relevant answers.
+AI
 
-## Project Structure
+DeepSeek for generation, Voyage AI voyage-4-lite for 512-dimensional embeddings
 
-```text
-ai-document-assistant/
-├── backend/
-│   ├── app/
-│   │   ├── database/
-│   │   ├── routes/
-│   │   ├── schemas/
-│   │   └── services/
-│   ├── migrations/
-│   ├── tests/
-│   └── main.py
-│
-├── frontend/
-│   ├── public/
-│   └── src/
-│
-└── README.md
-```
+Document processing
 
-## Backend Setup
+pypdf, Datalab, python-docx, openpyxl
 
-```bash
-cd backend
+Background work
+
+FastAPI BackgroundTasks or Celery, Redis
+
+Storage
+
+Cloudinary or a local persistent volume
+
+Infrastructure and quality
+
+Docker, pytest, GitHub Actions
+
+Dependency versions are maintained in backend/requirements.txt and frontend/package.json.
+
+Architecture
+
+The backend owns database access, provider calls, and document storage. The browser uses authenticated API routes and does not receive private provider credentials or direct storage paths. Redis handles rate limiting in both processing modes and also acts as the task broker when Celery is enabled.
+
+From upload to searchable document
+
+Text is split into 300-word chunks with a 50-word overlap; structured PDF elements retain their own content types and page locations. Processing saves the extracted chunks before embedding them. If embedding generation fails, a retry can resume from that checkpoint instead of repeating successful paid extraction.
+
+For PDFs, the extractor classifies pages individually. Straightforward text pages use pypdf, while complex layouts can be converted with Datalab. The default advanced-extraction budget is 40 pages per document. Pages beyond the cap may use a text fallback, but pages with no extractable text cannot be silently skipped.
+
+How answers are generated
+
+Search is limited to the user's ready documents attached to the chat. Vector candidates are re-ranked with a small keyword-match bonus, confidence thresholds, and per-document limits. Nearby-page chunks can be included to preserve context across page boundaries. DeepSeek receives the selected content as untrusted document data, along with a short chat history, and the answer is streamed as newline-delimited JSON.
+
+This is vector retrieval with lexical re-ranking, not a separate BM25 or full-text search index. For the exact retrieval rules, PDF classification thresholds, streaming events, database model, and security controls, see the technical reference.
+
+Getting started
+
+Requirements
+
+Python 3.11 and Node.js 22
+
+PostgreSQL with pgvector
+
+Redis, including for local development
+
+Google OAuth client, DeepSeek, Voyage AI, and Datalab API credentials
+
+Cloudinary credentials, unless using local storage
+
+Backend
+
+git clone https://github.com/HishamFekri/ai-document-assistant.git
+cd ai-document-assistant/backend
 python -m venv venv
+source venv/bin/activate
 pip install -r requirements-dev.txt
+cp .env.example .env
+
+Configure backend/.env with your PostgreSQL URL, Google OAuth settings, JWT_SECRET_KEY, and the DeepSeek, Datalab, and Voyage keys. VOYAGE_API_KEY is required but is currently absent from .env.example. Set STORAGE_BACKEND=local if you do not want Cloudinary. Register http://localhost:8000/auth/google/callback with your Google OAuth client.
+
+With a dedicated application database created and pgvector available:
+
 python -m alembic upgrade head
 uvicorn main:app --reload
-```
 
-Create a `.env` file using `.env.example` as a reference.
+The backend runs at http://localhost:8000, with OpenAPI documentation at /docs. Run migrations only against the intended development database.
 
-## Frontend Setup
+Frontend
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+In a second terminal:
 
-The frontend runs locally on:
+cd ai-document-assistant/frontend
+npm ci
 
-```text
-http://localhost:3000
-```
+Create frontend/.env.local:
 
-The backend runs on:
+NEXT_PUBLIC_API_URL=http://localhost:8000
+NEXT_PUBLIC_GOOGLE_CLIENT_ID=<your-google-oauth-client-id>
 
-```text
-http://localhost:8000
-```
+Then run npm run dev and open http://localhost:3000. Keep localhost consistent across both services and the Google callback, or the host-only session cookie may not work.
 
-To self-host the frontend with Docker, see
-[frontend/docs/self-hosting.md](frontend/docs/self-hosting.md).
+For optional Celery processing, set TASK_QUEUE=celery and run celery -A app.worker.celery_app worker --loglevel=info from backend/ with the same environment as the API.
 
-## Background Processing
+Docker and self-hosting
 
-Document processing can run with FastAPI BackgroundTasks in an explicitly
-configured single-service deployment or through Celery and Redis. BackgroundTasks
-are not durable across web-process restarts; Celery remains recommended when a
-separate worker is available.
+The repository includes backend and frontend Dockerfiles, but does not include a Compose file. A deployment operator must provide PostgreSQL/pgvector, Redis, HTTPS reverse proxy, persistent storage, and backups.
 
-For a single web service:
+For local file storage, configure STORAGE_BACKEND=local and mount the uploads volume. The backend expects a .storage-sentinel file on the mounted volume to protect against accidentally writing uploads to an unmounted disk. The backend image runs Alembic migrations at startup, so review schema changes before updating containers.
 
-```env
-TASK_QUEUE=background
-```
+Backend self-hosting and persistent storage
 
-For Celery:
+Frontend Docker image and reverse proxy
 
-```env
-TASK_QUEUE=celery
-```
+Deployment and rollback tooling
 
-Run the worker with:
+The API exposes /health for liveness and /ready for dependency readiness. Back up the database and uploaded files together, since database records reference assets stored outside PostgreSQL.
 
-```bash
-celery -A app.worker.celery_app worker --loglevel=info
-```
+API overview
 
-## Storage
+Area
 
-Cloudinary is the default storage backend. To self-host with original documents
-and extracted images on a persistent volume instead, set `STORAGE_BACKEND=local`
-and see [backend/docs/self-hosting.md](backend/docs/self-hosting.md).
+Main operations
 
-## Testing
+Authentication
 
-Backend tests require an explicit **process environment variable**
-`TEST_DATABASE_URL`. There is no fallback to `DATABASE_URL`, and a test URL in
-`.env` is not automatically selected. Use a disposable local PostgreSQL server
-with pgvector and a dedicated test role. No Docker setup is required by this
-test harness.
+Google sign-in, current user, logout
 
-The URL must use `postgresql` or `postgresql+psycopg`, include a username and a
-loopback host (`localhost`, `127.0.0.1`, or `::1`), and contain no query options.
-Its database name is a **base name**, not a database that will be reset: use
-`ai_document_assistant_test`, for example. Names must start with a lowercase
-letter, contain only lowercase letters/digits/underscores, be at most 26
-characters, and contain a separate `test` segment. Development/staging/production
-name segments and either application database name from the environment or
-`backend/.env` are rejected. Unset `PGHOSTADDR`, `PGSERVICE`, `PGSERVICEFILE`, and
-`PGOPTIONS`; they can override connection routing/settings.
+Documents
 
-For example, set `TEST_DATABASE_URL` in your shell using your local test-role
-credentials and the shape
-`postgresql+psycopg://test_role:<password>@127.0.0.1:5432/ai_document_assistant_test`.
-Do not commit credentials or use application/production administrator credentials.
+Upload, list, status, retry, delete, access extracted assets
 
-Then run from the repository root:
+Chats
 
-```bash
+Create, rename, attach documents, pin, archive, delete
+
+Questions
+
+Search, ask, stream answers through POST /chats/{id}/ask/stream
+
+Summaries
+
+Generate, stream, list versions, select, cancel, delete
+
+Operations
+
+GET /health, GET /ready
+
+The FastAPI OpenAPI endpoints at /docs and /redoc provide the complete request and response schemas. Streaming answers use NDJSON events, including token, done, and error.
+
+Testing
+
+Backend integration tests use a dedicated, disposable PostgreSQL database. Before running pytest, explicitly set TEST_DATABASE_URL in the shell with a loopback host and a dedicated test role. Never point it at development or production data. The test harness validates naming and connection restrictions, creates a unique per-run database, and only drops a database that run created.
+
 cd backend
+python -B tests/test_database_safety.py
 python -m pytest --collect-only -q
 python -m pytest -v
-```
 
-Missing or unsafe configuration fails before test-module collection. Importing
-`tests/conftest.py` never contacts PostgreSQL. Collection redirects only the
-pytest process's `DATABASE_URL` to a unique per-run name; it does not create,
-migrate, truncate, or drop a database. The original value is restored when
-pytest exits normally. Start pytest in a fresh process, before importing the app.
+The last two commands require a safely configured TEST_DATABASE_URL; the first does not. Read the full test database safeguards before running database tests.
 
-Actual test execution creates `<base>_run_<uuid>` in a session fixture and runs
-the existing Alembic migrations there. The role needs `CREATEDB`, access to the
-local `postgres` maintenance database, and permission to enable pgvector in its
-new database. The base database is never modified. Tests retain their existing
-commit semantics and per-test truncation/identity reset. Teardown drops only a
-database successfully created by that run, without terminating connections or
-using `FORCE`. If creation collides, the existing database is left untouched.
-An interrupted process or busy database may leave a run database behind; inspect
-it manually rather than automatically removing databases by prefix.
+Frontend checks:
 
-Independent test processes (including separate pytest workers) get separate
-database names. This isolates database state only, not external AI services or
-upload files. Unique databases fit the existing separate request sessions and
-commits better than wrapping one fixture session in a rollback transaction.
+cd frontend
+node --test tests/*.test.mjs
+npx --no-install tsc --noEmit
+npm run lint -- --max-warnings 19
+npm run build
 
-Guard regression checks require no database and can be run directly from `backend/`:
+GitHub Actions checks backend tests and migrations, frontend quality, dependencies, and container builds. See CI and observability notes.
 
-```bash
-python -B tests/test_database_safety.py
-```
+Current limitations
 
-Separately, check application database migrations (this uses `DATABASE_URL`):
+Source mentions generated in answer prose are not verified citations to retrieved chunks.
 
-```bash
-python -m alembic check
-```
+Complex PDF conversion has a page budget; DOCX tables and images are not extracted.
 
-## Security
+Lexical matching only re-ranks vector candidates, so an exact term outside those candidates can be missed.
 
-The backend includes authentication and ownership checks so users can only access their own chats, documents, and document assets.
+The in-process task mode cannot preserve an active job through a restart, although a recovery scanner can retry stale work. Celery has different worker-crash limits.
 
-Uploads are validated before processing, sensitive values are stored in environment variables, and document content is treated as untrusted input when building LLM prompts.
+The example backend environment file needs corrections for the Voyage key, batch setting name, and DeepSeek default.
 
-## Author
+These are current implementation limits, not planned or completed features.
+
+License
+
+No license file is currently included in the repository. No permission to use, modify, or redistribute the code is granted by default.
