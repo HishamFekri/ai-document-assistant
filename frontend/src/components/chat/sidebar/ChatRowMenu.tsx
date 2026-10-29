@@ -5,7 +5,6 @@ import {
   Pencil,
   Pin,
   PinOff,
-  Share2,
   Trash2,
   Undo2,
 } from "lucide-react";
@@ -62,7 +61,7 @@ type Position = {
 
 
 const MENU_WIDTH = 176;
-const MENU_HEIGHT = 210;
+const MENU_HEIGHT = 178;
 const GAP = 6;
 const SCREEN_PADDING = 8;
 
@@ -437,33 +436,6 @@ export default function ChatRowMenu({
         {chat.is_archived
           ? "Unarchive"
           : "Archive"}
-      </button>
-
-
-      <button
-        type="button"
-        disabled
-        title="Share will be connected later"
-        className="
-          flex
-          w-full
-          cursor-not-allowed
-          items-center
-          gap-2.5
-          rounded-lg
-          px-2.5
-          py-2
-          text-left
-          text-xs
-          text-[var(--text-muted)]
-          opacity-50
-        "
-      >
-        <Share2
-          size={14}
-        />
-
-        Share
       </button>
 
 
