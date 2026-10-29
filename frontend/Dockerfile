@@ -2,7 +2,7 @@
 
 # Self-hosted production image. Vercel deployments do not use this file.
 # Node 22 LTS matches CI; the tag is pinned by digest for reproducible builds.
-FROM node:22.23.4-trixie-slim@sha256:2117f713a417f3aff682ac8f5bc2ebbdf1beed51f36e67ab1e0fd3866b6d2d8f AS base
+FROM node:26.12.0-trixie-slim@sha256:e556a144463cc8dc53afe8de6d2fa0db5c132fd39ffa232c17641bd40df2bf11 AS base
 
 FROM base AS deps
 WORKDIR /app
