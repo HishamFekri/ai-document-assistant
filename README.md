@@ -222,7 +222,6 @@ The repository has Dockerfiles for both services but no Compose file: running it
 - Keyword matching only re-ranks the vector candidates, so an exact term outside them can be missed.
 - Complex PDF conversion has a per-document page budget, and Word files contribute their paragraphs only, without tables or images.
 - In the in-process mode, a job interrupted by a restart is retried by the recovery scanner (for jobs that went stale within the last day) rather than continuing where it was. In Celery mode, a worker that dies mid-task isn't redelivered automatically.
-- `.env.example` lists `EMBEDDING_BATCH_SIZE`, which the code doesn't read; the setting it reads is `VOYAGE_BATCH_SIZE`.
 
 ## API overview
 
